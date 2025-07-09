@@ -75,6 +75,10 @@ def load_config():
                     config["alert_color"] = "#a00"
                 if "pause_reminder_interval" not in config:
                     config["pause_reminder_interval"] = 60  # seconds
+                if "disabled_text" not in config:
+                    config["disabled_text"] = "Disabled"
+                if "disabled_color" not in config:
+                    config["disabled_color"] = "#fa0"
                 return config
         except Exception as e:
             print(f"Config load failed: {e}, using defaults.")
@@ -91,6 +95,8 @@ def load_config():
         "paused_color": "#08f",
         "alert_text": "Alert",
         "alert_color": "#a00",
+        "disabled_text": "Disabled",
+        "disabled_color": "#fa0",
         "pause_reminder_interval": 60  # seconds
     }
 
@@ -99,6 +105,7 @@ def save_config(
     green_text="Green", green_color="#080",
     paused_text="Paused", paused_color="#08f",
     alert_text="Alert", alert_color="#a00",
+    disabled_text="Disabled", disabled_color="#fa0",
     pause_reminder_interval=60
 ):
     serializable_regions = []
@@ -119,6 +126,8 @@ def save_config(
         "paused_color": paused_color,
         "alert_text": alert_text,
         "alert_color": alert_color,
+        "disabled_text": disabled_text,
+        "disabled_color": disabled_color,
         "pause_reminder_interval": pause_reminder_interval
     }
     with open(CONFIG_FILE, "w") as f:
@@ -286,6 +295,8 @@ def main():
     paused_color_var = tk.StringVar(value=config.get("paused_color", "#08f"))
     alert_text_var = tk.StringVar(value=config.get("alert_text", "Alert"))
     alert_color_var = tk.StringVar(value=config.get("alert_color", "#a00"))
+    disabled_text_var = tk.StringVar(value=config.get("disabled_text", "Disabled"))
+    disabled_color_var = tk.StringVar(value=config.get("disabled_color", "#fa0"))
     pause_reminder_interval_var = tk.IntVar(value=config.get("pause_reminder_interval", 60))
 
     # Notebook tabs
@@ -331,6 +342,7 @@ def main():
                 "rect": region,
                 "name": region_name,
                 "paused": False,
+                "disabled": False,
                 "mute_sound": False,
                 "mute_tts": False,
                 "mute_sound_until": 0,
@@ -352,9 +364,11 @@ def main():
         now = time.time()
         reminder_interval = pause_reminder_interval_var.get()
         
-        # Check if anything is paused
+        # Check if anything is paused (disabled regions should NOT trigger reminders)
         global_paused = paused
-        any_region_paused = any(region.get("paused", False) for region in regions)
+        # Only count regions as paused if they are not disabled
+        any_region_paused = any(region.get("paused", False) and not region.get("disabled", False) for region in regions)
+        any_region_disabled = any(region.get("disabled", False) for region in regions)
         something_paused = global_paused or any_region_paused
         
         if something_paused:
@@ -365,20 +379,31 @@ def main():
             if reminder_interval > 0:
                 remaining_time = max(0, reminder_interval - time_since_reminder)
                 if global_paused and any_region_paused:
-                    status_text = f"PAUSED (Global + {sum(1 for r in regions if r.get('paused', False))} regions) - Next reminder in {remaining_time:.0f}s"
+                    paused_count = sum(1 for r in regions if r.get('paused', False) and not r.get('disabled', False))
+                    status_text = f"PAUSED (Global + {paused_count} regions) - Next reminder in {remaining_time:.0f}s"
                 elif global_paused:
                     status_text = f"PAUSED (Global) - Next reminder in {remaining_time:.0f}s"
                 else:
-                    paused_count = sum(1 for r in regions if r.get("paused", False))
+                    paused_count = sum(1 for r in regions if r.get('paused', False) and not r.get('disabled', False))
                     status_text = f"PAUSED ({paused_count} region{'s' if paused_count > 1 else ''}) - Next reminder in {remaining_time:.0f}s"
             else:
                 if global_paused and any_region_paused:
-                    status_text = f"PAUSED (Global + {sum(1 for r in regions if r.get('paused', False))} regions)"
+                    paused_count = sum(1 for r in regions if r.get('paused', False) and not r.get('disabled', False))
+                    disabled_count = sum(1 for r in regions if r.get("disabled", False))
+                    status_text = f"PAUSED (Global + {paused_count} regions)"
+                    if disabled_count > 0:
+                        status_text += f", {disabled_count} disabled"
                 elif global_paused:
+                    disabled_count = sum(1 for r in regions if r.get("disabled", False))
                     status_text = "PAUSED (Global)"
+                    if disabled_count > 0:
+                        status_text += f", {disabled_count} regions disabled"
                 else:
-                    paused_count = sum(1 for r in regions if r.get("paused", False))
+                    paused_count = sum(1 for r in regions if r.get('paused', False) and not r.get('disabled', False))
+                    disabled_count = sum(1 for r in regions if r.get("disabled", False))
                     status_text = f"PAUSED ({paused_count} region{'s' if paused_count > 1 else ''})"
+                    if disabled_count > 0:
+                        status_text += f", {disabled_count} disabled"
             
             # Play reminder if enough time has passed
             if reminder_interval > 0 and time_since_reminder >= reminder_interval:
@@ -388,7 +413,11 @@ def main():
                 except Exception as e:
                     print(f"Failed to play pause reminder: {e}")
         else:
-            status_text = "Monitoring..."
+            disabled_count = sum(1 for r in regions if r.get("disabled", False))
+            if disabled_count > 0:
+                status_text = f"Monitoring... ({disabled_count} region{'s' if disabled_count > 1 else ''} disabled)"
+            else:
+                status_text = "Monitoring..."
             
         status.config(text=status_text)
 
@@ -437,6 +466,10 @@ def main():
             mute_tts_btn = ttk.Button(controls_frame, style="Mute.TButton", width=14)
             mute_tts_btn.grid(row=2, column=0, sticky="ew", pady=2)
 
+            # Disable button
+            disable_btn = ttk.Button(controls_frame, width=14)
+            disable_btn.grid(row=3, column=0, sticky="ew", pady=2)
+
             # Mute sound label
             mute_sound_label = ttk.Label(controls_frame, width=6)
             mute_sound_label.grid(row=1, column=2, sticky="w", padx=(4,0))
@@ -464,6 +497,7 @@ def main():
                 "mute_tts_btn": mute_tts_btn,
                 "mute_sound_label": mute_sound_label,
                 "mute_tts_label": mute_tts_label,
+                "disable_btn": disable_btn,
                 "edit_btn": edit_btn,
                 "remove_btn": remove_btn,
             })
@@ -483,13 +517,17 @@ def main():
             pause_btn = widgets["pause_btn"]
             mute_sound_btn = widgets["mute_sound_btn"]
             mute_tts_btn = widgets["mute_tts_btn"]
+            disable_btn = widgets["disable_btn"]
             edit_btn = widgets["edit_btn"]
             remove_btn = widgets["remove_btn"]
 
             # Status Indicator
             status_height = 100
             status_width = 48
-            if region.get("paused", False) or paused:
+            if region.get("disabled", False):
+                status_text = disabled_text_var.get()
+                status_color = disabled_color_var.get()
+            elif region.get("paused", False) or paused:
                 status_text = paused_text_var.get()
                 status_color = paused_color_var.get()
             elif region.get("alert", False):
@@ -546,6 +584,8 @@ def main():
                     paused_color=paused_color_var.get(),
                     alert_text=alert_text_var.get(),
                     alert_color=alert_color_var.get(),
+                    disabled_text=disabled_text_var.get(),
+                    disabled_color=disabled_color_var.get(),
                     pause_reminder_interval=pause_reminder_interval_var.get()
                 )
                 update_region_display()
@@ -576,6 +616,8 @@ def main():
                     paused_color=paused_color_var.get(),
                     alert_text=alert_text_var.get(),
                     alert_color=alert_color_var.get(),
+                    disabled_text=disabled_text_var.get(),
+                    disabled_color=disabled_color_var.get(),
                     pause_reminder_interval=pause_reminder_interval_var.get()
                 )
                 update_region_display()
@@ -623,6 +665,8 @@ def main():
                     paused_color=paused_color_var.get(),
                     alert_text=alert_text_var.get(),
                     alert_color=alert_color_var.get(),
+                    disabled_text=disabled_text_var.get(),
+                    disabled_color=disabled_color_var.get(),
                     pause_reminder_interval=pause_reminder_interval_var.get()
                 )
                 update_region_display()
@@ -663,6 +707,8 @@ def main():
                             paused_color=paused_color_var.get(),
                             alert_text=alert_text_var.get(),
                             alert_color=alert_color_var.get(),
+                            disabled_text=disabled_text_var.get(),
+                            disabled_color=disabled_color_var.get(),
                             pause_reminder_interval=pause_reminder_interval_var.get()
                         )
                         update_region_display()
@@ -676,6 +722,61 @@ def main():
                     update_region_display()
                 return _remove
             remove_btn.config(command=make_remove(idx))
+
+            # Disable button functionality
+            def toggle_disable_region(region=region):
+                nonlocal last_reminder_time
+                import tkinter.messagebox as msgbox
+                current_disabled = region.get("disabled", False)
+                
+                if not current_disabled:
+                    # Confirm disabling
+                    result = msgbox.askyesno(
+                        "Confirm Disable", 
+                        f"Are you sure you want to disable region '{region.get('name', f'Region {idx+1}')}'?\n\n"
+                        "When disabled:\n"
+                        "• No screenshots will be taken\n"
+                        "• No comparisons will be performed\n" 
+                        "• No alerts will be triggered\n"
+                        "• No reminder tones will play"
+                    )
+                    if not result:
+                        return
+                
+                region["disabled"] = not current_disabled
+                if region.get("disabled", False):
+                    # Clear alert state when disabling
+                    region["alert"] = False
+                    region["last_alert_time"] = 0
+                    # Also clear paused state if it was paused
+                    region["paused"] = False
+                    # Reset reminder timer since we're changing state
+                    last_reminder_time = time.time()
+                
+                save_config(
+                    regions,
+                    interval_var.get(),
+                    highlight_time_var.get(),
+                    default_sound_var.get(),
+                    default_tts_var.get(),
+                    alert_threshold_var.get(),
+                    green_text=green_text_var.get(),
+                    green_color=green_color_var.get(),
+                    paused_text=paused_text_var.get(),
+                    paused_color=paused_color_var.get(),
+                    alert_text=alert_text_var.get(),
+                    alert_color=alert_color_var.get(),
+                    disabled_text=disabled_text_var.get(),
+                    disabled_color=disabled_color_var.get(),
+                    pause_reminder_interval=pause_reminder_interval_var.get()
+                )
+                update_region_display()
+                update_status_bar()
+            
+            disable_btn.config(
+                text="Enable" if region.get("disabled", False) else "Disable",
+                command=toggle_disable_region
+            )
 
         regions_frame.update_idletasks()
         # Update status bar when regions display is updated
@@ -788,6 +889,20 @@ def main():
             save_settings()
     alert_color_btn.config(command=choose_alert_color)
 
+    # Disabled State
+    ttk.Label(settings_frame, text="Disabled Text:").grid(row=9, column=0, sticky="e", padx=5, pady=2)
+    disabled_text_entry = ttk.Entry(settings_frame, textvariable=disabled_text_var, width=12)
+    disabled_text_entry.grid(row=9, column=1, sticky="w", padx=2, pady=2)
+    disabled_text_entry.bind("<FocusOut>", lambda e: save_settings())
+    disabled_color_btn = ttk.Button(settings_frame, text="Color...", width=8)
+    disabled_color_btn.grid(row=9, column=2, sticky="w", padx=2, pady=2)
+    def choose_disabled_color():
+        color = cc.askcolor(color=disabled_color_var.get())[1]
+        if color:
+            disabled_color_var.set(color)
+            save_settings()
+    disabled_color_btn.config(command=choose_disabled_color)
+
     def save_settings():
         save_config(
             regions,
@@ -802,11 +917,13 @@ def main():
             paused_color=paused_color_var.get(),
             alert_text=alert_text_var.get(),
             alert_color=alert_color_var.get(),
+            disabled_text=disabled_text_var.get(),
+            disabled_color=disabled_color_var.get(),
             pause_reminder_interval=pause_reminder_interval_var.get()
         )
 
     save_settings_btn = ttk.Button(settings_frame, text="Save Settings", command=save_settings)
-    save_settings_btn.grid(row=9, column=0, columnspan=3, pady=(10, 0))
+    save_settings_btn.grid(row=10, column=0, columnspan=3, pady=(10, 0))
 
     update_region_display()
     
@@ -827,7 +944,7 @@ def main():
         alert_display_time = alert_display_time_var.get()
 
         for idx, region in enumerate(regions):
-            if region.get("paused", False):
+            if region.get("paused", False) or region.get("disabled", False):
                 continue
             if idx >= len(previous_screenshots):
                 previous_screenshots.append(crop_region(full_img, region["rect"]))
