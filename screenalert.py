@@ -914,15 +914,15 @@ def main():
     default_sound_var = tk.StringVar(value=config.get("default_sound", ""))
     default_tts_var = tk.StringVar(value=config.get("default_tts", "Alert {name}"))
     alert_threshold_var = tk.DoubleVar(value=config.get("alert_threshold", 0.99))
-    green_text_var = tk.StringVar(value=config.get("green_text", "stocc"))
+    green_text_var = tk.StringVar(value=config.get("green_text", "Green"))
     green_color_var = tk.StringVar(value=config.get("green_color", "#44ff44"))  # Success green
     paused_text_var = tk.StringVar(value=config.get("paused_text", "Paused"))
     paused_color_var = tk.StringVar(value=config.get("paused_color", "#00d4ff"))  # Blue highlights
     alert_text_var = tk.StringVar(value=config.get("alert_text", "ALERT"))
     alert_color_var = tk.StringVar(value=config.get("alert_color", "#ff4444"))  # Alert red
-    disabled_text_var = tk.StringVar(value=config.get("disabled_text", "scanner"))
+    disabled_text_var = tk.StringVar(value=config.get("disabled_text", "Disabled"))
     disabled_color_var = tk.StringVar(value=config.get("disabled_color", "#ff9500"))  # Orange
-    unavailable_text_var = tk.StringVar(value=config.get("unavailable_text", "necom"))
+    unavailable_text_var = tk.StringVar(value=config.get("unavailable_text", "Unavailable"))
     unavailable_color_var = tk.StringVar(value=config.get("unavailable_color", "#666666"))  # Dark grey
     pause_reminder_interval_var = tk.IntVar(value=config.get("pause_reminder_interval", 60))
     window_filter_var = tk.StringVar(value=config.get("window_filter", ""))
