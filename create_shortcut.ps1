@@ -4,7 +4,8 @@
 $WScriptShell = New-Object -ComObject WScript.Shell
 
 # Get current directory (where ScreenAlert is located)
-$CurrentDir = Get-Location
+# Get current directory
+$CurrentDir = (Get-Location).Path
 $BatchFile = Join-Path $CurrentDir "launch_screenalert.bat"
 
 # Desktop shortcut path
@@ -46,8 +47,8 @@ if ($StartMenuResponse -eq "y" -or $StartMenuResponse -eq "Y") {
 
 Write-Host ""
 Write-Host "Setup complete! You can now launch ScreenAlert from:" -ForegroundColor Magenta
-Write-Host "✓ Desktop shortcut" -ForegroundColor Green
+Write-Host "* Desktop shortcut" -ForegroundColor Green
 if ($StartMenuResponse -eq "y" -or $StartMenuResponse -eq "Y") {
-    Write-Host "✓ Start Menu" -ForegroundColor Green
+    Write-Host "* Start Menu" -ForegroundColor Green
 }
-Write-Host "✓ Double-clicking launch_screenalert.bat" -ForegroundColor Green
+Write-Host "* Double-clicking launch_screenalert.bat" -ForegroundColor Green
