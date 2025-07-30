@@ -2201,7 +2201,8 @@ Features:
             
             if now - check_alerts.last_optimization_log >= 30:  # Log every 30 seconds
                 active_count = len([r for r in regions if not r.get("disabled", False)])
-                print(f"Optimization: All {active_count} regions connected - purging unnecessary connection attempts")
+                if verbose_logging_var.get():
+                    print(f"Optimization: All {active_count} regions connected - purging unnecessary connection attempts")
                 check_alerts.last_optimization_log = now
         
         # Update current_window_img for the global target window (for adding new regions)
