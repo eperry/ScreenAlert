@@ -35,28 +35,15 @@ hiddenimports = [
     'win32gui',
     'win32con',
     'win32api',
+    'argparse',
+    'skimage',
+    'skimage.metrics',
+    'imagehash',
 ]
 
-# Exclude modules that might trigger AV detection
+# Exclude modules that might trigger AV detection - minimal exclusions only
 excludes = [
     'matplotlib',
-    'scipy.linalg.cython_blas',
-    'scipy.linalg.cython_lapack',
-    'scipy.sparse.csgraph._validation',
-    'scipy.special._ufuncs_cxx',
-    'unittest',
-    'email',
-    'http',
-    'urllib',
-    'xml',
-    'pydoc',
-    'doctest',
-    'argparse',
-    'code',
-    'codeop',
-    'bdb',
-    'pdb',
-    'timeit',
 ]
 
 # Analysis configuration
