@@ -1,0 +1,16 @@
+{
+    "global_target_window": "",
+    "regions": [],
+    "settings": {
+        "alert_duration": 5.0,
+        "clear_duration": 3.0,
+        "scan_interval": 0.5,
+        "threshold": 0.95,
+        "voice_enabled": true,
+        "always_on_top": false,
+        "start_minimized": false,
+        "theme": "dark"
+    },
+    "window_positions": {},
+    "version": "1.3.1"
+}

@@ -1,6 +1,5 @@
 pyautogui
 Pillow
-tkinter
 scikit-image
 numpy
 opencv-python
