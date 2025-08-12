@@ -1,30 +1,32 @@
 # Copilot Chat Sessions Summary
 
-**Last Updated:** 2025-08-12 15:44:34
-**Total Sessions:** 1
+**Last Updated:** 2025-08-12 15:52:38
+**Total Sessions:** 2
 **Current Branch:** main
-**Latest Commit:** 4a1bc6e
+**Latest Commit:** aef5511
 **Repository:** https://github.com/eperry/ScreenAlert.git
 
 ## Pending Commit
 
-**Staged Files:** 50 files
-**Changes:**  50 files changed, 593 insertions(+), 3153 deletions(-)
+**Staged Files:** 3 files
+**Changes:**  3 files changed, 190 insertions(+), 1 deletion(-)
 
 ## Recent Sessions
 
+- [`2025-08-12_15-52-36_pre-commit-general-updates`](C:/Users/Ed/OneDrive/Documents/Development/ScreenAlert/docs/copilot-chats/2025-08-12_15-52-36_pre-commit-general-updates.md) - 2025-08-12
 - [`2025-08-12_15-44-32_pre-commit-documentation`](C:/Users/Ed/OneDrive/Documents/Development/ScreenAlert/docs/copilot-chats/2025-08-12_15-44-32_pre-commit-documentation.md) - 2025-08-12
 
 ## Session Statistics
 
-- Pre-commit exports: 1
+- Pre-commit exports: 2
 - Manual sessions: 0
 - Auto-exported sessions: 0
 
 ## Git Activity
 
 **Recent Commits:**
-- 4a1bc6e  Remove GitHub Actions workflow (16 minutes ago)
+- aef5511  Add Windows executable build system (8 minutes ago)
+- 4a1bc6e  Remove GitHub Actions workflow (24 minutes ago)
 - dca8499 ......... (2 hours ago)
 - aee3685  Add comprehensive release notes for v1.2 (3 hours ago)
 - bd89809  Final test: All exports and summaries in single commit (3 hours ago)
@@ -33,11 +35,10 @@
 - b78cea5 chat summary (3 hours ago)
 - ec459cc Add automated Copilot chat export system (3 hours ago)
 - 67cc2f1 ... (3 hours ago)
-- ca6c45c Merge branch 'main' of https://github.com/eperry/ScreenAlert (3 hours ago)
 
 ## Repository Health
 
-- Total commits: 27
+- Total commits: 28
 - Contributors: 2
 - Lines of code: 6145
 
