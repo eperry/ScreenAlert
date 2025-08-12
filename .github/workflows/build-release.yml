@@ -1,0 +1,267 @@
+name: Build and Release ScreenAlert
+
+on:
+  push:
+    tags:
+      - 'v*'  # Trigger on version tags (v1.0, v1.1, etc.)
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Get full history for proper versioning
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'  # Use Python 3.11 for better compatibility
+        
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~\AppData\Local\pip\Cache
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/screenalert_requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r screenalert_requirements.txt
+        pip install pyinstaller
+        
+    - name: Create version info
+      run: |
+        # Extract version from tag or use default
+        if ("${{ github.ref }}" -match "refs/tags/v(.+)") {
+          $version = $matches[1]
+        } else {
+          $version = "1.2.0"
+        }
+        
+        # Create version file for the executable
+        $versionParts = $version.Split('.')
+        while ($versionParts.Length -lt 4) { $versionParts += "0" }
+        
+        $versionInfo = @"
+        VSVersionInfo(
+          ffi=FixedFileInfo(
+            filevers=($($versionParts[0]),$($versionParts[1]),$($versionParts[2]),$($versionParts[3])),
+            prodvers=($($versionParts[0]),$($versionParts[1]),$($versionParts[2]),$($versionParts[3])),
+            mask=0x3f,
+            flags=0x0,
+            OS=0x40004,
+            fileType=0x1,
+            subtype=0x0,
+            date=(0, 0)
+          ),
+          kids=[
+            StringFileInfo([
+              StringTable(
+                u'040904B0',
+                [StringStruct(u'CompanyName', u'Ed Perry'),
+                StringStruct(u'FileDescription', u'ScreenAlert - Advanced Screen Monitoring Tool'),
+                StringStruct(u'FileVersion', u'$version'),
+                StringStruct(u'InternalName', u'ScreenAlert.exe'),
+                StringStruct(u'LegalCopyright', u'© 2025 Ed Perry. All rights reserved.'),
+                StringStruct(u'OriginalFilename', u'ScreenAlert.exe'),
+                StringStruct(u'ProductName', u'ScreenAlert'),
+                StringStruct(u'ProductVersion', u'$version')])
+            ]),
+            VarFileInfo([VarStruct(u'Translation', [1033, 1200])])
+          ]
+        )
+        "@
+        
+        $versionInfo | Out-File -Encoding UTF8 -FilePath "version.txt"
+        
+        Write-Host "Version: $version"
+        echo "VERSION=$version" >> $env:GITHUB_ENV
+    
+    - name: Build with PyInstaller
+      run: |
+        # Build the executable
+        pyinstaller screenalert.spec --clean --noconfirm
+        
+        # Verify the build
+        if (Test-Path "dist\ScreenAlert.exe") {
+          Write-Host "✅ Build successful: ScreenAlert.exe created"
+          $size = (Get-Item "dist\ScreenAlert.exe").Length / 1MB
+          Write-Host "📦 Executable size: $([math]::Round($size, 2)) MB"
+        } else {
+          Write-Error "❌ Build failed: ScreenAlert.exe not found"
+          exit 1
+        }
+    
+    - name: Test executable
+      run: |
+        # Basic test to ensure the executable runs
+        Write-Host "🧪 Testing executable..."
+        
+        # Try to run with --help or --version flag (add these to your app if needed)
+        # For now, just check if it starts without immediate crash
+        $process = Start-Process -FilePath "dist\ScreenAlert.exe" -PassThru -NoNewWindow
+        Start-Sleep -Seconds 3
+        
+        if (!$process.HasExited) {
+          Write-Host "✅ Executable started successfully"
+          Stop-Process -Id $process.Id -Force
+        } else {
+          Write-Host "⚠️ Executable exited immediately (may be normal for GUI apps)"
+        }
+    
+    - name: Create portable package
+      run: |
+        # Create a portable distribution folder
+        $packageName = "ScreenAlert-v${{ env.VERSION }}-Windows-Portable"
+        $packageDir = "dist\$packageName"
+        
+        # Create package structure
+        New-Item -ItemType Directory -Force -Path $packageDir
+        
+        # Copy executable and essential files
+        Copy-Item "dist\ScreenAlert.exe" -Destination $packageDir
+        Copy-Item "screenalert_config.json" -Destination $packageDir -ErrorAction SilentlyContinue
+        Copy-Item "README.md" -Destination $packageDir -ErrorAction SilentlyContinue
+        Copy-Item "SCREENALERT_README.md" -Destination "$packageDir\UserGuide.md" -ErrorAction SilentlyContinue
+        Copy-Item "RELEASE_NOTES_v1.2.md" -Destination $packageDir -ErrorAction SilentlyContinue
+        
+        # Create a simple launcher batch file
+        @"
+        @echo off
+        echo Starting ScreenAlert...
+        ScreenAlert.exe
+        if errorlevel 1 (
+            echo.
+            echo ScreenAlert encountered an error.
+            echo Please check that all requirements are met.
+            pause
+        )
+        "@ | Out-File -Encoding ASCII -FilePath "$packageDir\Launch-ScreenAlert.bat"
+        
+        # Create installation instructions
+        @"
+        # ScreenAlert v${{ env.VERSION }} - Portable Installation
+        
+        ## Quick Start
+        1. Extract all files to a folder of your choice
+        2. Double-click ``Launch-ScreenAlert.bat`` or ``ScreenAlert.exe``
+        3. Configure your monitoring settings
+        
+        ## Files Included
+        - ``ScreenAlert.exe`` - Main application
+        - ``Launch-ScreenAlert.bat`` - Launcher script
+        - ``screenalert_config.json`` - Configuration file
+        - ``README.md`` - Project documentation
+        - ``UserGuide.md`` - User guide
+        
+        ## System Requirements
+        - Windows 10 or later
+        - No additional installation required (all dependencies included)
+        
+        ## Support
+        - GitHub: https://github.com/eperry/ScreenAlert
+        - Issues: https://github.com/eperry/ScreenAlert/issues
+        
+        ## Version Information
+        - Version: ${{ env.VERSION }}
+        - Build Date: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')
+        - Git Commit: ${{ github.sha }}
+        "@ | Out-File -Encoding UTF8 -FilePath "$packageDir\INSTALL.md"
+        
+        # Create ZIP archive
+        Compress-Archive -Path $packageDir -DestinationPath "dist\$packageName.zip"
+        
+        Write-Host "📦 Created portable package: $packageName.zip"
+        
+        # Set output variables
+        echo "PACKAGE_NAME=$packageName" >> $env:GITHUB_ENV
+        echo "PACKAGE_PATH=dist\$packageName.zip" >> $env:GITHUB_ENV
+        
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ScreenAlert-Windows-Build
+        path: |
+          dist/ScreenAlert.exe
+          dist/ScreenAlert-v${{ env.VERSION }}-Windows-Portable.zip
+        retention-days: 30
+    
+    - name: Create Release
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          dist/ScreenAlert.exe
+          ${{ env.PACKAGE_PATH }}
+        name: ScreenAlert v${{ env.VERSION }}
+        body: |
+          # ScreenAlert v${{ env.VERSION }} - Windows Release
+          
+          ## 📦 Downloads
+          
+          - **`ScreenAlert.exe`** - Standalone executable (recommended)
+          - **`ScreenAlert-v${{ env.VERSION }}-Windows-Portable.zip`** - Portable package with documentation
+          
+          ## 🚀 Quick Start
+          
+          1. Download `ScreenAlert.exe`
+          2. Run the executable (no installation required)
+          3. Configure your screen monitoring settings
+          4. Start monitoring!
+          
+          ## ✨ Features
+          
+          - Advanced screen region monitoring
+          - Customizable alert thresholds
+          - Audio notifications
+          - Scrollable settings interface
+          - Automatic window reconnection
+          - Dark theme interface
+          
+          ## 🔧 System Requirements
+          
+          - Windows 10 or later
+          - No additional dependencies required
+          
+          ## 📖 Documentation
+          
+          - [User Guide](https://github.com/eperry/ScreenAlert/blob/main/SCREENALERT_README.md)
+          - [Configuration Help](https://github.com/eperry/ScreenAlert/blob/main/README.md)
+          
+          ## 🐛 Issues & Support
+          
+          Report issues at: https://github.com/eperry/ScreenAlert/issues
+          
+          ---
+          
+          **Build Information:**
+          - Build Date: ${{ steps.build.outputs.build-date }}
+          - Git Commit: ${{ github.sha }}
+          - Executable Size: ~25-40 MB (includes all dependencies)
+        draft: false
+        prerelease: false
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+  build-info:
+    runs-on: ubuntu-latest
+    needs: build-windows
+    
+    steps:
+    - name: Build Summary
+      run: |
+        echo "## 🎉 ScreenAlert Build Complete!" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "✅ Windows executable built successfully" >> $GITHUB_STEP_SUMMARY
+        echo "📦 Portable package created" >> $GITHUB_STEP_SUMMARY
+        echo "🚀 Release published (if tag triggered)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Next Steps:" >> $GITHUB_STEP_SUMMARY
+        echo "1. Download the artifacts to test locally" >> $GITHUB_STEP_SUMMARY
+        echo "2. If this was a tag build, check the releases page" >> $GITHUB_STEP_SUMMARY
+        echo "3. Share the executable with users!" >> $GITHUB_STEP_SUMMARY

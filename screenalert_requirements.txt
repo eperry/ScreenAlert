@@ -7,3 +7,4 @@ opencv-python
 imagehash
 pyttsx3
 pywin32
+pyinstaller
