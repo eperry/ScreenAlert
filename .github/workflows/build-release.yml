@@ -6,6 +6,9 @@ on:
       - 'v*'  # Trigger on version tags (v1.0, v1.1, etc.)
   workflow_dispatch:  # Allow manual triggering
 
+permissions:
+  contents: write  # Required for creating releases
+
 jobs:
   build-windows:
     runs-on: windows-latest
@@ -198,7 +201,7 @@ jobs:
       with:
         files: |
           dist/ScreenAlert.exe
-          ${{ env.PACKAGE_PATH }}
+          dist/ScreenAlert-v${{ env.VERSION }}-Windows-Portable.zip
         name: ScreenAlert v${{ env.VERSION }}
         body: |
           # ScreenAlert v${{ env.VERSION }} - Windows Release
@@ -241,9 +244,9 @@ jobs:
           ---
           
           **Build Information:**
-          - Build Date: ${{ steps.build.outputs.build-date }}
+          - Build Date: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')
           - Git Commit: ${{ github.sha }}
-          - Executable Size: ~25-40 MB (includes all dependencies)
+          - Executable Size: ~107 MB (includes all dependencies)
         draft: false
         prerelease: false
         token: ${{ secrets.GITHUB_TOKEN }}
