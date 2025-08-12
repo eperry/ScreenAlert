@@ -22,14 +22,12 @@ if os.path.exists('SCREENALERT_README.md'):
 if os.path.exists('README.md'):
     datas.append(('README.md', '.'))
 
-# Hidden imports that PyInstaller might miss
+# Hidden imports that PyInstaller might miss - minimal set to reduce AV flags
 hiddenimports = [
-    'PIL._tkinter_finder',
     'tkinter',
     'tkinter.ttk',
     'tkinter.messagebox',
     'tkinter.filedialog',
-    'tkinter.colorchooser',
     'cv2',
     'numpy',
     'pyautogui',
@@ -37,9 +35,28 @@ hiddenimports = [
     'win32gui',
     'win32con',
     'win32api',
-    'imagehash',
-    'skimage',
-    'skimage.metrics',
+]
+
+# Exclude modules that might trigger AV detection
+excludes = [
+    'matplotlib',
+    'scipy.linalg.cython_blas',
+    'scipy.linalg.cython_lapack',
+    'scipy.sparse.csgraph._validation',
+    'scipy.special._ufuncs_cxx',
+    'unittest',
+    'email',
+    'http',
+    'urllib',
+    'xml',
+    'pydoc',
+    'doctest',
+    'argparse',
+    'code',
+    'codeop',
+    'bdb',
+    'pdb',
+    'timeit',
 ]
 
 # Analysis configuration
@@ -52,7 +69,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=excludes,
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
@@ -74,7 +91,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,  # Disable UPX compression which can trigger AV
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,  # Set to True if you want console window for debugging

@@ -88,7 +88,7 @@ jobs:
     
     - name: Build with PyInstaller
       run: |
-        # Build the executable
+        # Build the executable with optimized settings for AV compatibility
         pyinstaller screenalert.spec --clean --noconfirm
         
         # Verify the build
@@ -96,6 +96,14 @@ jobs:
           Write-Host "✅ Build successful: ScreenAlert.exe created"
           $size = (Get-Item "dist\ScreenAlert.exe").Length / 1MB
           Write-Host "📦 Executable size: $([math]::Round($size, 2)) MB"
+          
+          # Generate SHA256 hash for security verification
+          $hash = Get-FileHash "dist\ScreenAlert.exe" -Algorithm SHA256
+          Write-Host "🔐 SHA256 Hash: $($hash.Hash)"
+          $hash.Hash | Out-File "dist\ScreenAlert.exe.sha256" -Encoding ASCII
+          
+          Write-Host "🛡️ Security Note: Executable is unsigned and may trigger AV warnings"
+          
         } else {
           Write-Error "❌ Build failed: ScreenAlert.exe not found"
           exit 1
@@ -192,7 +200,9 @@ jobs:
         name: ScreenAlert-Windows-Build
         path: |
           dist/ScreenAlert.exe
+          dist/ScreenAlert.exe.sha256
           dist/ScreenAlert-v${{ env.VERSION }}-Windows-Portable.zip
+          SECURITY.md
         retention-days: 30
     
     - name: Create Release
@@ -210,8 +220,24 @@ jobs:
           
           - **`ScreenAlert.exe`** - Standalone executable (recommended)
           - **`ScreenAlert-v${{ env.VERSION }}-Windows-Portable.zip`** - Portable package with documentation
+          - **`ScreenAlert.exe.sha256`** - SHA256 hash for verification
           
-          ## 🚀 Quick Start
+          ## �️ Security & Antivirus Information
+          
+          **Important**: This executable may trigger false positives in some antivirus software. This is common with PyInstaller applications and is **NOT** a virus.
+          
+          **Verification Steps:**
+          1. Download from this official GitHub release only
+          2. Verify SHA256 hash matches the provided `.sha256` file
+          3. Check the complete source code in this repository
+          4. All builds are done via public GitHub Actions (build logs available)
+          
+          **If your antivirus flags this file:**
+          - Add to your antivirus exclusions list
+          - Report as false positive to your AV vendor
+          - See `SECURITY.md` for detailed information
+          
+          ## �🚀 Quick Start
           
           1. Download `ScreenAlert.exe`
           2. Run the executable (no installation required)
@@ -236,6 +262,7 @@ jobs:
           
           - [User Guide](https://github.com/eperry/ScreenAlert/blob/main/SCREENALERT_README.md)
           - [Configuration Help](https://github.com/eperry/ScreenAlert/blob/main/README.md)
+          - [Security Information](https://github.com/eperry/ScreenAlert/blob/main/SECURITY.md)
           
           ## 🐛 Issues & Support
           
@@ -246,7 +273,8 @@ jobs:
           **Build Information:**
           - Build Date: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss UTC')
           - Git Commit: ${{ github.sha }}
-          - Executable Size: ~107 MB (includes all dependencies)
+          - Executable Size: ~104 MB (includes all dependencies)
+          - PyInstaller: Optimized build with AV compatibility settings
         draft: false
         prerelease: false
         token: ${{ secrets.GITHUB_TOKEN }}
