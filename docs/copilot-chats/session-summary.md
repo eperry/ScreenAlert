@@ -1,9 +1,9 @@
 # Copilot Chat Sessions Summary
 
-**Last Updated:** 2025-08-12 12:59:51
-**Total Sessions:** 38
+**Last Updated:** 2025-08-12 13:04:13
+**Total Sessions:** 40
 **Current Branch:** main
-**Latest Commit:** b78cea5
+**Latest Commit:** 4696aa4
 **Repository:** https://github.com/eperry/ScreenAlert.git
 
 ## Pending Commit
@@ -14,6 +14,8 @@
 ## Recent Sessions
 
 - [`2025-08-12_enhanced-detection-and-ui`](C:/Users/Ed/OneDrive/Documents/Development/ScreenAlert/docs/copilot-chats/2025-08-12_enhanced-detection-and-ui.md) - 2025-08-12
+- [`2025-08-12_13-04-12_pre-commit-documentation`](C:/Users/Ed/OneDrive/Documents/Development/ScreenAlert/docs/copilot-chats/2025-08-12_13-04-12_pre-commit-documentation.md) - 2025-08-12
+- [`2025-08-12_13-01-13_pre-commit-documentation`](C:/Users/Ed/OneDrive/Documents/Development/ScreenAlert/docs/copilot-chats/2025-08-12_13-01-13_pre-commit-documentation.md) - 2025-08-12
 - [`2025-08-12_12-59-50_pre-commit-documentation`](C:/Users/Ed/OneDrive/Documents/Development/ScreenAlert/docs/copilot-chats/2025-08-12_12-59-50_pre-commit-documentation.md) - 2025-08-12
 - [`2025-08-12_12-57-41_pre-commit-general-updates`](C:/Users/Ed/OneDrive/Documents/Development/ScreenAlert/docs/copilot-chats/2025-08-12_12-57-41_pre-commit-general-updates.md) - 2025-08-12
 - [`2025-08-12_12-57-35_pre-commit-documentation`](C:/Users/Ed/OneDrive/Documents/Development/ScreenAlert/docs/copilot-chats/2025-08-12_12-57-35_pre-commit-documentation.md) - 2025-08-12
@@ -21,32 +23,30 @@
 - [`2025-08-12_12-56-13_pre-commit-documentation`](C:/Users/Ed/OneDrive/Documents/Development/ScreenAlert/docs/copilot-chats/2025-08-12_12-56-13_pre-commit-documentation.md) - 2025-08-12
 - [`2025-08-12_12-56-00_pre-commit-documentation`](C:/Users/Ed/OneDrive/Documents/Development/ScreenAlert/docs/copilot-chats/2025-08-12_12-56-00_pre-commit-documentation.md) - 2025-08-12
 - [`2025-08-12_12-55-46_pre-commit-documentation`](C:/Users/Ed/OneDrive/Documents/Development/ScreenAlert/docs/copilot-chats/2025-08-12_12-55-46_pre-commit-documentation.md) - 2025-08-12
-- [`2025-08-12_12-55-33_pre-commit-documentation`](C:/Users/Ed/OneDrive/Documents/Development/ScreenAlert/docs/copilot-chats/2025-08-12_12-55-33_pre-commit-documentation.md) - 2025-08-12
-- [`2025-08-12_12-55-19_pre-commit-documentation`](C:/Users/Ed/OneDrive/Documents/Development/ScreenAlert/docs/copilot-chats/2025-08-12_12-55-19_pre-commit-documentation.md) - 2025-08-12
 
 ## Session Statistics
 
-- Pre-commit exports: 37
+- Pre-commit exports: 39
 - Manual sessions: 1
 - Auto-exported sessions: 0
 
 ## Git Activity
 
 **Recent Commits:**
-- b78cea5 chat summary (3 minutes ago)
-- ec459cc Add automated Copilot chat export system (16 minutes ago)
-- 67cc2f1 ... (34 minutes ago)
-- ca6c45c Merge branch 'main' of https://github.com/eperry/ScreenAlert (34 minutes ago)
-- 7200175 Added better "new " detection cleaned up settings page with scrollbar fixed reconnect to match on title winow name and screen resolution (36 minutes ago)
+- 4696aa4 Add session summary manually (3 minutes ago)
+- c19bd73 Test: Complete consolidation - all exports in single commit (4 minutes ago)
+- b78cea5 chat summary (8 minutes ago)
+- ec459cc Add automated Copilot chat export system (21 minutes ago)
+- 67cc2f1 ... (38 minutes ago)
+- ca6c45c Merge branch 'main' of https://github.com/eperry/ScreenAlert (39 minutes ago)
+- 7200175 Added better "new " detection cleaned up settings page with scrollbar fixed reconnect to match on title winow name and screen resolution (40 minutes ago)
 - 7d09a28 Update README.md (13 days ago)
 - b6aea6a ... (13 days ago)
 - cd06e69 .... (13 days ago)
-- e8ded28 Make optimization message verbose logging only (13 days ago)
-- ab79592 Fix EVE Online remnants in status text defaults (2 weeks ago)
 
 ## Repository Health
 
-- Total commits: 21
+- Total commits: 23
 - Contributors: 2
 - Lines of code: 80190
 
