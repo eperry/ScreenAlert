@@ -50,7 +50,7 @@ dist/
 .mypy_cache/
 
 # PyInstaller
-*.spec
+# Note: screenalert.spec is needed for builds
 
 # Local config
 *.local
