@@ -6,11 +6,21 @@ import os
 block_cipher = None
 
 # Add any additional data files or directories your app needs
-datas = [
-    ('screenalert_config.json', '.'),
-    ('SCREENALERT_README.md', '.'),
-    ('README.md', '.'),
-]
+datas = []
+
+# Add default config file (always included)
+if os.path.exists('default_config.json'):
+    datas.append(('default_config.json', '.'))
+
+# Add user config file if it exists (optional)
+if os.path.exists('screenalert_config.json'):
+    datas.append(('screenalert_config.json', '.'))
+
+# Add documentation files if they exist
+if os.path.exists('SCREENALERT_README.md'):
+    datas.append(('SCREENALERT_README.md', '.'))
+if os.path.exists('README.md'):
+    datas.append(('README.md', '.'))
 
 # Hidden imports that PyInstaller might miss
 hiddenimports = [
