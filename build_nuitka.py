@@ -1,37 +1,69 @@
 #!/usr/bin/env python3
 """
-Nuitka Build Script for ScreenAlert
-Alternative to PyInstaller with better antivirus compatibility
+ScreenAlert - Nuitka Builder
+Builds ScreenAlert using Nuitka for native compilation
 """
 
 import subprocess
 import sys
 import os
+import shutil
 from pathlib import Path
 
-def install_nuitka():
-    """Install Nuitka if not present"""
+def check_nuitka():
+    """Check if Nuitka is installed"""
     try:
-        import nuitka
+        result = subprocess.run([sys.executable, "-m", "nuitka", "--version"], 
+                              capture_output=True, text=True, check=True)
         print("Nuitka is already installed")
         return True
-    except ImportError:
-        print("Installing Nuitka...")
-        subprocess.run([sys.executable, "-m", "pip", "install", "nuitka"], check=True)
-        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        print("Nuitka not found, installing...")
+        try:
+            subprocess.run([sys.executable, "-m", "pip", "install", "nuitka"], check=True)
+            print("Nuitka installed successfully")
+            return True
+        except subprocess.CalledProcessError:
+            print("Failed to install Nuitka")
+            return False
 
 def build_with_nuitka():
-    """Build ScreenAlert using Nuitka compiler"""
+    """Build ScreenAlert using Nuitka"""
+    print("\nScreenAlert - Nuitka Builder")
+    print("=" * 40)
+    print("Nuitka produces native executables with better antivirus compatibility")
     
-    # Ensure we're in the right directory
-    script_dir = Path(__file__).parent
-    os.chdir(script_dir)
+    if not check_nuitka():
+        return False
     
-    # Create output directory
-    output_dir = script_dir / "dist-nuitka"
+    # Ensure output directory exists
+    output_dir = Path("dist-nuitka")
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
     output_dir.mkdir(exist_ok=True)
     
     print("Building ScreenAlert with Nuitka...")
+    
+    # Check if config file exists
+    config_file = Path("screenalert_config.json")
+    if not config_file.exists():
+        print(f"Warning: {config_file} not found, creating default config...")
+        # Create a minimal default config
+        default_config = {
+            "regions": [],
+            "interval": 1500,
+            "highlight_time": 5,
+            "default_sound": "",
+            "default_tts": "Alert {name}",
+            "alert_threshold": 0.98,
+            "capture_directory": "ScreenEvents",
+            "alert_only_new_content": True,
+            "change_detection_sensitivity": 10,
+            "content_analysis_enabled": True
+        }
+        import json
+        with open(config_file, 'w') as f:
+            json.dump(default_config, f, indent=2)
     
     # Nuitka build command
     nuitka_cmd = [
@@ -47,39 +79,32 @@ def build_with_nuitka():
         "--product-version=1.0.0",
         "--file-version=1.0.0.0",
         "--copyright=© 2025 ScreenAlert",
-        f"--output-dir={output_dir}",
+        f"--output-dir={output_dir.absolute()}",
         "--output-filename=ScreenAlert.exe",
-        "--include-data-files=screenalert_config.json=screenalert_config.json",
+        f"--include-data-files={config_file.name}={config_file.name}",
         "--remove-output",
         "--report=compilation-report.xml",
         "screenalert.py"
     ]
     
-    # Add icon if it exists
-    icon_path = script_dir / "screenalert_icon.ico"
-    if icon_path.exists():
-        nuitka_cmd.insert(-1, f"--windows-icon-from-ico={icon_path}")
-    
-    print("Command:", " ".join(nuitka_cmd))
-    print()
+    print(f"Command: {' '.join(nuitka_cmd)}")
     
     try:
-        result = subprocess.run(nuitka_cmd, check=True, capture_output=False)
+        result = subprocess.run(nuitka_cmd, check=True, cwd=Path.cwd())
         
+        # Check if the executable was created
         exe_path = output_dir / "ScreenAlert.exe"
         if exe_path.exists():
-            file_size = exe_path.stat().st_size / (1024 * 1024)  # MB
-            print(f"\nBuild completed successfully!")
-            print(f"Executable created: {exe_path}")
-            print(f"File size: {file_size:.1f} MB")
+            size_mb = exe_path.stat().st_size / (1024 * 1024)
+            print(f"\n✅ Build successful!")
+            print(f"📁 Output: {exe_path}")
+            print(f"📊 Size: {size_mb:.1f} MB")
+            print(f"🚀 Antivirus compatibility: Excellent (native C++ compilation)")
+            return True
+        else:
+            print(f"❌ Build completed but executable not found at {exe_path}")
+            return False
             
-            # Show file info
-            print(f"\nFile details:")
-            print(f"Path: {exe_path}")
-            print(f"Size: {exe_path.stat().st_size:,} bytes")
-            
-        return True
-        
     except subprocess.CalledProcessError as e:
         print(f"Build failed with error code {e.returncode}")
         return False
@@ -88,11 +113,9 @@ def build_with_nuitka():
         return False
 
 if __name__ == "__main__":
-    print("ScreenAlert - Nuitka Builder")
-    print("=" * 40)
-    print("Nuitka produces native executables with better antivirus compatibility")
-    print()
-    
-    if install_nuitka():
-        success = build_with_nuitka()
-        sys.exit(0 if success else 1)
+    success = build_with_nuitka()
+    if not success:
+        print("\nBuild failed.")
+        sys.exit(1)
+    else:
+        print("\nBuild completed successfully!")
