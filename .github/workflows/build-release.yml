@@ -66,19 +66,19 @@ jobs:
         Get-FileHash "dist-nuitka/ScreenAlert.exe" -Algorithm SHA256 | Format-Table -AutoSize >> hashes.txt
         
     - name: Upload Nuitka build
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: ScreenAlert-Nuitka-${{ github.event.inputs.version || github.ref_name }}
         path: ScreenAlert-Nuitka-${{ github.event.inputs.version || github.ref_name }}.zip
         
     - name: Upload cx_Freeze build
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: ScreenAlert-cxFreeze-${{ github.event.inputs.version || github.ref_name }}
         path: ScreenAlert-cxFreeze-${{ github.event.inputs.version || github.ref_name }}.zip
         
     - name: Upload file hashes
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: file-hashes
         path: hashes.txt
@@ -95,7 +95,7 @@ jobs:
       uses: actions/checkout@v4
       
     - name: Download all artifacts
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       
     - name: Create Release with GitHub CLI
       env:
