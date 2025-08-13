@@ -1,4 +1,4 @@
-name: Build and Release ScreenAlert
+name: Build and Release ScreenAlert (Alternative Compilers)
 
 on:
   push:
@@ -36,7 +36,7 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install -r screenalert_requirements.txt
-        pip install pyinstaller
+        pip install nuitka cx_Freeze
         
     - name: Create version info
       run: |
@@ -86,27 +86,40 @@ jobs:
         Write-Host "Version: $version"
         echo "VERSION=$version" >> $env:GITHUB_ENV
     
-    - name: Build with PyInstaller
+    - name: Build with Nuitka (Primary)
       run: |
-        # Build the executable with optimized settings for AV compatibility
-        pyinstaller screenalert.spec --clean --noconfirm
+        # Build the executable with Nuitka for better AV compatibility
+        python -m nuitka --standalone --onefile --windows-disable-console --enable-plugin=tk-inter --output-filename=ScreenAlert-Nuitka.exe --output-dir=dist screenalert.py
         
         # Verify the build
-        if (Test-Path "dist\ScreenAlert.exe") {
-          Write-Host "✅ Build successful: ScreenAlert.exe created"
-          $size = (Get-Item "dist\ScreenAlert.exe").Length / 1MB
+        if (Test-Path "dist\ScreenAlert-Nuitka.exe") {
+          Write-Host "✅ Nuitka build successful: ScreenAlert-Nuitka.exe created"
+          $size = (Get-Item "dist\ScreenAlert-Nuitka.exe").Length / 1MB
           Write-Host "📦 Executable size: $([math]::Round($size, 2)) MB"
           
           # Generate SHA256 hash for security verification
-          $hash = Get-FileHash "dist\ScreenAlert.exe" -Algorithm SHA256
+          $hash = Get-FileHash "dist\ScreenAlert-Nuitka.exe" -Algorithm SHA256
           Write-Host "🔐 SHA256 Hash: $($hash.Hash)"
-          $hash.Hash | Out-File "dist\ScreenAlert.exe.sha256" -Encoding ASCII
+          $hash.Hash | Out-File "dist\ScreenAlert-Nuitka.exe.sha256" -Encoding ASCII
           
-          Write-Host "🛡️ Security Note: Executable is unsigned and may trigger AV warnings"
+          # Copy as main executable
+          Copy-Item "dist\ScreenAlert-Nuitka.exe" "dist\ScreenAlert.exe"
           
         } else {
-          Write-Error "❌ Build failed: ScreenAlert.exe not found"
-          exit 1
+          Write-Host "⚠️ Nuitka build failed, trying cx_Freeze..."
+        }
+    
+    - name: Build with cx_Freeze (Fallback)
+      if: failure()
+      run: |
+        # Fallback to cx_Freeze if Nuitka fails
+        python setup_cxfreeze.py build
+        
+        # Find the built executable
+        $builtExe = Get-ChildItem -Recurse -Path "build" -Name "ScreenAlert-cxFreeze.exe" | Select-Object -First 1
+        if ($builtExe) {
+          Copy-Item $builtExe.FullName "dist\ScreenAlert.exe"
+          Write-Host "✅ cx_Freeze build successful as fallback"
         }
     
     - name: Test executable

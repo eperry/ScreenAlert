@@ -41,16 +41,17 @@ dist/
 *.egg-info/
 .eggs/
 *.manifest
+
+# PyInstaller (DEPRECATED - replaced with Nuitka/cx_Freeze)
 *.spec
 
-# Jupyter Notebook checkpoints
-.ipynb_checkpoints/
-
-# MyPy
-.mypy_cache/
-
-# PyInstaller
-# Note: screenalert.spec is needed for builds
+# Compilation outputs (Nuitka, cx_Freeze, etc.)
+dist-nuitka/
+dist-cxfreeze/
+*.build/
+*.dist/
+*.onefile-build/
+compilation-report.xml
 
 # Local config
 *.local
@@ -67,3 +68,12 @@ dist/
 screenalert_config.json
 windowalert_config.json
 ScreenEvents/
+
+# Compiled executables and builds
+*.exe
+*.msi
+*.dmg
+*.app
+
+# Build reports and logs
+build_comparison_report.json
