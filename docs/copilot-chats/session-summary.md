@@ -1,19 +1,20 @@
 # Copilot Chat Sessions Summary
 
-**Last Updated:** 2025-08-13 16:58:23
-**Total Sessions:** 6
+**Last Updated:** 2025-08-13 17:01:15
+**Total Sessions:** 7
 **Current Branch:** main
-**Latest Commit:** 1ba08a7
+**Latest Commit:** a1c15c3
 **Repository:** https://github.com/eperry/ScreenAlert.git
 
 ## Pending Commit
 
 **Staged Files:** 2 files
-**Changes:**  2 files changed, 149 insertions(+), 69 deletions(-)
+**Changes:**  2 files changed, 53 insertions(+)
 
 ## Recent Sessions
 
 - [`milestone-commit-25`](C:/Users/Ed/OneDrive/Documents/Development/ScreenAlert/docs/copilot-chats/milestone-commit-25.md) - 
+- [`2025-08-13_17-01-14_pre-commit-general-updates`](C:/Users/Ed/OneDrive/Documents/Development/ScreenAlert/docs/copilot-chats/2025-08-13_17-01-14_pre-commit-general-updates.md) - 2025-08-13
 - [`2025-08-13_16-58-22_pre-commit-general-updates`](C:/Users/Ed/OneDrive/Documents/Development/ScreenAlert/docs/copilot-chats/2025-08-13_16-58-22_pre-commit-general-updates.md) - 2025-08-13
 - [`2025-08-13_16-50-03_pre-commit-general-updates`](C:/Users/Ed/OneDrive/Documents/Development/ScreenAlert/docs/copilot-chats/2025-08-13_16-50-03_pre-commit-general-updates.md) - 2025-08-13
 - [`2025-08-13_16-46-37_pre-commit-python-changes`](C:/Users/Ed/OneDrive/Documents/Development/ScreenAlert/docs/copilot-chats/2025-08-13_16-46-37_pre-commit-python-changes.md) - 2025-08-13
@@ -22,15 +23,16 @@
 
 ## Session Statistics
 
-- Pre-commit exports: 4
+- Pre-commit exports: 5
 - Manual sessions: 2
 - Auto-exported sessions: 0
 
 ## Git Activity
 
 **Recent Commits:**
-- 1ba08a7 feat: Add comprehensive GitHub Actions workflow for PyInstaller alternatives (8 minutes ago)
-- 598920e feat: Replace PyInstaller with antivirus-friendly alternatives (12 minutes ago)
+- a1c15c3 fix: Update GitHub Actions workflow to use modern GitHub CLI (3 minutes ago)
+- 1ba08a7 feat: Add comprehensive GitHub Actions workflow for PyInstaller alternatives (11 minutes ago)
+- 598920e feat: Replace PyInstaller with antivirus-friendly alternatives (15 minutes ago)
 - 70dffe5 Add multiple antivirus-safe distribution methods (22 hours ago)
 - 2183c43 Fix executable runtime errors by including essential modules (22 hours ago)
 - f7938db Optimize build for antivirus compatibility and add security documentation (25 hours ago)
@@ -38,11 +40,10 @@
 - 1b70b13 Fix GitHub Actions build: handle missing data files and tkinter dependency (25 hours ago)
 - c46d007  Fix build system: Add missing screenalert.spec file (25 hours ago)
 - aef5511  Add Windows executable build system (25 hours ago)
-- 4a1bc6e  Remove GitHub Actions workflow (26 hours ago)
 
 ## Repository Health
 
-- Total commits: 36
+- Total commits: 37
 - Contributors: 2
 - Lines of code: 6387
 
