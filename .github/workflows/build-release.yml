@@ -24,6 +24,7 @@ jobs:
       with:
         python-version: '3.11'
         cache: 'pip'
+        cache-dependency-path: 'screenalert_requirements.txt'
         
     - name: Cache Nuitka
       uses: actions/cache@v3
