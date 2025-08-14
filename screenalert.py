@@ -17,7 +17,7 @@ import cv2
 from datetime import datetime
 
 # Application Information
-APP_VERSION = "2.1.0"
+APP_VERSION = "1.4.2.1"
 APP_AUTHOR = "Ed Perry"
 APP_REPO_URL = "https://github.com/eperry/ScreenAlert"
 
@@ -202,112 +202,6 @@ def find_window_by_title(window_title, exact_match=False):
     
     return None
 
-def find_window_by_title_and_size(window_title, target_size, exact_match=False, size_tolerance=50):
-    """
-    Enhanced window finding that uses both title and window size for better matching.
-    This helps distinguish between multiple windows with the same title.
-    
-    Args:
-        window_title: The title of the window to find
-        target_size: Tuple of (width, height) of the original window
-        exact_match: If True, only use exact title matching
-        size_tolerance: Pixel tolerance for size matching (default 50px)
-    
-    Returns:
-        Window dict if found, None otherwise
-    """
-    windows = get_window_list()
-    target_width, target_height = target_size
-    
-    # Strategy 1: Find windows with exact title match, prefer size match
-    exact_title_matches = []
-    for window in windows:
-        if window['title'] == window_title:
-            exact_title_matches.append(window)
-    
-    if exact_title_matches:
-        # If we have exact title matches, prefer the one with matching size
-        for window in exact_title_matches:
-            win_width, win_height = window['size']
-            if (abs(win_width - target_width) <= size_tolerance and 
-                abs(win_height - target_height) <= size_tolerance):
-                print(f"  Found exact title+size match: {window['title']} "
-                      f"({win_width}x{win_height} vs target {target_width}x{target_height})")
-                return window
-        
-        # If no size match, return the first exact title match with a warning
-        best_match = exact_title_matches[0]
-        win_width, win_height = best_match['size']
-        print(f"  Warning: Found exact title match but different size: {best_match['title']} "
-              f"({win_width}x{win_height} vs target {target_width}x{target_height})")
-        if len(exact_title_matches) > 1:
-            print(f"  Note: {len(exact_title_matches)} windows have the same title. "
-                  f"Consider using size matching for better accuracy.")
-        return best_match
-    
-    # Strategy 2: If no exact title match and not forcing exact match, try partial matching with size preference
-    if not exact_match:
-        partial_matches = []
-        
-        # Try partial match - useful if title changes slightly
-        for window in windows:
-            if window_title.lower() in window['title'].lower():
-                partial_matches.append(window)
-        
-        # Try reverse match - see if window title is a subset of our stored title
-        for window in windows:
-            if window['title'].lower() in window_title.lower() and window not in partial_matches:
-                partial_matches.append(window)
-        
-        if partial_matches:
-            # Prefer partial matches with similar size
-            for window in partial_matches:
-                win_width, win_height = window['size']
-                if (abs(win_width - target_width) <= size_tolerance and 
-                    abs(win_height - target_height) <= size_tolerance):
-                    print(f"  Found partial title+size match: {window['title']} "
-                          f"({win_width}x{win_height} vs target {target_width}x{target_height})")
-                    return window
-            
-            # If no size match in partial matches, return the first one
-            best_match = partial_matches[0]
-            win_width, win_height = best_match['size']
-            print(f"  Found partial title match (different size): {best_match['title']} "
-                  f"({win_width}x{win_height} vs target {target_width}x{target_height})")
-            return best_match
-        
-        # Strategy 3: Fuzzy matching with size preference
-        fuzzy_matches = []
-        title_words = set(window_title.lower().split())
-        for window in windows:
-            window_words = set(window['title'].lower().split())
-            if title_words and window_words:
-                common_words = title_words.intersection(window_words)
-                match_ratio = len(common_words) / max(len(title_words), len(window_words))
-                if match_ratio >= 0.5 and len(common_words) >= 2:
-                    fuzzy_matches.append((window, match_ratio))
-        
-        if fuzzy_matches:
-            # Sort by match ratio, then prefer size matches
-            fuzzy_matches.sort(key=lambda x: x[1], reverse=True)
-            
-            for window, match_ratio in fuzzy_matches:
-                win_width, win_height = window['size']
-                if (abs(win_width - target_width) <= size_tolerance and 
-                    abs(win_height - target_height) <= size_tolerance):
-                    print(f"  Found fuzzy title+size match: {window['title']} "
-                          f"(ratio: {match_ratio:.2f}, size: {win_width}x{win_height} vs target {target_width}x{target_height})")
-                    return window
-            
-            # Return best fuzzy match even without size match
-            best_match, match_ratio = fuzzy_matches[0]
-            win_width, win_height = best_match['size']
-            print(f"  Found fuzzy title match (different size): {best_match['title']} "
-                  f"(ratio: {match_ratio:.2f}, size: {win_width}x{win_height} vs target {target_width}x{target_height})")
-            return best_match
-    
-    return None
-
 def is_window_valid(hwnd):
     """Check if a window handle is still valid and visible"""
     try:
@@ -437,50 +331,6 @@ def load_config():
                     else:
                         new_regions.append({"rect": r})
                 config["regions"] = new_regions
-                
-                # Migration: Add size information to windows that don't have it
-                def add_size_to_window(window_dict):
-                    """Add size information to a window dict if it doesn't exist"""
-                    if window_dict and isinstance(window_dict, dict) and 'size' not in window_dict:
-                        hwnd = window_dict.get('hwnd')
-                        if hwnd:
-                            try:
-                                # Try to get current window rect to determine size
-                                import win32gui
-                                if win32gui.IsWindow(hwnd):
-                                    rect = win32gui.GetWindowRect(hwnd)
-                                    width = rect[2] - rect[0]
-                                    height = rect[3] - rect[1]
-                                    window_dict['size'] = (width, height)
-                                    print(f"Migration: Added size {width}x{height} to window '{window_dict.get('title', 'Unknown')}'")
-                                    return True
-                                else:
-                                    print(f"Migration: Window '{window_dict.get('title', 'Unknown')}' is no longer valid, cannot determine size")
-                            except Exception as e:
-                                print(f"Migration: Failed to get size for window '{window_dict.get('title', 'Unknown')}': {e}")
-                    return False
-                
-                # Add size to global target window if missing
-                config_changed = False
-                if config.get("target_window"):
-                    if add_size_to_window(config["target_window"]):
-                        config_changed = True
-                
-                # Add size to region target windows if missing
-                for region in config.get("regions", []):
-                    if region.get("target_window"):
-                        if add_size_to_window(region["target_window"]):
-                            config_changed = True
-                
-                # Save config if we added size information
-                if config_changed:
-                    print("Migration: Saving updated configuration with window size information")
-                    try:
-                        with open(CONFIG_FILE, "w") as f:
-                            json.dump(config, f, indent=2)
-                    except Exception as e:
-                        print(f"Migration: Failed to save updated config: {e}")
-                
                 # Add defaults for all states
                 if "highlight_time" not in config:
                     config["highlight_time"] = 5
@@ -510,13 +360,6 @@ def load_config():
                     config["target_window"] = None
                 if "window_filter" not in config:
                     config["window_filter"] = ""
-                # Enhanced detection settings
-                if "alert_only_new_content" not in config:
-                    config["alert_only_new_content"] = True
-                if "change_detection_sensitivity" not in config:
-                    config["change_detection_sensitivity"] = 10
-                if "content_analysis_enabled" not in config:
-                    config["content_analysis_enabled"] = True
                 return config
         except Exception as e:
             print(f"Config load failed: {e}, using defaults.")
@@ -551,8 +394,7 @@ def save_config(
     unavailable_text="Unavailable", unavailable_color="#05f",
     pause_reminder_interval=60, target_window=None, window_filter="",
     capture_on_alert=False, capture_on_green=False, 
-    capture_directory="ScreenEvents", capture_filename_format="{region_name} - {event_type} - {timestamp}",
-    alert_only_new_content=True, change_detection_sensitivity=10, content_analysis_enabled=True
+    capture_directory="ScreenEvents", capture_filename_format="{region_name} - {event_type} - {timestamp}"
 ):
     serializable_regions = []
     for r in regions:
@@ -582,10 +424,7 @@ def save_config(
         "capture_on_alert": capture_on_alert,
         "capture_on_green": capture_on_green,
         "capture_directory": capture_directory,
-        "capture_filename_format": capture_filename_format,
-        "alert_only_new_content": alert_only_new_content,
-        "change_detection_sensitivity": change_detection_sensitivity,
-        "content_analysis_enabled": content_analysis_enabled
+        "capture_filename_format": capture_filename_format
     }
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f)
@@ -927,174 +766,41 @@ def play_sound(sound_file):
 
 def speak_tts(message):
     if not message:
+        print("[DEBUG] TTS: No message provided")
         return
+    
+    print(f"[DEBUG] TTS: Attempting to speak: '{message}'")
+    
     try:
         if platform.system() == "Windows" and pyttsx3:
+            print("[DEBUG] TTS: Using pyttsx3 on Windows")
             engine = pyttsx3.init()
+            
+            # Set properties for better speech
+            rate = engine.getProperty('rate')
+            engine.setProperty('rate', max(150, rate - 50))  # Slower speech
+            
+            volume = engine.getProperty('volume')
+            engine.setProperty('volume', min(1.0, volume + 0.1))  # Slightly louder
+            
             engine.say(message)
             engine.runAndWait()
+            print("[DEBUG] TTS: Speech completed successfully")
         else:
+            print("[DEBUG] TTS: Using system TTS commands")
             if os.system(f"espeak '{message}' &") != 0:
                 os.system(f"say '{message}' &")
     except Exception as e:
-        print(f"Failed to speak TTS: {e}")
-
-def analyze_change_type(prev_img, curr_img, sensitivity=10, verbose=False):
-    """
-    Advanced region-based analysis to determine the type of change that occurred.
-    
-    Args:
-        prev_img: Previous image (PIL Image or numpy array)
-        curr_img: Current image (PIL Image or numpy array)
-        sensitivity: Sensitivity threshold for change detection (pixels)
-        verbose: Enable detailed logging
-    
-    Returns:
-        tuple: (change_type, confidence, details_dict)
-        change_type: "NEW_CONTENT", "CONTENT_REMOVED", "CONTENT_CHANGED", "NO_SIGNIFICANT_CHANGE"
-        confidence: 0.0-1.0 confidence score
-        details_dict: Dictionary with analysis details
-    """
-    try:
-        # Convert to numpy arrays if needed
-        if hasattr(prev_img, 'convert'):
-            prev_gray = np.array(prev_img.convert("L"))
-        else:
-            prev_gray = prev_img if len(prev_img.shape) == 2 else cv2.cvtColor(prev_img, cv2.COLOR_RGB2GRAY)
-            
-        if hasattr(curr_img, 'convert'):
-            curr_gray = np.array(curr_img.convert("L"))
-        else:
-            curr_gray = curr_img if len(curr_img.shape) == 2 else cv2.cvtColor(curr_img, cv2.COLOR_RGB2GRAY)
-        
-        if prev_gray.shape != curr_gray.shape:
-            return "NO_SIGNIFICANT_CHANGE", 0.0, {"error": "Size mismatch"}
-        
-        # Calculate absolute difference
-        diff_img = cv2.absdiff(prev_gray, curr_gray)
-        
-        # Find changed regions using contours
-        _, binary_diff = cv2.threshold(diff_img, sensitivity, 255, cv2.THRESH_BINARY)
-        contours, _ = cv2.findContours(binary_diff, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        if len(contours) == 0:
-            return "NO_SIGNIFICANT_CHANGE", 1.0, {"total_contours": 0}
-        
-        # Analyze each changed region
-        new_content_regions = 0
-        removed_content_regions = 0
-        changed_content_regions = 0
-        total_new_pixels = 0
-        total_removed_pixels = 0
-        total_changed_area = 0
-        
-        details = {
-            "total_contours": len(contours),
-            "regions_analyzed": [],
-            "overall_brightness_change": np.mean(curr_gray) - np.mean(prev_gray)
-        }
-        
-        for i, contour in enumerate(contours):
-            # Get bounding rectangle for this change region
-            x, y, w, h = cv2.boundingRect(contour)
-            
-            # Skip very small regions (noise)
-            if w < 3 or h < 3:
-                continue
-                
-            total_changed_area += w * h
-            
-            # Extract the regions
-            prev_region = prev_gray[y:y+h, x:x+w]
-            curr_region = curr_gray[y:y+h, x:x+w]
-            
-            # Analyze what happened in this region
-            prev_avg = np.mean(prev_region)
-            curr_avg = np.mean(curr_region)
-            brightness_diff = curr_avg - prev_avg
-            
-            # Count significant pixels (above/below threshold)
-            prev_active_pixels = np.sum(prev_region > 128)  # Bright pixels
-            curr_active_pixels = np.sum(curr_region > 128)
-            
-            # Determine region type based on multiple factors
-            region_analysis = {
-                "bounds": (x, y, w, h),
-                "brightness_change": brightness_diff,
-                "prev_avg_brightness": prev_avg,
-                "curr_avg_brightness": curr_avg,
-                "prev_active_pixels": prev_active_pixels,
-                "curr_active_pixels": curr_active_pixels,
-                "pixel_change": curr_active_pixels - prev_active_pixels
-            }
-            
-            # Classification logic
-            if brightness_diff > 15 and curr_active_pixels > prev_active_pixels + 10:
-                # Significant brightening + more active pixels = new content
-                new_content_regions += 1
-                total_new_pixels += curr_active_pixels - prev_active_pixels
-                region_analysis["type"] = "NEW_CONTENT"
-                
-            elif brightness_diff < -15 and curr_active_pixels < prev_active_pixels - 10:
-                # Significant darkening + fewer active pixels = content removed
-                removed_content_regions += 1
-                total_removed_pixels += prev_active_pixels - curr_active_pixels
-                region_analysis["type"] = "CONTENT_REMOVED"
-                
-            elif abs(brightness_diff) > 10:
-                # Moderate change = content modified
-                changed_content_regions += 1
-                region_analysis["type"] = "CONTENT_CHANGED"
-                
-            else:
-                # Minor change = noise/insignificant
-                region_analysis["type"] = "MINOR_CHANGE"
-            
-            details["regions_analyzed"].append(region_analysis)
-        
-        # Overall classification based on region analysis
-        details.update({
-            "new_content_regions": new_content_regions,
-            "removed_content_regions": removed_content_regions,
-            "changed_content_regions": changed_content_regions,
-            "total_new_pixels": total_new_pixels,
-            "total_removed_pixels": total_removed_pixels,
-            "total_changed_area": total_changed_area
-        })
-        
-        # Decision logic with confidence scoring
-        if new_content_regions > 0 and new_content_regions >= removed_content_regions:
-            # Prioritize new content detection
-            confidence = min(0.95, 0.6 + (new_content_regions * 0.1) + (total_new_pixels / 1000))
-            change_type = "NEW_CONTENT"
-            
-        elif removed_content_regions > new_content_regions:
-            # More content was removed than added
-            confidence = min(0.9, 0.6 + (removed_content_regions * 0.1))
-            change_type = "CONTENT_REMOVED"
-            
-        elif changed_content_regions > 0:
-            # Content was modified but not clearly added or removed
-            confidence = min(0.8, 0.5 + (changed_content_regions * 0.1))
-            change_type = "CONTENT_CHANGED"
-            
-        else:
-            # No significant changes detected
-            confidence = 0.9
-            change_type = "NO_SIGNIFICANT_CHANGE"
-        
-        if verbose:
-            print(f"[CHANGE ANALYSIS] {change_type} (conf: {confidence:.2f})")
-            print(f"  New: {new_content_regions}, Removed: {removed_content_regions}, Changed: {changed_content_regions}")
-            print(f"  Brightness change: {details['overall_brightness_change']:.1f}")
-            print(f"  Total pixels - New: {total_new_pixels}, Removed: {total_removed_pixels}")
-        
-        return change_type, confidence, details
-        
-    except Exception as e:
-        if verbose:
-            print(f"[ERROR] Change analysis failed: {e}")
-        return "NO_SIGNIFICANT_CHANGE", 0.0, {"error": str(e)}
+        print(f"[ERROR] Failed to speak TTS: {e}")
+        # Fallback to Windows SAPI if pyttsx3 fails
+        if platform.system() == "Windows":
+            try:
+                import win32com.client
+                speaker = win32com.client.Dispatch("SAPI.SpVoice")
+                speaker.Speak(message)
+                print("[DEBUG] TTS: Fallback to SAPI successful")
+            except Exception as e2:
+                print(f"[ERROR] SAPI fallback also failed: {e2}")
 
 def advanced_image_comparison(img1, img2, method="combined"):
     """
@@ -1310,33 +1016,10 @@ def main():
     capture_directory_var = tk.StringVar(value=config.get("capture_directory", "ScreenEvents"))
     capture_filename_format_var = tk.StringVar(value=config.get("capture_filename_format", "{region_name} - {event_type} - {timestamp}"))
 
-    # Enhanced detection settings
-    alert_only_new_content_var = tk.BooleanVar(value=config.get("alert_only_new_content", True))
-    change_detection_sensitivity_var = tk.IntVar(value=config.get("change_detection_sensitivity", 10))
-    content_analysis_enabled_var = tk.BooleanVar(value=config.get("content_analysis_enabled", True))
-
     # Window selection on startup - now optional, can be done via menu
     # Application starts without requiring a target window selection
 
     # Menu Functions
-    def save_current_config():
-        """Helper function to save the current configuration with all variables"""
-        save_config(
-            regions, interval_var.get(), highlight_time_var.get(),
-            default_sound_var.get(), default_tts_var.get(), alert_threshold_var.get(),
-            green_text=green_text_var.get(), green_color=green_color_var.get(),
-            paused_text=paused_text_var.get(), paused_color=paused_color_var.get(),
-            alert_text=alert_text_var.get(), alert_color=alert_color_var.get(),
-            disabled_text=disabled_text_var.get(), disabled_color=disabled_color_var.get(),
-            pause_reminder_interval=pause_reminder_interval_var.get(),
-            target_window=target_window, window_filter=window_filter_var.get(),
-            unavailable_text=unavailable_text_var.get(), unavailable_color=unavailable_color_var.get(),
-            capture_on_alert=capture_on_alert_var.get(), capture_on_green=capture_on_green_var.get(),
-            capture_directory=capture_directory_var.get(), capture_filename_format=capture_filename_format_var.get(),
-            alert_only_new_content=alert_only_new_content_var.get(), change_detection_sensitivity=change_detection_sensitivity_var.get(),
-            content_analysis_enabled=content_analysis_enabled_var.get()
-        )
-
     def save_settings_to_file():
         """Save current settings to a JSON file"""
         try:
@@ -1377,93 +1060,6 @@ def main():
         except Exception as e:
             msgbox.showerror("Error", f"Failed to save settings:\n{str(e)}")
 
-    def show_window_diagnostics():
-        """Show diagnostic information about monitored windows"""
-        diag_text = "Window Diagnostics\n" + "=" * 50 + "\n\n"
-        
-        # Global target window info
-        if target_window:
-            diag_text += f"Global Target Window:\n"
-            diag_text += f"  Title: {target_window['title']}\n"
-            diag_text += f"  HWND: {target_window['hwnd']}\n"
-            size = target_window.get('size')
-            if size:
-                diag_text += f"  Size: {size[0]}x{size[1]} (Enhanced reconnection available)\n"
-            else:
-                diag_text += f"  Size: Not stored (Basic reconnection only)\n"
-            
-            # Test if window is currently available
-            test_img = capture_window(target_window['hwnd'])
-            diag_text += f"  Status: {'Available' if test_img else 'UNAVAILABLE'}\n"
-            diag_text += f"  Monitor: {target_window.get('monitor_id', 'Unknown')}\n"
-        else:
-            diag_text += "Global Target Window: None\n"
-        
-        diag_text += "\n" + "-" * 30 + "\n\n"
-        
-        # Region window info
-        if regions:
-            diag_text += f"Region Windows ({len(regions)} total):\n\n"
-            for idx, region in enumerate(regions):
-                region_name = region.get('name', f'Region {idx+1}')
-                diag_text += f"{idx+1}. {region_name}:\n"
-                
-                region_window = region.get("target_window")
-                if region_window:
-                    diag_text += f"     Title: {region_window['title']}\n"
-                    diag_text += f"     HWND: {region_window['hwnd']}\n"
-                    size = region_window.get('size')
-                    if size:
-                        diag_text += f"     Size: {size[0]}x{size[1]} (Enhanced reconnection)\n"
-                    else:
-                        diag_text += f"     Size: Not stored (Basic reconnection only)\n"
-                    
-                    # Test if window is currently available
-                    test_img = capture_window(region_window['hwnd'])
-                    diag_text += f"     Status: {'Available' if test_img else 'UNAVAILABLE'}\n"
-                    diag_text += f"     Monitor: {region_window.get('monitor_id', 'Unknown')}\n"
-                else:
-                    diag_text += f"     Uses global target window\n"
-                
-                diag_text += f"     Disabled: {region.get('disabled', False)}\n"
-                diag_text += f"     Paused: {region.get('paused', False)}\n\n"
-        else:
-            diag_text += "No regions configured.\n\n"
-        
-        diag_text += "-" * 30 + "\n\n"
-        diag_text += "Enhanced Reconnection:\n"
-        diag_text += "• Windows with size info can be distinguished from others with the same title\n"
-        diag_text += "• Windows without size info use title-only matching (less reliable)\n"
-        diag_text += "• Size info is automatically added to newly selected windows\n"
-        diag_text += "• Use 'Reconnect Windows' to test the reconnection logic\n"
-        
-        # Create a new window to display the diagnostics
-        diag_window = tk.Toplevel(root)
-        diag_window.title("Window Diagnostics")
-        diag_window.geometry("600x500")
-        diag_window.configure(bg="#0a0a0a")
-        diag_window.transient(root)
-        
-        # Create scrollable text widget
-        diag_frame = ttk.Frame(diag_window, padding=10)
-        diag_frame.pack(fill=tk.BOTH, expand=True)
-        
-        text_widget = tk.Text(diag_frame, wrap=tk.WORD, bg="#1a1a1a", fg="#cccccc", 
-                             font=("Consolas", 9), padx=10, pady=10)
-        
-        scrollbar = ttk.Scrollbar(diag_frame, orient="vertical", command=text_widget.yview)
-        text_widget.configure(yscrollcommand=scrollbar.set)
-        
-        text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        text_widget.insert(tk.END, diag_text)
-        text_widget.config(state=tk.DISABLED)
-        
-        # Close button
-        close_btn = ttk.Button(diag_window, text="Close", command=diag_window.destroy)
-        close_btn.pack(pady=10)
-
     def show_about():
         """Show about dialog"""
         about_text = f"""ScreenAlert - Enhanced Interface
@@ -1485,76 +1081,17 @@ Features:
         msgbox.showinfo("About", about_text)
 
     def show_settings_window():
-        """Show settings in a separate window with scrollable content"""
+        """Show settings in a separate window"""
         settings_window = tk.Toplevel(root)
         settings_window.title("Settings")
-        settings_window.geometry("650x600")
+        settings_window.geometry("600x500")
         settings_window.configure(bg="#0a0a0a")
         settings_window.transient(root)
         settings_window.grab_set()
         
-        # Create main container frame
-        main_container = ttk.Frame(settings_window)
-        main_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
-        # Create canvas and scrollbar for scrollable content
-        canvas = tk.Canvas(main_container, bg="#0a0a0a", highlightthickness=0)
-        scrollbar = ttk.Scrollbar(main_container, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
-        
-        # Configure scrolling
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-        
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-        
-        # Pack canvas and scrollbar
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        
-        # Apply EVE theme to settings window - now using scrollable_frame as parent
-        settings_frame = ttk.LabelFrame(scrollable_frame, text="Application Settings", padding=10)
-        settings_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        # Bind mousewheel scrolling to canvas
-        def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-        
-        def bind_mousewheel(event):
-            canvas.bind_all("<MouseWheel>", _on_mousewheel)
-        
-        def unbind_mousewheel(event):
-            canvas.unbind_all("<MouseWheel>")
-        
-        canvas.bind('<Enter>', bind_mousewheel)
-        canvas.bind('<Leave>', unbind_mousewheel)
-        
-        # Add keyboard scrolling support
-        def on_key_press(event):
-            if event.keysym == 'Up':
-                canvas.yview_scroll(-1, "units")
-                return "break"
-            elif event.keysym == 'Down':
-                canvas.yview_scroll(1, "units")
-                return "break"
-            elif event.keysym == 'Page_Up':
-                canvas.yview_scroll(-10, "units")
-                return "break"
-            elif event.keysym == 'Page_Down':
-                canvas.yview_scroll(10, "units")
-                return "break"
-            elif event.keysym == 'Home':
-                canvas.yview_moveto(0)
-                return "break"
-            elif event.keysym == 'End':
-                canvas.yview_moveto(1)
-                return "break"
-        
-        settings_window.bind('<Key>', on_key_press)
-        settings_window.focus_set()  # Allow keyboard focus
+        # Apply EVE theme to settings window
+        settings_frame = ttk.LabelFrame(settings_window, text="Application Settings", padding=10)
+        settings_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
         # Interval setting
         ttk.Label(settings_frame, text="Interval (ms):").grid(row=0, column=0, sticky="e", padx=5, pady=2)
@@ -1725,43 +1262,25 @@ Features:
                                              "{timestamp} - Date/time to 1/10th second\n"
                                              "Example: Region1 - Alert - 2025-07-30_14-23-45.2")
         
-        # Enhanced Detection Settings
-        ttk.Label(settings_frame, text="Enhanced Detection Settings:", font=("TkDefaultFont", 9, "bold")).grid(row=20, column=0, columnspan=3, sticky="w", padx=5, pady=(15,5))
-        
-        # Alert only on new content
-        alert_new_content_check = ttk.Checkbutton(settings_frame, text="Alert only on NEW content (ignore removals)", variable=alert_only_new_content_var)
-        alert_new_content_check.grid(row=21, column=0, columnspan=2, sticky="w", padx=5, pady=2)
-        create_tooltip(alert_new_content_check, "When enabled, alerts only trigger when new content appears\n"
-                                               "Content removals or changes return to green status\n"
-                                               "Uses advanced region analysis for better accuracy")
-        
-        # Content analysis enabled
-        content_analysis_check = ttk.Checkbutton(settings_frame, text="Enable advanced content analysis", variable=content_analysis_enabled_var)
-        content_analysis_check.grid(row=22, column=0, columnspan=2, sticky="w", padx=5, pady=2)
-        create_tooltip(content_analysis_check, "Enable advanced region-based content analysis\n"
-                                              "Analyzes each changed region to determine change type\n"
-                                              "More accurate but slightly higher CPU usage")
-        
-        # Change detection sensitivity
-        ttk.Label(settings_frame, text="Detection Sensitivity:").grid(row=23, column=0, sticky="e", padx=5, pady=2)
-        sensitivity_spin = ttk.Spinbox(settings_frame, from_=5, to=50, increment=5, 
-                                      textvariable=change_detection_sensitivity_var, width=7)
-        sensitivity_spin.grid(row=23, column=1, sticky="w", padx=5, pady=2)
-        create_tooltip(sensitivity_spin, "Sensitivity for detecting changed regions (5-50)\n"
-                                        "Lower values = more sensitive (detects smaller changes)\n"
-                                        "Higher values = less sensitive (ignores minor changes)\n"
-                                        "Recommended: 10 for UI monitoring, 20 for content monitoring")
-        
-        # Apply and Close buttons - placed outside scrollable area at bottom
-        button_container = ttk.Frame(settings_window)
-        button_container.pack(fill=tk.X, padx=10, pady=(0, 10))
-        
-        button_frame = ttk.Frame(button_container)
-        button_frame.pack(anchor="center")
+        # Apply and Close buttons
+        button_frame = ttk.Frame(settings_frame)
+        button_frame.grid(row=20, column=0, columnspan=3, pady=20)
         
         def apply_settings():
             # Save settings
-            save_current_config()
+            save_config(
+                regions, interval_var.get(), highlight_time_var.get(),
+                default_sound_var.get(), default_tts_var.get(), alert_threshold_var.get(),
+                green_text=green_text_var.get(), green_color=green_color_var.get(),
+                paused_text=paused_text_var.get(), paused_color=paused_color_var.get(),
+                alert_text=alert_text_var.get(), alert_color=alert_color_var.get(),
+                disabled_text=disabled_text_var.get(), disabled_color=disabled_color_var.get(),
+                pause_reminder_interval=pause_reminder_interval_var.get(),
+                target_window=target_window, window_filter=window_filter_var.get(),
+                unavailable_text=unavailable_text_var.get(), unavailable_color=unavailable_color_var.get(),
+                capture_on_alert=capture_on_alert_var.get(), capture_on_green=capture_on_green_var.get(),
+                capture_directory=capture_directory_var.get(), capture_filename_format=capture_filename_format_var.get()
+            )
             msgbox.showinfo("Settings", "Settings applied and saved!")
             update_region_display(force_update=True)
         
@@ -1770,43 +1289,15 @@ Features:
         
         close_btn = ttk.Button(button_frame, text="Close", command=settings_window.destroy)
         close_btn.pack(side=tk.LEFT, padx=5)
-        
-        # Initial scroll to top
-        canvas.yview_moveto(0)
 
     def manual_reconnect():
-        """Manually trigger window reconnection check with enhanced size matching"""
-        print("=" * 60)
+        """Manually trigger window reconnection check"""
         print("Manual window reconnection check initiated...")
-        print("Enhanced with title + size matching for better accuracy")
-        print("=" * 60)
-        
-        # Show current window information before reconnection
-        if target_window:
-            size = target_window.get('size', 'Unknown')
-            print(f"Global target window: '{target_window['title']}' (Size: {size})")
-        
-        for idx, region in enumerate(regions):
-            region_window = region.get("target_window")
-            if region_window:
-                size = region_window.get('size', 'Unknown')
-                region_name = region.get('name', f'Region {idx+1}')
-                print(f"Region {idx} '{region_name}': '{region_window['title']}' (Size: {size})")
-        
-        print("-" * 60)
         reconnected = try_reconnect_windows()
-        print("=" * 60)
-        
         if reconnected > 0:
-            msgbox.showinfo("Reconnection Success", 
-                           f"Successfully reconnected {reconnected} window(s)!\n\n"
-                           f"The enhanced reconnection logic uses both window title and size "
-                           f"to distinguish between multiple windows with the same name.")
+            msgbox.showinfo("Reconnection Success", f"Successfully reconnected {reconnected} window(s)!")
         else:
-            msgbox.showinfo("Reconnection Check", 
-                           "No disconnected windows found or no windows could be reconnected.\n\n"
-                           "All monitored windows appear to be available, or no suitable "
-                           "replacement windows were found matching both title and size.")
+            msgbox.showinfo("Reconnection Check", "No disconnected windows found or no windows could be reconnected.")
 
     def toggle_pause():
         nonlocal paused, last_reminder_time
@@ -1831,7 +1322,19 @@ Features:
             
             # Clear existing screenshots to force refresh
             previous_screenshots = []
-            save_current_config()
+            save_config(
+                regions, interval_var.get(), highlight_time_var.get(),
+                default_sound_var.get(), default_tts_var.get(), alert_threshold_var.get(),
+                green_text=green_text_var.get(), green_color=green_color_var.get(),
+                paused_text=paused_text_var.get(), paused_color=paused_color_var.get(),
+                alert_text=alert_text_var.get(), alert_color=alert_color_var.get(),
+                disabled_text=disabled_text_var.get(), disabled_color=disabled_color_var.get(),
+                pause_reminder_interval=pause_reminder_interval_var.get(),
+                target_window=target_window, window_filter=window_filter_var.get(),
+                unavailable_text=unavailable_text_var.get(), unavailable_color=unavailable_color_var.get(),
+                capture_on_alert=capture_on_alert_var.get(), capture_on_green=capture_on_green_var.get(),
+                capture_directory=capture_directory_var.get(), capture_filename_format=capture_filename_format_var.get()
+            )
 
     def add_region():
         nonlocal selecting_region
@@ -1900,7 +1403,19 @@ Features:
             print(f"Successfully added region: {region_name}")
             print(f"Total regions now: {len(regions)}")
             update_region_display(force_update=True)  # Force update after adding region
-            save_current_config()
+            save_config(
+                regions, interval_var.get(), highlight_time_var.get(),
+                default_sound_var.get(), default_tts_var.get(), alert_threshold_var.get(),
+                green_text=green_text_var.get(), green_color=green_color_var.get(),
+                paused_text=paused_text_var.get(), paused_color=paused_color_var.get(),
+                alert_text=alert_text_var.get(), alert_color=alert_color_var.get(),
+                disabled_text=disabled_text_var.get(), disabled_color=disabled_color_var.get(),
+                pause_reminder_interval=pause_reminder_interval_var.get(),
+                target_window=target_window, window_filter=window_filter_var.get(),
+                unavailable_text=unavailable_text_var.get(), unavailable_color=unavailable_color_var.get(),
+                capture_on_alert=capture_on_alert_var.get(), capture_on_green=capture_on_green_var.get(),
+                capture_directory=capture_directory_var.get(), capture_filename_format=capture_filename_format_var.get()
+            )
         else:
             print(f"Region selection failed or cancelled. Region: {region}")
         selecting_region = False
@@ -1934,8 +1449,6 @@ Features:
     # Help Menu
     help_menu = tk.Menu(menubar, tearoff=0)
     menubar.add_cascade(label="Help", menu=help_menu)
-    help_menu.add_command(label="Window Diagnostics", command=show_window_diagnostics)
-    help_menu.add_separator()
     help_menu.add_command(label="About", command=show_about)
     
     # Bind keyboard shortcuts
@@ -2033,7 +1546,7 @@ Features:
         return True  # All active regions are connected
 
     def try_reconnect_windows():
-        """Try to reconnect to windows that are no longer available - Enhanced version with size matching"""
+        """Try to reconnect to windows that are no longer available - Enhanced version"""
         nonlocal target_window, current_window_img
         
         reconnected_count = 0
@@ -2046,29 +1559,34 @@ Features:
             if not test_img:
                 print(f"Global target window unavailable: {target_window['title']} (HWND: {target_window['hwnd']})")
                 
-                # Get the stored window size if available
-                target_size = target_window.get('size')
-                if target_size:
-                    print(f"  Using stored window size for matching: {target_size[0]}x{target_size[1]}")
-                    new_window = find_window_by_title_and_size(target_window['title'], target_size, exact_match=True)
-                else:
-                    print(f"  No stored size available, using title-only matching")
-                    new_window = find_window_by_title(target_window['title'], exact_match=True)
+                # Try only exact title matching - no fuzzy matching to prevent wrong windows
+                new_window = None
                 
+                # Only try exact title match - safer and more reliable
+                new_window = find_window_by_title(target_window['title'], exact_match=True)
                 if new_window:
-                    print(f"  Found match: {new_window['title']} (HWND: {new_window['hwnd']}, Size: {new_window['size'][0]}x{new_window['size'][1]})")
+                    print(f"  Found exact match: {new_window['title']} (HWND: {new_window['hwnd']})")
                 else:
-                    print(f"  No match found for: {target_window['title']}")
-                    if target_size:
-                        print(f"  (Tried both title and size matching)")
-                    
+                    print(f"  No exact match found for: {target_window['title']}")
+                    print(f"  (Fuzzy matching disabled to prevent incorrect window attachment)")
+                
                 if new_window:
                     print(f"Successfully reconnected global target window: {new_window['title']} (new HWND: {new_window['hwnd']})")
                     target_window = new_window
                     current_window_img = capture_window(target_window['hwnd'])
                     reconnected_count += 1
                     # Save the updated window info
-                    save_current_config()
+                    save_config(
+                        regions, interval_var.get(), highlight_time_var.get(),
+                        default_sound_var.get(), default_tts_var.get(), alert_threshold_var.get(),
+                        green_text=green_text_var.get(), green_color=green_color_var.get(),
+                        paused_text=paused_text_var.get(), paused_color=paused_color_var.get(),
+                        alert_text=alert_text_var.get(), alert_color=alert_color_var.get(),
+                        disabled_text=disabled_text_var.get(), disabled_color=disabled_color_var.get(),
+                        pause_reminder_interval=pause_reminder_interval_var.get(),
+                        target_window=target_window, window_filter=window_filter_var.get(),
+                        unavailable_text=unavailable_text_var.get(), unavailable_color=unavailable_color_var.get()
+                    )
                 else:
                     failed_reconnections.append(f"Global target: {target_window['title']}")
         
@@ -2082,21 +1600,16 @@ Features:
                     region_name = region.get('name', f'Region {idx+1}')
                     print(f"Region {idx} '{region_name}' window unavailable: {region_window['title']} (HWND: {region_window['hwnd']})")
                     
-                    # Get the stored window size if available
-                    target_size = region_window.get('size')
-                    if target_size:
-                        print(f"  Using stored window size for region {idx}: {target_size[0]}x{target_size[1]}")
-                        new_window = find_window_by_title_and_size(region_window['title'], target_size, exact_match=True)
-                    else:
-                        print(f"  No stored size available for region {idx}, using title-only matching")
-                        new_window = find_window_by_title(region_window['title'], exact_match=True)
+                    # Try only exact title matching - no fuzzy matching to prevent wrong windows
+                    new_window = None
                     
+                    # Only try exact title match - safer and more reliable
+                    new_window = find_window_by_title(region_window['title'], exact_match=True)
                     if new_window:
-                        print(f"  Found match for region {idx}: {new_window['title']} (Size: {new_window['size'][0]}x{new_window['size'][1]})")
+                        print(f"  Found exact match for region {idx}: {new_window['title']}")
                     else:
-                        print(f"  No match found for region {idx}: {region_window['title']}")
-                        if target_size:
-                            print(f"  (Tried both title and size matching)")
+                        print(f"  No exact match found for region {idx}: {region_window['title']}")
+                        print(f"  (Fuzzy matching disabled to prevent incorrect window attachment)")
                     
                     if new_window:
                         print(f"Successfully reconnected region {idx} to window: {new_window['title']} (new HWND: {new_window['hwnd']})")
@@ -2117,7 +1630,19 @@ Features:
         if reconnected_count > 0:
             print(f"Reconnected {reconnected_count} window(s)")
             # Save all region updates
-            save_current_config()
+            save_config(
+                regions, interval_var.get(), highlight_time_var.get(),
+                default_sound_var.get(), default_tts_var.get(), alert_threshold_var.get(),
+                green_text=green_text_var.get(), green_color=green_color_var.get(),
+                paused_text=paused_text_var.get(), paused_color=paused_color_var.get(),
+                alert_text=alert_text_var.get(), alert_color=alert_color_var.get(),
+                disabled_text=disabled_text_var.get(), disabled_color=disabled_color_var.get(),
+                pause_reminder_interval=pause_reminder_interval_var.get(),
+                target_window=target_window, window_filter=window_filter_var.get(),
+                unavailable_text=unavailable_text_var.get(), unavailable_color=unavailable_color_var.get(),
+                capture_on_alert=capture_on_alert_var.get(), capture_on_green=capture_on_green_var.get(),
+                capture_directory=capture_directory_var.get(), capture_filename_format=capture_filename_format_var.get()
+            )
             update_region_display(force_update=True)
         
         if failed_reconnections:
@@ -2898,57 +2423,25 @@ Features:
                     region["last_alert_time"] = 0
                     continue
 
-                # Enhanced change detection with region-based analysis
-                clearing_alert = False  # Initialize clearing flag
-                
+                # Simple structural similarity comparison
                 # Convert to grayscale for comparison
                 prev_gray = prev_img.convert("L")
                 curr_gray = curr_img.convert("L")
                 
-                # Use SSIM (Structural Similarity Index) for basic change detection
+                # Use SSIM (Structural Similarity Index) for change detection
                 score = ssim(np.array(prev_gray), np.array(curr_gray))
-                basic_change_detected = bool(score < alert_threshold_var.get())
-                
-                # Enhanced analysis if change detected and content analysis enabled
-                change_type = "NO_SIGNIFICANT_CHANGE"
-                analysis_confidence = 1.0
-                analysis_details = {}
-                
-                if basic_change_detected and content_analysis_enabled_var.get():
-                    change_type, analysis_confidence, analysis_details = analyze_change_type(
-                        prev_gray, curr_gray, 
-                        sensitivity=change_detection_sensitivity_var.get(),
-                        verbose=verbose_logging_var.get()
-                    )
-                elif basic_change_detected:
-                    # Fallback to basic detection if advanced analysis disabled
-                    change_type = "CONTENT_CHANGED"
-                    analysis_confidence = 0.7
-                    analysis_details = {"basic_ssim": score}
-                
-                # Determine if we should alert based on new content detection settings
-                should_alert = False
-                if alert_only_new_content_var.get():
-                    # Only alert on new content
-                    should_alert = (change_type == "NEW_CONTENT")
-                else:
-                    # Alert on any significant change (original behavior)
-                    should_alert = basic_change_detected
-                
+                is_alert = bool(score < alert_threshold_var.get())
+
                 play_alert = False
                 was_alert_before = region.get("alert", False)
                 
-                if should_alert:
+                if is_alert:
                     last_alert = region.get("last_alert_time", 0)
                     if not region.get("alert", False) or (now - last_alert > alert_display_time):
                         play_alert = True
                         region["last_alert_time"] = now
                     region["alert"] = True
                     region_updates_needed = True
-                    
-                    # Store analysis details for debugging
-                    region["last_change_type"] = change_type
-                    region["last_analysis_confidence"] = analysis_confidence
                     
                     # Screen capture on alert (if enabled and this is a new alert)
                     if play_alert and capture_on_alert_var.get():
@@ -2960,24 +2453,14 @@ Features:
                         
                 else:
                     # Clear alert if it's been active for the display time OR if no alert is detected
-                    # OR if content was removed/changed (when in new-content-only mode)
                     clearing_alert = False
                     if region.get("alert", False):
                         last_alert_time = region.get("last_alert_time", 0)
-                        time_based_clear = (now - last_alert_time) >= alert_display_time
-                        content_based_clear = (alert_only_new_content_var.get() and 
-                                             change_type in ["CONTENT_REMOVED", "CONTENT_CHANGED", "NO_SIGNIFICANT_CHANGE"])
-                        
-                        if time_based_clear or content_based_clear:
+                        if (now - last_alert_time) >= alert_display_time:
                             region["alert"] = False
                             region_updates_needed = True
                             clearing_alert = True
-                            clear_reason = "time-based" if time_based_clear else "content-based"
-                            print(f"Cleared alert for region {idx} '{region.get('name', f'Region {idx+1}')}' ({clear_reason})")
-                            
-                            # Store the reason for clearing
-                            region["last_clear_reason"] = clear_reason
-                            region["last_clear_change_type"] = change_type
+                            print(f"Cleared alert for region {idx} '{region.get('name', f'Region {idx+1}')}' after {alert_display_time}s")
                     
                     # Screen capture on green (if enabled and alert just cleared)
                     if clearing_alert and capture_on_green_var.get():
@@ -3003,51 +2486,13 @@ Features:
                             }
                             save_screen_capture(curr_img, region.get("name", f"Region {idx+1}"), "Green", capture_settings)
 
-                # Enhanced logging with detection details
-                if verbose_logging_var.get():
+                # Only print debug info if verbose logging is enabled
+                if verbose_logging_var.get() and (play_alert or region.get("alert", False)):
                     window_title = region_window.get('title', 'Unknown Window')
-                    log_message = f"[DEBUG] Region {idx} '{region.get('name', idx)}' [{window_title}]:"
-                    
-                    if basic_change_detected:
-                        log_message += f" Change Type: {change_type}"
-                        log_message += f", Confidence: {analysis_confidence:.2f}"
-                        if "ssim_score" in analysis_details:
-                            log_message += f", SSIM: {analysis_details['ssim_score']:.3f}"
-                        if "change_area_ratio" in analysis_details:
-                            log_message += f", Change Area: {analysis_details['change_area_ratio']:.3f}"
-                        
-                        log_message += f", alert={region.get('alert', False)}, play_alert={play_alert}"
-                        if should_alert:
-                            log_message += " - ALERT TRIGGERED"
-                        else:
-                            log_message += " - No alert (filtered by settings)"
-                    else:
-                        log_message += " No significant change detected"
-                    
-                    print(log_message)
-                elif should_alert and play_alert:
-                    window_title = region_window.get('title', 'Unknown Window')
-                    print(f"ALERT: Region {idx} '{region.get('name', idx)}' [{window_title}] - {change_type}")
-                elif clearing_alert:
-                    window_title = region_window.get('title', 'Unknown Window')
-                    clear_reason = region.get("last_clear_reason", "unknown")
-                    print(f"CLEAR: Region {idx} '{region.get('name', idx)}' [{window_title}] - {clear_reason}")
-                
-                # Update region detection history (keep last 10 results for diagnostics)
-                if "detection_history" not in region:
-                    region["detection_history"] = []
-                
-                region["detection_history"].append({
-                    "timestamp": now,
-                    "change_type": change_type,
-                    "confidence": analysis_confidence,
-                    "should_alert": should_alert,
-                    "was_cleared": clearing_alert
-                })
-                
-                # Keep only last 10 detection results
-                if len(region["detection_history"]) > 10:
-                    region["detection_history"] = region["detection_history"][-10:]
+                    print(
+                        f"[DEBUG] Region {idx} '{region.get('name', idx)}' [{window_title}]: "
+                        f"SSIM={score:.4f}, alert={region.get('alert', False)}, play_alert={play_alert}"
+                    )
 
                 if play_alert:
                     sound_file = region.get("sound_file") or default_sound_var.get()
