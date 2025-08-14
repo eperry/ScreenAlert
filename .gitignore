@@ -47,6 +47,7 @@ dist/
 
 # Compilation outputs (Nuitka)
 dist-nuitka/
+dist-dev/
 *.build/
 *.dist/
 *.onefile-build/
