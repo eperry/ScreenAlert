@@ -71,6 +71,17 @@ jobs:
         key: nuitka-deps-${{ runner.os }}-${{ hashFiles('screenalert_requirements.txt') }}
         restore-keys: |
           nuitka-deps-${{ runner.os }}-
+          
+    - name: Cache pre-compiled Nuitka modules
+      uses: actions/cache@v4
+      with:
+        path: |
+          .nuitka-precompiled
+          ~\AppData\Local\Nuitka\Cache\downloads
+          C:\Users\runneradmin\AppData\Local\Nuitka\Cache\downloads
+        key: nuitka-precompiled-${{ runner.os }}-${{ hashFiles('screenalert_requirements.txt') }}
+        restore-keys: |
+          nuitka-precompiled-${{ runner.os }}-
         
     - name: Install dependencies (optimized with caching)
       run: |
@@ -88,6 +99,11 @@ jobs:
         # Install project dependencies with caching awareness
         Write-Host "Installing project dependencies..."
         pip install -r screenalert_requirements.txt --no-warn-script-location
+        
+    - name: Setup Nuitka pre-compilation optimizations
+      run: |
+        Write-Host "Setting up Nuitka pre-compilation optimizations..."
+        python setup_nuitka_precompiled.py
         
     - name: Build with Nuitka (optimized)
       run: |
