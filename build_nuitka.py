@@ -95,8 +95,8 @@ def build_with_nuitka():
         '--windows-console-mode=disable',  # CRITICAL: Keep disabled for AV safety
         '--product-name=ScreenAlert',
         '--file-description=Screen monitoring and alert system',
-        '--product-version=1.4.1',
-        '--file-version=1.4.1.0',
+        '--product-version=1.4.2',
+        '--file-version=1.4.2.0',
         '--copyright=© 2025 ScreenAlert',
         '--company-name=ScreenAlert',
         f'--output-dir={output_dir.absolute()}',

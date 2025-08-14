@@ -1,19 +1,20 @@
 # Copilot Chat Sessions Summary
 
-**Last Updated:** 2025-08-14 09:21:10
-**Total Sessions:** 17
+**Last Updated:** 2025-08-14 09:26:31
+**Total Sessions:** 18
 **Current Branch:** main
-**Latest Commit:** 28818d0
+**Latest Commit:** 2b85b55
 **Repository:** https://github.com/eperry/ScreenAlert.git
 
 ## Pending Commit
 
-**Staged Files:** 5 files
-**Changes:**  5 files changed, 442 insertions(+), 44 deletions(-)
+**Staged Files:** 4 files
+**Changes:**  4 files changed, 292 insertions(+), 10 deletions(-)
 
 ## Recent Sessions
 
 - [`milestone-commit-25`](C:/Users/Ed/OneDrive/Documents/Development/ScreenAlert/docs/copilot-chats/milestone-commit-25.md) - 
+- [`2025-08-14_09-26-30_pre-commit-python-changes`](C:/Users/Ed/OneDrive/Documents/Development/ScreenAlert/docs/copilot-chats/2025-08-14_09-26-30_pre-commit-python-changes.md) - 2025-08-14
 - [`2025-08-14_09-21-09_pre-commit-python-changes`](C:/Users/Ed/OneDrive/Documents/Development/ScreenAlert/docs/copilot-chats/2025-08-14_09-21-09_pre-commit-python-changes.md) - 2025-08-14
 - [`2025-08-14_09-12-08_pre-commit-python-changes`](C:/Users/Ed/OneDrive/Documents/Development/ScreenAlert/docs/copilot-chats/2025-08-14_09-12-08_pre-commit-python-changes.md) - 2025-08-14
 - [`2025-08-13_22-05-32_pre-commit-python-changes`](C:/Users/Ed/OneDrive/Documents/Development/ScreenAlert/docs/copilot-chats/2025-08-13_22-05-32_pre-commit-python-changes.md) - 2025-08-13
@@ -22,18 +23,18 @@
 - [`2025-08-13_21-01-08_pre-commit-python-changes`](C:/Users/Ed/OneDrive/Documents/Development/ScreenAlert/docs/copilot-chats/2025-08-13_21-01-08_pre-commit-python-changes.md) - 2025-08-13
 - [`2025-08-13_20-58-24_pre-commit-python-changes`](C:/Users/Ed/OneDrive/Documents/Development/ScreenAlert/docs/copilot-chats/2025-08-13_20-58-24_pre-commit-python-changes.md) - 2025-08-13
 - [`2025-08-13_20-44-39_pre-commit-python-changes`](C:/Users/Ed/OneDrive/Documents/Development/ScreenAlert/docs/copilot-chats/2025-08-13_20-44-39_pre-commit-python-changes.md) - 2025-08-13
-- [`2025-08-13_17-12-44_pre-commit-python-changes`](C:/Users/Ed/OneDrive/Documents/Development/ScreenAlert/docs/copilot-chats/2025-08-13_17-12-44_pre-commit-python-changes.md) - 2025-08-13
 
 ## Session Statistics
 
-- Pre-commit exports: 15
+- Pre-commit exports: 16
 - Manual sessions: 2
 - Auto-exported sessions: 0
 
 ## Git Activity
 
 **Recent Commits:**
-- 28818d0 fix: Remove antivirus-triggering flags from Nuitka build (9 minutes ago)
+- 2b85b55 feat: Add Nuitka pre-compilation optimization framework (5 minutes ago)
+- 28818d0 fix: Remove antivirus-triggering flags from Nuitka build (14 minutes ago)
 - ae35332 feat: Implement comprehensive build caching strategy (11 hours ago)
 - ee5bbb2 fix: Create default config file in CI if it doesn't exist (12 hours ago)
 - 9aaf683 fix: Specify correct cache-dependency-path for pip caching in GitHub Actions (12 hours ago)
@@ -42,11 +43,10 @@
 - 2fbae6d fix: Remove Unicode characters from build scripts to fix Windows CI encoding issues (13 hours ago)
 - 47d02ad fix: Recreate build scripts that were accidentally emptied - fixes Nuitka config file path issue (16 hours ago)
 - a6f56b4 fix: Update GitHub Actions to use actions/upload-artifact@v4 and actions/download-artifact@v4 (16 hours ago)
-- 935e3d6 remove: Delete backup-copilot-chats.yml workflow (16 hours ago)
 
 ## Repository Health
 
-- Total commits: 47
+- Total commits: 48
 - Contributors: 2
 - Lines of code: 7640
 
