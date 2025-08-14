@@ -105,71 +105,13 @@ jobs:
         Write-Host "Setting up Nuitka pre-compilation optimizations..."
         python setup_nuitka_precompiled.py
         
-    - name: Build with Nuitka (optimized)
+    - name: Build with Nuitka (optimized with code signing)
+      env:
+        SIGNING_CERTIFICATE: ${{ secrets.SIGNING_CERTIFICATE }}
+        SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
       run: |
-        python -c "
-        import subprocess
-        import sys
-        import json
-        from pathlib import Path
-        
-        # Create config file if it doesn't exist
-        config_file = Path('screenalert_config.json')
-        if not config_file.exists():
-            print('Creating default config file...')
-            default_config = {
-                'regions': [],
-                'interval': 1500,
-                'highlight_time': 5,
-                'default_sound': '',
-                'default_tts': 'Alert {name}',
-                'alert_threshold': 0.98,
-                'capture_directory': 'ScreenEvents',
-                'alert_only_new_content': True,
-                'change_detection_sensitivity': 10,
-                'content_analysis_enabled': True
-            }
-            with open(config_file, 'w') as f:
-                json.dump(default_config, f, indent=2)
-        
-        # Antivirus-safe Nuitka command (reverted problematic flags)
-        cmd = [
-            sys.executable, '-m', 'nuitka',
-            '--onefile',
-            '--assume-yes-for-downloads',
-            '--enable-plugin=tk-inter',
-            '--enable-plugin=numpy', 
-            '--windows-console-mode=disable',  # CRITICAL: Keep console disabled for AV safety
-            '--product-name=ScreenAlert',
-            '--file-description=Screen monitoring and alert system',
-            '--product-version=1.4.2',
-            '--file-version=1.4.2.0',
-            '--copyright=© 2025 ScreenAlert',
-            '--company-name=ScreenAlert',
-            '--output-dir=dist-nuitka',
-            '--output-filename=ScreenAlert.exe',
-            '--include-data-files=screenalert_config.json=screenalert_config.json',
-            '--jobs=4',  # Reduced back to 4 for stability
-            '--lto=no',  # Keep LTO disabled for speed
-            '--no-prefer-source-code',  # Use bytecode
-            '--python-flag=no_docstrings',  # Remove docstrings
-            '--python-flag=no_asserts',  # Remove assert statements
-            '--show-progress',
-            '--show-memory',
-            'screenalert.py'
-        ]
-        
-        print('Building with optimized Nuitka settings...')
-        result = subprocess.run(cmd, check=True)
-        
-        # Verify build
-        exe_path = Path('dist-nuitka/ScreenAlert.exe')
-        if exe_path.exists():
-            size_mb = exe_path.stat().st_size / (1024 * 1024)
-            print(f'Build successful: {size_mb:.1f} MB')
-        else:
-            raise Exception('Build failed - executable not found')
-        "
+        Write-Host "Building ScreenAlert with Nuitka optimization framework..." -ForegroundColor Green
+        python build_nuitka.py
         
     - name: Create release archive
       run: |

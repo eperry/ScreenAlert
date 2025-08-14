@@ -10,7 +10,94 @@ import sys
 import os
 import shutil
 import json
+import glob
 from pathlib import Path
+
+def find_signtool():
+    """Find signtool.exe in Windows SDK"""
+    if not sys.platform.startswith('win'):
+        return None
+        
+    possible_paths = [
+        r"C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe",
+        r"C:\Program Files\Windows Kits\10\bin\*\x64\signtool.exe",
+        r"C:\Program Files (x86)\Microsoft SDKs\Windows\*\bin\signtool.exe",
+    ]
+    
+    for pattern in possible_paths:
+        matches = glob.glob(pattern)
+        if matches:
+            return matches[-1]  # Return the latest version
+    
+    return None
+
+def sign_executable_if_possible(exe_path):
+    """Sign the executable if certificate and signtool are available"""
+    
+    # Check if we're on Windows
+    if not sys.platform.startswith('win'):
+        return False
+    
+    # Find signtool
+    signtool = find_signtool()
+    if not signtool:
+        return False
+    
+    # Look for certificate files
+    cert_files = [
+        "ScreenAlert-Certificate.pfx",
+        "certificate.pfx",
+        "code-signing.pfx"
+    ]
+    
+    cert_path = None
+    for cert_file in cert_files:
+        if Path(cert_file).exists():
+            cert_path = cert_file
+            break
+    
+    # Also check environment variables for GitHub Actions
+    if not cert_path:
+        cert_base64 = os.environ.get('SIGNING_CERTIFICATE')
+        cert_password = os.environ.get('SIGNING_PASSWORD')
+        if cert_base64:
+            # Decode base64 certificate for GitHub Actions
+            import base64
+            cert_path = "temp_certificate.pfx"
+            with open(cert_path, "wb") as f:
+                f.write(base64.b64decode(cert_base64))
+    
+    if not cert_path:
+        return False
+    
+    # Get password
+    password = os.environ.get('SIGNING_PASSWORD', 'ScreenAlert2025!')
+    
+    # Build signtool command
+    cmd = [
+        signtool, "sign",
+        "/f", cert_path,
+        "/p", password,
+        "/t", "http://timestamp.digicert.com",  # Timestamp server
+        "/v",  # Verbose
+        str(exe_path)
+    ]
+    
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        
+        # Clean up temporary certificate
+        if cert_path == "temp_certificate.pfx":
+            os.remove(cert_path)
+        
+        return True
+    except subprocess.CalledProcessError:
+        # Clean up temporary certificate on failure too
+        if cert_path == "temp_certificate.pfx" and os.path.exists(cert_path):
+            os.remove(cert_path)
+        return False
+    except Exception:
+        return False
 
 def check_nuitka():
     """Check if Nuitka is installed"""
@@ -151,6 +238,17 @@ def build_with_nuitka():
             print(f"Output: {exe_path}")
             print(f"Size: {size_mb:.1f} MB")
             print(f"Antivirus compatibility: Excellent (native C++ compilation)")
+            
+            # Attempt code signing if certificate is available
+            try:
+                sign_result = sign_executable_if_possible(exe_path)
+                if sign_result:
+                    print(f"✅ Executable signed successfully!")
+                else:
+                    print(f"ℹ️  Executable not signed (certificate not available)")
+            except Exception as e:
+                print(f"⚠️  Code signing failed: {e}")
+            
             return True
         else:
             print(f"Build completed but executable not found at {exe_path}")
