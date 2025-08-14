@@ -48,7 +48,27 @@ jobs:
         python -c "
         import subprocess
         import sys
+        import json
         from pathlib import Path
+        
+        # Create config file if it doesn't exist
+        config_file = Path('screenalert_config.json')
+        if not config_file.exists():
+            print('Creating default config file...')
+            default_config = {
+                'regions': [],
+                'interval': 1500,
+                'highlight_time': 5,
+                'default_sound': '',
+                'default_tts': 'Alert {name}',
+                'alert_threshold': 0.98,
+                'capture_directory': 'ScreenEvents',
+                'alert_only_new_content': True,
+                'change_detection_sensitivity': 10,
+                'content_analysis_enabled': True
+            }
+            with open(config_file, 'w') as f:
+                json.dump(default_config, f, indent=2)
         
         # Optimized Nuitka command for faster builds
         cmd = [
