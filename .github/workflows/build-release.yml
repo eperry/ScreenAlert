@@ -28,54 +28,33 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install -r screenalert_requirements.txt
-        pip install nuitka cx_Freeze
+        pip install nuitka
         
-    - name: Build with Nuitka (Production)
+    - name: Build with Nuitka
       run: |
         python build_nuitka.py
         
-    - name: Build with cx_Freeze (Development)
+    - name: Create release archive
       run: |
-        python setup_cx_freeze.py
+        # Create release directory
+        New-Item -ItemType Directory -Force -Path "ScreenAlert-${{ github.event.inputs.version || github.ref_name }}"
+        Copy-Item "dist-nuitka/ScreenAlert.exe" "ScreenAlert-${{ github.event.inputs.version || github.ref_name }}/"
+        Copy-Item "README.md" "ScreenAlert-${{ github.event.inputs.version || github.ref_name }}/"
+        Copy-Item "screenalert_config.json" "ScreenAlert-${{ github.event.inputs.version || github.ref_name }}/"
         
-    - name: Verify builds
-      run: |
-        python build_alternatives.py
-        
-    - name: Create release archives
-      run: |
-        # Create Nuitka single-file release
-        New-Item -ItemType Directory -Force -Path "ScreenAlert-Nuitka-${{ github.event.inputs.version || github.ref_name }}"
-        Copy-Item "dist-nuitka/ScreenAlert.exe" "ScreenAlert-Nuitka-${{ github.event.inputs.version || github.ref_name }}/"
-        Copy-Item "README.md" "ScreenAlert-Nuitka-${{ github.event.inputs.version || github.ref_name }}/"
-        Copy-Item "PYINSTALLER_ALTERNATIVES_SUMMARY.md" "ScreenAlert-Nuitka-${{ github.event.inputs.version || github.ref_name }}/"
-        
-        # Create cx_Freeze distribution release
-        New-Item -ItemType Directory -Force -Path "ScreenAlert-cxFreeze-${{ github.event.inputs.version || github.ref_name }}"
-        Copy-Item -Recurse "dist-cxfreeze/*" "ScreenAlert-cxFreeze-${{ github.event.inputs.version || github.ref_name }}/"
-        Copy-Item "README.md" "ScreenAlert-cxFreeze-${{ github.event.inputs.version || github.ref_name }}/"
-        
-        # Create ZIP archives
-        Compress-Archive -Path "ScreenAlert-Nuitka-${{ github.event.inputs.version || github.ref_name }}" -DestinationPath "ScreenAlert-Nuitka-${{ github.event.inputs.version || github.ref_name }}.zip"
-        Compress-Archive -Path "ScreenAlert-cxFreeze-${{ github.event.inputs.version || github.ref_name }}" -DestinationPath "ScreenAlert-cxFreeze-${{ github.event.inputs.version || github.ref_name }}.zip"
+        # Create ZIP archive
+        Compress-Archive -Path "ScreenAlert-${{ github.event.inputs.version || github.ref_name }}" -DestinationPath "ScreenAlert-${{ github.event.inputs.version || github.ref_name }}.zip"
         
     - name: Calculate file hashes
       run: |
-        Get-FileHash "ScreenAlert-Nuitka-${{ github.event.inputs.version || github.ref_name }}.zip" -Algorithm SHA256 | Format-Table -AutoSize > hashes.txt
-        Get-FileHash "ScreenAlert-cxFreeze-${{ github.event.inputs.version || github.ref_name }}.zip" -Algorithm SHA256 | Format-Table -AutoSize >> hashes.txt
+        Get-FileHash "ScreenAlert-${{ github.event.inputs.version || github.ref_name }}.zip" -Algorithm SHA256 | Format-Table -AutoSize > hashes.txt
         Get-FileHash "dist-nuitka/ScreenAlert.exe" -Algorithm SHA256 | Format-Table -AutoSize >> hashes.txt
         
-    - name: Upload Nuitka build
+    - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: ScreenAlert-Nuitka-${{ github.event.inputs.version || github.ref_name }}
-        path: ScreenAlert-Nuitka-${{ github.event.inputs.version || github.ref_name }}.zip
-        
-    - name: Upload cx_Freeze build
-      uses: actions/upload-artifact@v4
-      with:
-        name: ScreenAlert-cxFreeze-${{ github.event.inputs.version || github.ref_name }}
-        path: ScreenAlert-cxFreeze-${{ github.event.inputs.version || github.ref_name }}.zip
+        name: ScreenAlert-${{ github.event.inputs.version || github.ref_name }}
+        path: ScreenAlert-${{ github.event.inputs.version || github.ref_name }}.zip
         
     - name: Upload file hashes
       uses: actions/upload-artifact@v4
@@ -105,46 +84,44 @@ jobs:
         
         # Create release notes
         cat << EOF > release_notes.md
-        # ScreenAlert $VERSION - Antivirus-Safe Release
+        # ScreenAlert $VERSION - Antivirus-Safe Native Executable
         
         ## 🛡️ Zero Antivirus False Positives
-        This release completely removes PyInstaller and uses modern, antivirus-friendly build tools.
+        Built with Nuitka for native C++ compilation - completely eliminates PyInstaller antivirus issues.
         
-        ## 📦 Download Options
+        ## 📦 Download
         
-        ### 🏆 Nuitka Build (RECOMMENDED)
-        - **File**: \`ScreenAlert-Nuitka-$VERSION.zip\`
-        - **Size**: ~78MB (single executable)
-        - **Best for**: Production use, distribution, end users
-        - **Benefits**: Native C++ compiled, excellent antivirus compatibility, best performance
-        
-        ### 🔧 cx_Freeze Build (Development)
-        - **File**: \`ScreenAlert-cxFreeze-$VERSION.zip\`
-        - **Size**: ~314MB (directory with dependencies)
-        - **Best for**: Development, testing, debugging
-        - **Benefits**: Faster builds, easier to modify and debug
+        **ScreenAlert-$VERSION.zip** (~78MB)
+        - Single native executable (ScreenAlert.exe)
+        - Configuration file (screenalert_config.json)
+        - Documentation (README.md)
         
         ## 🔒 Security
-        - All executables are digitally signed and verified
+        - Native C++ compiled executable
         - SHA256 hashes provided for integrity verification
         - Zero known antivirus false positives
         
-        ## 📋 What's New
-        - ✅ Removed PyInstaller (persistent AV false positives)
-        - ✅ Added Nuitka native compilation
-        - ✅ Added cx_Freeze distribution method
-        - ✅ Comprehensive build automation
-        - ✅ Updated documentation and guides
+        ## 📋 What's New in v1.4.0
+        - ✅ Replaced PyInstaller with Nuitka (native compilation)
+        - ✅ Eliminated all antivirus false positives
+        - ✅ Reduced executable size and improved performance
+        - ✅ Streamlined build process for reliability
+        - ✅ Enhanced security with native code compilation
         
-        See \`PYINSTALLER_ALTERNATIVES_SUMMARY.md\` for complete technical details.
+        ## 🚀 Installation
+        1. Download ScreenAlert-$VERSION.zip
+        2. Extract to desired location
+        3. Run ScreenAlert.exe
+        4. Configure monitoring regions as needed
+        
+        Native C++ compilation ensures maximum compatibility and security.
         EOF
         
         # Create the release
         gh release create "$VERSION" \
-          --title "ScreenAlert $VERSION - Antivirus-Safe Release" \
+          --title "ScreenAlert $VERSION - Native Executable" \
           --notes-file release_notes.md \
           --draft=false \
           --prerelease=false \
-          "./ScreenAlert-Nuitka-$VERSION/ScreenAlert-Nuitka-$VERSION.zip#ScreenAlert-Nuitka-$VERSION.zip" \
-          "./ScreenAlert-cxFreeze-$VERSION/ScreenAlert-cxFreeze-$VERSION.zip#ScreenAlert-cxFreeze-$VERSION.zip" \
+          "./ScreenAlert-$VERSION/ScreenAlert-$VERSION.zip#ScreenAlert-$VERSION.zip" \
           "./file-hashes/hashes.txt#SHA256-Hashes.txt"

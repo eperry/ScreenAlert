@@ -15,17 +15,14 @@ ScreenAlert is a sophisticated tool for monitoring applications where you need t
 
 ## 🔒 Antivirus-Safe Distribution
 
-**PyInstaller has been replaced** due to persistent false positive detections. ScreenAlert now uses modern, antivirus-friendly build tools:
+**PyInstaller has been replaced** due to persistent false positive detections. ScreenAlert now uses **Nuitka** for native C++ compilation:
 
-### 🏆 Nuitka (Recommended)
-- **Single executable**: `dist-nuitka/ScreenAlert.exe` (78MB)
-- **Native compilation**: C++ compiled for best AV compatibility
+### ✅ Nuitka Native Compilation
+- **Single executable**: `dist-nuitka/ScreenAlert.exe` (~78MB)
+- **Native C++ code**: True compilation, not Python bytecode wrapping
 - **Zero false positives**: Tested with Windows Defender and major AV suites
-
-### 🔧 cx_Freeze (Development)
-- **Directory distribution**: `dist-cxfreeze/` (314MB)
-- **Fast builds**: Quick iteration for development
-- **Reliable**: Standard Python runtime, no compression triggers
+- **Best performance**: Native code execution
+- **Professional distribution**: Single file, no dependencies
 
 ## 🚀 Quick Start
 
@@ -40,11 +37,9 @@ git clone https://github.com/your-repo/ScreenAlert
 cd ScreenAlert
 pip install -r screenalert_requirements.txt
 
-# Build with Nuitka (recommended)
+# Build native executable with Nuitka
 python build_nuitka.py
-
-# Or build with cx_Freeze
-python setup_cx_freeze.py
+# Or simply run: build.bat
 ```
 
 ## 🖥️ Usage

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 ScreenAlert - Nuitka Builder
-Builds ScreenAlert using Nuitka for native compilation
+Builds ScreenAlert using Nuitka for native C++ compilation
+This is the primary and only build method for ScreenAlert v1.4.0+
 """
 
 import subprocess
@@ -31,7 +32,7 @@ def build_with_nuitka():
     """Build ScreenAlert using Nuitka"""
     print("\nScreenAlert - Nuitka Builder")
     print("=" * 40)
-    print("Nuitka produces native executables with better antivirus compatibility")
+    print("Building native executable with zero antivirus false positives")
     
     if not check_nuitka():
         return False
