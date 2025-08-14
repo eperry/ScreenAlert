@@ -96,13 +96,13 @@ def build_with_nuitka():
         exe_path = output_dir / "ScreenAlert.exe"
         if exe_path.exists():
             size_mb = exe_path.stat().st_size / (1024 * 1024)
-            print(f"\n✅ Build successful!")
-            print(f"📁 Output: {exe_path}")
-            print(f"📊 Size: {size_mb:.1f} MB")
-            print(f"🚀 Antivirus compatibility: Excellent (native C++ compilation)")
+            print(f"\nBuild successful!")
+            print(f"Output: {exe_path}")
+            print(f"Size: {size_mb:.1f} MB")
+            print(f"Antivirus compatibility: Excellent (native C++ compilation)")
             return True
         else:
-            print(f"❌ Build completed but executable not found at {exe_path}")
+            print(f"Build completed but executable not found at {exe_path}")
             return False
             
     except subprocess.CalledProcessError as e:

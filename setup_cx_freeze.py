@@ -109,13 +109,13 @@ setup(
             total_size = sum(f.stat().st_size for f in output_dir.rglob('*') if f.is_file())
             size_mb = total_size / (1024 * 1024)
             
-            print(f"\\n✅ Build successful!")
-            print(f"📁 Output: {output_dir}/")
-            print(f"📊 Size: {size_mb:.1f} MB (directory)")
-            print(f"🚀 Antivirus compatibility: Good (Python runtime)")
+            print(f"\\nBuild successful!")
+            print(f"Output: {output_dir}/")
+            print(f"Size: {size_mb:.1f} MB (directory)")
+            print(f"Antivirus compatibility: Good (Python runtime)")
             return True
         else:
-            print(f"❌ Build completed but executable not found at {exe_path}")
+            print(f"Build completed but executable not found at {exe_path}")
             return False
             
     except subprocess.CalledProcessError as e:
