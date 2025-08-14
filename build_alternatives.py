@@ -57,17 +57,17 @@ def check_build_outputs():
         })
     
     if not builds:
-        print("❌ No build outputs found!")
+        print("No build outputs found!")
         print("Run the following commands to create builds:")
         print("  python build_nuitka.py")
         print("  python setup_cx_freeze.py")
         return False
     
     # Display comparison
-    print("📊 BUILD COMPARISON")
+    print("BUILD COMPARISON")
     print("-" * 50)
     for build in builds:
-        print(f"\n🔧 {build['name']} Build")
+        print(f"\n{build['name']} Build")
         print(f"   Path: {build['path']}")
         print(f"   Size: {build['size']:.1f} MB")
         print(f"   Type: {build['type']}")
@@ -76,25 +76,25 @@ def check_build_outputs():
         print(f"   Cons: {', '.join(build['cons'])}")
     
     # Recommendations
-    print(f"\n🏆 RECOMMENDATIONS")
+    print(f"\nRECOMMENDATIONS")
     print("-" * 50)
     
     nuitka_build = next((b for b in builds if b['name'] == 'Nuitka'), None)
     cxfreeze_build = next((b for b in builds if b['name'] == 'cx_Freeze'), None)
     
     if nuitka_build:
-        print(f"✅ For end users and distribution: Use Nuitka build")
+        print(f"For end users and distribution: Use Nuitka build")
         print(f"   - Single {nuitka_build['size']:.1f}MB executable")
         print(f"   - Zero antivirus false positives")
         print(f"   - Best performance")
     
     if cxfreeze_build:
-        print(f"✅ For development and testing: Use cx_Freeze build")
+        print(f"For development and testing: Use cx_Freeze build")
         print(f"   - {cxfreeze_build['size']:.1f}MB distribution directory")
         print(f"   - Faster builds during development")
         print(f"   - Easier to debug and modify")
     
-    print(f"\n📋 SUMMARY")
+    print(f"\nSUMMARY")
     print("-" * 50)
     print(f"Both builds provide excellent antivirus compatibility compared to PyInstaller.")
     print(f"Choose based on your use case:")
@@ -105,7 +105,7 @@ def check_build_outputs():
 
 def run_verification_tests():
     """Run basic verification tests on available builds"""
-    print(f"\n🧪 VERIFICATION TESTS")
+    print(f"\nVERIFICATION TESTS")
     print("-" * 50)
     
     # Test Nuitka build
@@ -116,11 +116,11 @@ def run_verification_tests():
             result = subprocess.run([str(nuitka_exe), "--version"], 
                                   capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
-                print(f"✅ Nuitka build: Working")
+                print(f"Nuitka build: Working")
             else:
-                print(f"⚠️  Nuitka build: May have issues")
+                print(f"Nuitka build: May have issues")
         except Exception as e:
-            print(f"⚠️  Nuitka build: Cannot test ({e})")
+            print(f"Nuitka build: Cannot test ({e})")
     
     # Test cx_Freeze build
     cxfreeze_exe = Path("dist-cxfreeze/ScreenAlert.exe")
@@ -130,11 +130,11 @@ def run_verification_tests():
             result = subprocess.run([str(cxfreeze_exe), "--version"], 
                                   capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
-                print(f"✅ cx_Freeze build: Working")
+                print(f"cx_Freeze build: Working")
             else:
-                print(f"⚠️  cx_Freeze build: May have issues")
+                print(f"cx_Freeze build: May have issues")
         except Exception as e:
-            print(f"⚠️  cx_Freeze build: Cannot test ({e})")
+            print(f"cx_Freeze build: Cannot test ({e})")
 
 if __name__ == "__main__":
     success = check_build_outputs()
