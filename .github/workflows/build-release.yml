@@ -23,16 +23,66 @@ jobs:
       uses: actions/setup-python@v4
       with:
         python-version: '3.11'
+        cache: 'pip'
         
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r screenalert_requirements.txt
-        pip install nuitka
+    - name: Cache Nuitka
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.nuitka
+          ~\AppData\Local\Nuitka
+          C:\Users\runneradmin\AppData\Local\Nuitka
+        key: nuitka-cache-${{ runner.os }}-${{ hashFiles('screenalert.py', 'screenalert_requirements.txt') }}
+        restore-keys: |
+          nuitka-cache-${{ runner.os }}-
         
-    - name: Build with Nuitka
+    - name: Install dependencies (optimized)
       run: |
-        python build_nuitka.py
+        python -m pip install --upgrade pip --no-warn-script-location
+        pip install --no-deps nuitka ordered-set zstandard
+        pip install -r screenalert_requirements.txt --no-warn-script-location
+        
+    - name: Build with Nuitka (optimized)
+      run: |
+        python -c "
+        import subprocess
+        import sys
+        from pathlib import Path
+        
+        # Optimized Nuitka command for faster builds
+        cmd = [
+            sys.executable, '-m', 'nuitka',
+            '--onefile',
+            '--assume-yes-for-downloads',
+            '--enable-plugin=tk-inter',
+            '--enable-plugin=numpy', 
+            '--windows-console-mode=disable',
+            '--product-name=ScreenAlert',
+            '--file-description=Screen monitoring and alert system',
+            '--product-version=1.0.0',
+            '--file-version=1.0.0.0',
+            '--copyright=© 2025 ScreenAlert',
+            '--output-dir=dist-nuitka',
+            '--output-filename=ScreenAlert.exe',
+            '--include-data-files=screenalert_config.json=screenalert_config.json',
+            '--jobs=4',  # Use 4 parallel jobs
+            '--lto=no',  # Disable LTO for faster builds  
+            '--show-progress',
+            '--show-memory',
+            'screenalert.py'
+        ]
+        
+        print('Building with optimized Nuitka settings...')
+        result = subprocess.run(cmd, check=True)
+        
+        # Verify build
+        exe_path = Path('dist-nuitka/ScreenAlert.exe')
+        if exe_path.exists():
+            size_mb = exe_path.stat().st_size / (1024 * 1024)
+            print(f'Build successful: {size_mb:.1f} MB')
+        else:
+            raise Exception('Build failed - executable not found')
+        "
         
     - name: Create release archive
       run: |
