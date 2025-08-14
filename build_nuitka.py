@@ -66,24 +66,25 @@ def build_with_nuitka():
         with open(config_file, 'w') as f:
             json.dump(default_config, f, indent=2)
     
-    # Nuitka build command (optimized for speed)
+    # Antivirus-safe Nuitka build command 
     nuitka_cmd = [
         sys.executable, "-m", "nuitka",
         "--onefile",
         "--assume-yes-for-downloads",
         "--enable-plugin=tk-inter",
         "--enable-plugin=numpy",
-        "--windows-console-mode=disable",
+        "--windows-console-mode=disable",  # CRITICAL: Keep disabled for AV safety
         "--product-name=ScreenAlert",
         "--file-description=Screen monitoring and alert system",
-        "--product-version=1.0.0",
-        "--file-version=1.0.0.0",
+        "--product-version=1.4.0",
+        "--file-version=1.4.0.0",
         "--copyright=© 2025 ScreenAlert",
+        "--company-name=ScreenAlert",
         f"--output-dir={output_dir.absolute()}",
         "--output-filename=ScreenAlert.exe",
         f"--include-data-files={config_file.name}={config_file.name}",
-        "--jobs=4",  # Use 4 parallel jobs for faster compilation
-        "--lto=no",  # Disable Link Time Optimization for faster builds
+        "--jobs=4",  # Conservative for stability and AV safety
+        "--lto=no",  # Disabled for faster builds and AV safety
         "--show-progress",  # Show build progress
         "--remove-output",  # Clean build directory
         "screenalert.py"

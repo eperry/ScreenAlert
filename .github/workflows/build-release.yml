@@ -116,29 +116,28 @@ jobs:
             with open(config_file, 'w') as f:
                 json.dump(default_config, f, indent=2)
         
-        # Optimized Nuitka command with incremental compilation support
+        # Antivirus-safe Nuitka command (reverted problematic flags)
         cmd = [
             sys.executable, '-m', 'nuitka',
             '--onefile',
             '--assume-yes-for-downloads',
             '--enable-plugin=tk-inter',
             '--enable-plugin=numpy', 
-            '--windows-console-mode=disable',
+            '--windows-console-mode=disable',  # CRITICAL: Keep console disabled for AV safety
             '--product-name=ScreenAlert',
             '--file-description=Screen monitoring and alert system',
-            '--product-version=1.0.0',
-            '--file-version=1.0.0.0',
+            '--product-version=1.4.0',
+            '--file-version=1.4.0.0',
             '--copyright=© 2025 ScreenAlert',
+            '--company-name=ScreenAlert',
             '--output-dir=dist-nuitka',
             '--output-filename=ScreenAlert.exe',
             '--include-data-files=screenalert_config.json=screenalert_config.json',
-            '--jobs=6',  # Use 6 parallel jobs (GitHub runners have 4+ cores)
-            '--lto=no',  # Disable LTO for faster builds  
-            '--no-prefer-source-code',  # Use bytecode for faster compilation
-            '--python-flag=no_docstrings',  # Remove docstrings to reduce size/time
+            '--jobs=4',  # Reduced back to 4 for stability
+            '--lto=no',  # Keep LTO disabled for speed
+            '--no-prefer-source-code',  # Use bytecode
+            '--python-flag=no_docstrings',  # Remove docstrings
             '--python-flag=no_asserts',  # Remove assert statements
-            '--enable-console',  # Enable for better caching of compilation units
-            '--report=compilation-report.xml',  # Generate report for debugging
             '--show-progress',
             '--show-memory',
             'screenalert.py'
