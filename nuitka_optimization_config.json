@@ -1,0 +1,27 @@
+{
+  "nuitka_optimization_flags": [
+    "--assume-yes-for-downloads",
+    "--enable-plugin=tk-inter",
+    "--enable-plugin=numpy",
+    "--windows-console-mode=disable",
+    "--jobs=4",
+    "--lto=no",
+    "--no-prefer-source-code",
+    "--python-flag=no_docstrings",
+    "--python-flag=no_asserts"
+  ],
+  "precompiled_cache_paths": [
+    "C:\\Users\\Ed\\AppData\\Local\\Nuitka",
+    ".nuitka-precompiled",
+    "screenalert.build",
+    "screenalert.dist",
+    "screenalert.onefile-build"
+  ],
+  "performance_optimizations": {
+    "use_precompiled_modules": true,
+    "ccache_enabled": false,
+    "parallel_jobs": 4,
+    "memory_limit": "8GB",
+    "commercial_grade": false
+  }
+}
