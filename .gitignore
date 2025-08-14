@@ -42,12 +42,11 @@ dist/
 .eggs/
 *.manifest
 
-# PyInstaller (DEPRECATED - replaced with Nuitka/cx_Freeze)
+# PyInstaller (DEPRECATED - replaced with Nuitka)
 *.spec
 
-# Compilation outputs (Nuitka, cx_Freeze, etc.)
+# Compilation outputs (Nuitka)
 dist-nuitka/
-dist-cxfreeze/
 *.build/
 *.dist/
 *.onefile-build/
