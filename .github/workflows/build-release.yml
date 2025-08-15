@@ -135,6 +135,12 @@ jobs:
         name: ScreenAlert-${{ github.event.inputs.version || github.ref_name }}
         path: ScreenAlert-${{ github.event.inputs.version || github.ref_name }}.zip
         
+    - name: Upload standalone EXE
+      uses: actions/upload-artifact@v4
+      with:
+        name: ScreenAlert-EXE-${{ github.event.inputs.version || github.ref_name }}
+        path: dist-nuitka/ScreenAlert.exe
+        
     - name: Upload file hashes
       uses: actions/upload-artifact@v4
       with:
@@ -168,34 +174,40 @@ jobs:
         ## 🛡️ Zero Antivirus False Positives
         Built with Nuitka for native C++ compilation - completely eliminates PyInstaller antivirus issues.
         
-        ## 📦 Download
+        ## 📦 Downloads
         
         **ScreenAlert-$VERSION.zip** (~78MB)
-        - Single native executable (ScreenAlert.exe)
-        - Configuration file (screenalert_config.json)
-        - Documentation (README.md)
+        - Complete package with executable, configuration, and documentation
+        - Recommended for first-time users
+        
+        **ScreenAlert.exe** (~77MB)
+        - Standalone executable for simple download
+        - Perfect for updates or advanced users
         
         ## 🔒 Security
         - Native C++ compiled executable
         - SHA256 hashes provided for integrity verification
         - Zero known antivirus false positives
         
-        ## 📋 What's New in v1.4.2
-        - ✅ Replaced PyInstaller with Nuitka (native compilation)
-        - ✅ Eliminated all antivirus false positives  
-        - ✅ Implemented comprehensive build optimization framework
-        - ✅ Added multi-layer caching for 60-85% faster builds
-        - ✅ Pre-compilation optimizations for core scientific modules
-        - ✅ Enhanced security with native code compilation
-        - ✅ Streamlined development workflow with fast iteration builds
+        ## 📋 What's New in v1.4.2.1
+        - ✅ Added Windows data directory support (config stored in %APPDATA%\\ScreenAlert)
+        - ✅ Implemented single instance protection (prevents multiple app instances)
+        - ✅ Enhanced deployment with standalone EXE artifact
+        - ✅ Automatic migration of existing configurations
+        - ✅ Improved professional deployment readiness
         
         ## 🚀 Installation
+        
+        **Complete Package (Recommended):**
         1. Download ScreenAlert-$VERSION.zip
         2. Extract to desired location
         3. Run ScreenAlert.exe
-        4. Configure monitoring regions as needed
         
-        Native C++ compilation ensures maximum compatibility and security.
+        **Standalone Executable:**
+        1. Download ScreenAlert.exe
+        2. Run directly (config will be created automatically)
+        
+        Configuration and screen captures are now stored in your Windows user data directory for better organization.
         EOF
         
         # Create the release
@@ -205,4 +217,5 @@ jobs:
           --draft=false \
           --prerelease=false \
           "./ScreenAlert-$VERSION/ScreenAlert-$VERSION.zip#ScreenAlert-$VERSION.zip" \
+          "./ScreenAlert-EXE-$VERSION/ScreenAlert.exe#ScreenAlert.exe" \
           "./file-hashes/hashes.txt#SHA256-Hashes.txt"
