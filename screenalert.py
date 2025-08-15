@@ -15,11 +15,127 @@ import platform
 import time
 import cv2
 from datetime import datetime
+import sys
+import atexit
+try:
+    import fcntl  # Unix-like systems only
+except ImportError:
+    fcntl = None  # Windows doesn't have fcntl
 
 # Application Information
 APP_VERSION = "1.4.2.1"
 APP_AUTHOR = "Ed Perry"
 APP_REPO_URL = "https://github.com/eperry/ScreenAlert"
+
+# Single instance protection
+LOCK_FILE = None
+LOCK_FILE_PATH = None
+
+def get_app_data_dir():
+    """Get the Windows application data directory for ScreenAlert"""
+    if platform.system() == "Windows":
+        # Use Windows APPDATA for configuration
+        app_data = os.environ.get('APPDATA', os.path.expanduser('~'))
+        app_dir = os.path.join(app_data, 'ScreenAlert')
+    else:
+        # Fallback for other platforms
+        app_dir = os.path.expanduser('~/.screenalert')
+    
+    # Create directory if it doesn't exist
+    os.makedirs(app_dir, exist_ok=True)
+    return app_dir
+
+def acquire_instance_lock():
+    """Acquire a lock to prevent multiple instances"""
+    global LOCK_FILE, LOCK_FILE_PATH
+    
+    app_data_dir = get_app_data_dir()
+    LOCK_FILE_PATH = os.path.join(app_data_dir, 'screenalert.lock')
+    
+    try:
+        if platform.system() == "Windows":
+            # Windows-specific locking using file creation
+            if os.path.exists(LOCK_FILE_PATH):
+                # Check if the process is still running
+                try:
+                    with open(LOCK_FILE_PATH, 'r') as f:
+                        old_pid = int(f.read().strip())
+                    
+                    # Try to check if process is still running
+                    import psutil
+                    if psutil.pid_exists(old_pid):
+                        # Process exists, check if it's actually ScreenAlert
+                        try:
+                            proc = psutil.Process(old_pid)
+                            if 'screenalert' in proc.name().lower():
+                                msgbox.showerror("ScreenAlert", 
+                                    "ScreenAlert is already running.\n\n"
+                                    "Only one instance can run at a time.")
+                                return False
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            pass
+                    
+                    # Old process is gone, remove stale lock file
+                    os.remove(LOCK_FILE_PATH)
+                except (ValueError, FileNotFoundError, ImportError):
+                    # Invalid PID or psutil not available, remove lock file
+                    try:
+                        os.remove(LOCK_FILE_PATH)
+                    except FileNotFoundError:
+                        pass
+            
+            # Create new lock file with current PID
+            LOCK_FILE = open(LOCK_FILE_PATH, 'w')
+            LOCK_FILE.write(str(os.getpid()))
+            LOCK_FILE.flush()
+            
+        else:
+            # Unix-like systems using fcntl
+            if fcntl is None:
+                # fcntl not available, fallback to simple file check
+                if os.path.exists(LOCK_FILE_PATH):
+                    msgbox.showerror("ScreenAlert", 
+                        "ScreenAlert may already be running.\n\n"
+                        "Only one instance can run at a time.")
+                    return False
+                
+                LOCK_FILE = open(LOCK_FILE_PATH, 'w')
+                LOCK_FILE.write(str(os.getpid()))
+                LOCK_FILE.flush()
+            else:
+                LOCK_FILE = open(LOCK_FILE_PATH, 'w')
+                fcntl.flock(LOCK_FILE.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                LOCK_FILE.write(str(os.getpid()))
+                LOCK_FILE.flush()
+            
+        # Register cleanup function
+        atexit.register(release_instance_lock)
+        return True
+        
+    except (IOError, OSError, ImportError) as e:
+        if "psutil" not in str(e):
+            msgbox.showerror("ScreenAlert", 
+                "ScreenAlert is already running.\n\n"
+                "Only one instance can run at a time.")
+        return False
+
+def release_instance_lock():
+    """Release the instance lock"""
+    global LOCK_FILE, LOCK_FILE_PATH
+    
+    if LOCK_FILE:
+        try:
+            LOCK_FILE.close()
+        except:
+            pass
+        LOCK_FILE = None
+    
+    if LOCK_FILE_PATH and os.path.exists(LOCK_FILE_PATH):
+        try:
+            os.remove(LOCK_FILE_PATH)
+        except:
+            pass
+        LOCK_FILE_PATH = None
 
 class ToolTip:
     """
@@ -78,7 +194,8 @@ if platform.system() == "Windows":
         print("pyttsx3 not installed. TTS will not work.")
         pyttsx3 = None
 
-CONFIG_FILE = "screenalert_config.json"
+# Configuration and data paths
+CONFIG_FILE = os.path.join(get_app_data_dir(), "screenalert_config.json")
 
 def get_window_list():
     """Get list of all visible windows with titles"""
@@ -317,6 +434,54 @@ def create_no_window_image(width=120, height=100, bg_color="#333"):
     return img
 
 def load_config():
+    """Load configuration with migration support for Windows data directory"""
+    # Check for old config file in current directory first
+    old_config_path = "screenalert_config.json"
+    
+    if os.path.exists(old_config_path) and not os.path.exists(CONFIG_FILE):
+        # Migrate old config to new location
+        try:
+            with open(old_config_path, 'r') as f:
+                config = json.load(f)
+            
+            # Update capture_directory to new location if it was default
+            if config.get("capture_directory") == "ScreenEvents":
+                config["capture_directory"] = os.path.join(get_app_data_dir(), "ScreenEvents")
+            
+            # Migrate old screen events if they exist
+            old_events_dir = "ScreenEvents"
+            new_events_dir = config.get("capture_directory", os.path.join(get_app_data_dir(), "ScreenEvents"))
+            
+            if os.path.exists(old_events_dir) and old_events_dir != new_events_dir:
+                try:
+                    import shutil
+                    if not os.path.exists(new_events_dir):
+                        shutil.copytree(old_events_dir, new_events_dir)
+                        print(f"Migrated screen events from {old_events_dir} to {new_events_dir}")
+                    else:
+                        # Directory exists, copy files that don't exist
+                        for item in os.listdir(old_events_dir):
+                            old_item = os.path.join(old_events_dir, item)
+                            new_item = os.path.join(new_events_dir, item)
+                            if not os.path.exists(new_item):
+                                if os.path.isfile(old_item):
+                                    shutil.copy2(old_item, new_item)
+                        print(f"Migrated additional screen events to {new_events_dir}")
+                except Exception as e:
+                    print(f"Warning: Could not migrate screen events: {e}")
+            
+            # Save config to new location
+            with open(CONFIG_FILE, 'w') as f:
+                json.dump(config, f, indent=2)
+            
+            print(f"Configuration migrated from {old_config_path} to {CONFIG_FILE}")
+            
+            # Continue with normal processing
+        except Exception as e:
+            print(f"Error migrating config: {e}")
+            # Fall through to normal loading
+    
+    # Normal config loading
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r") as f:
@@ -360,10 +525,20 @@ def load_config():
                     config["target_window"] = None
                 if "window_filter" not in config:
                     config["window_filter"] = ""
+                
+                # Ensure capture_directory uses new default location if still set to old default
+                if config.get("capture_directory") == "ScreenEvents":
+                    config["capture_directory"] = os.path.join(get_app_data_dir(), "ScreenEvents")
+                    # Save the updated config
+                    with open(CONFIG_FILE, 'w') as f:
+                        json.dump(config, f, indent=2)
+                
                 return config
         except Exception as e:
             print(f"Config load failed: {e}, using defaults.")
-    return {
+    
+    # Default configuration with new paths
+    default_config = {
         "regions": [],
         "interval": 1000,
         "highlight_time": 5,
@@ -382,8 +557,14 @@ def load_config():
         "unavailable_color": "#05f",
         "pause_reminder_interval": 60,
         "target_window": None,
-        "window_filter": ""
+        "window_filter": "",
+        "capture_directory": os.path.join(get_app_data_dir(), "ScreenEvents")
     }
+    
+    # Create default capture directory
+    os.makedirs(default_config["capture_directory"], exist_ok=True)
+    
+    return default_config
 
 def save_config(
     regions, interval, highlight_time, default_sound="", default_tts="", alert_threshold=0.99,
@@ -394,8 +575,13 @@ def save_config(
     unavailable_text="Unavailable", unavailable_color="#05f",
     pause_reminder_interval=60, target_window=None, window_filter="",
     capture_on_alert=False, capture_on_green=False, 
-    capture_directory="ScreenEvents", capture_filename_format="{region_name} - {event_type} - {timestamp}"
+    capture_directory=None, capture_filename_format="{region_name} - {event_type} - {timestamp}"
 ):
+    """Save configuration with proper default paths"""
+    # Use Windows data directory as default if not specified
+    if capture_directory is None:
+        capture_directory = os.path.join(get_app_data_dir(), "ScreenEvents")
+    
     serializable_regions = []
     for r in regions:
         r_copy = dict(r)
@@ -426,8 +612,12 @@ def save_config(
         "capture_directory": capture_directory,
         "capture_filename_format": capture_filename_format
     }
+    
+    # Ensure capture directory exists
+    os.makedirs(capture_directory, exist_ok=True)
+    
     with open(CONFIG_FILE, "w") as f:
-        json.dump(config, f)
+        json.dump(config, f, indent=2)
 
 class WindowSelector:
     def __init__(self, master, current_window=None, monitor_id=None, window_filter=""):
@@ -854,6 +1044,10 @@ def advanced_image_comparison(img1, img2, method="combined"):
         return results.get('ssim', 0.5), 1.0, f"SSIM: {results.get('ssim', 'N/A'):.4f}"
 
 def main():
+    # Check for single instance
+    if not acquire_instance_lock():
+        return  # Exit if another instance is running
+    
     config = load_config()
     regions = config["regions"]
     interval = int(config.get("interval", 1000))
