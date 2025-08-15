@@ -218,6 +218,18 @@ def build_with_nuitka():
         f'--output-dir={output_dir.absolute()}',
         '--output-filename=ScreenAlert.exe',
         '--include-data-files=screenalert_config.json=screenalert_config.json',
+        # TTS and Windows COM support
+        '--include-module=win32com',
+        '--include-module=win32com.client',
+        '--include-module=pyttsx3',
+        '--include-module=pywintypes',
+        '--include-module=pythoncom',
+        # Audio support
+        '--include-module=winsound',
+        '--include-module=pygame',
+        # Additional system modules
+        '--include-module=subprocess',
+        '--include-module=psutil',
         '--jobs=4',  # Conservative for stability
         '--lto=no',  # Disabled for faster builds and AV safety
         '--no-prefer-source-code',  # Use bytecode for faster compilation

@@ -189,9 +189,15 @@ from ctypes import windll
 if platform.system() == "Windows":
     import winsound
     try:
+        import win32com.client
+    except ImportError:
+        print("pywin32 not installed. Advanced Windows features may not work.")
+        win32com = None
+    
+    try:
         import pyttsx3
     except ImportError:
-        print("pyttsx3 not installed. TTS will not work.")
+        print("pyttsx3 not installed. Will use native Windows TTS.")
         pyttsx3 = None
 
 # Configuration and data paths
@@ -955,42 +961,87 @@ def play_sound(sound_file):
         print(f"Failed to play sound: {e}")
 
 def speak_tts(message):
+    """Speak a TTS message with improved compiled executable compatibility"""
     if not message:
         print("[DEBUG] TTS: No message provided")
         return
     
     print(f"[DEBUG] TTS: Attempting to speak: '{message}'")
     
-    try:
-        if platform.system() == "Windows" and pyttsx3:
-            print("[DEBUG] TTS: Using pyttsx3 on Windows")
-            engine = pyttsx3.init()
-            
-            # Set properties for better speech
-            rate = engine.getProperty('rate')
-            engine.setProperty('rate', max(150, rate - 50))  # Slower speech
-            
-            volume = engine.getProperty('volume')
-            engine.setProperty('volume', min(1.0, volume + 0.1))  # Slightly louder
-            
-            engine.say(message)
-            engine.runAndWait()
-            print("[DEBUG] TTS: Speech completed successfully")
-        else:
-            print("[DEBUG] TTS: Using system TTS commands")
-            if os.system(f"espeak '{message}' &") != 0:
-                os.system(f"say '{message}' &")
-    except Exception as e:
-        print(f"[ERROR] Failed to speak TTS: {e}")
-        # Fallback to Windows SAPI if pyttsx3 fails
-        if platform.system() == "Windows":
-            try:
-                import win32com.client
+    # For Windows, prioritize native SAPI over pyttsx3 for better compiled compatibility
+    if platform.system() == "Windows":
+        # Method 1: Try Windows SAPI first (most reliable in compiled executables)
+        try:
+            if 'win32com' in globals() and win32com:
+                print("[DEBUG] TTS: Using Windows SAPI (win32com)")
                 speaker = win32com.client.Dispatch("SAPI.SpVoice")
                 speaker.Speak(message)
-                print("[DEBUG] TTS: Fallback to SAPI successful")
-            except Exception as e2:
-                print(f"[ERROR] SAPI fallback also failed: {e2}")
+                print("[DEBUG] TTS: Windows SAPI speech completed successfully")
+                return
+        except Exception as e:
+            print(f"[WARNING] TTS: Windows SAPI failed: {e}")
+        
+        # Method 2: Try PowerShell SAPI (fallback for win32com issues)
+        try:
+            print("[DEBUG] TTS: Using PowerShell SAPI")
+            import subprocess
+            
+            # Escape single quotes in the message
+            escaped_message = message.replace("'", "''")
+            
+            # PowerShell command to use SAPI
+            ps_cmd = f"""
+Add-Type -AssemblyName System.Speech
+$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
+$synth.Speak('{escaped_message}')
+"""
+            
+            result = subprocess.run([
+                'powershell', '-Command', ps_cmd
+            ], capture_output=True, text=True, timeout=10)
+            
+            if result.returncode == 0:
+                print("[DEBUG] TTS: PowerShell SAPI speech completed successfully")
+                return
+            else:
+                print(f"[WARNING] TTS: PowerShell SAPI failed: {result.stderr}")
+                
+        except Exception as e:
+            print(f"[WARNING] TTS: PowerShell SAPI failed: {e}")
+        
+        # Method 3: Try pyttsx3 (last resort, often fails in compiled executables)
+        try:
+            if pyttsx3:
+                print("[DEBUG] TTS: Using pyttsx3 as fallback")
+                engine = pyttsx3.init()
+                
+                # Set properties for better speech
+                try:
+                    rate = engine.getProperty('rate')
+                    engine.setProperty('rate', max(150, rate - 50))  # Slower speech
+                    
+                    volume = engine.getProperty('volume')
+                    engine.setProperty('volume', min(1.0, volume + 0.1))  # Slightly louder
+                except:
+                    pass  # Ignore property setting errors
+                
+                engine.say(message)
+                engine.runAndWait()
+                print("[DEBUG] TTS: pyttsx3 speech completed successfully")
+                return
+        except Exception as e:
+            print(f"[WARNING] TTS: pyttsx3 failed: {e}")
+        
+        print("[ERROR] TTS: All Windows TTS methods failed")
+    
+    else:
+        # Non-Windows systems
+        print("[DEBUG] TTS: Using system TTS commands")
+        try:
+            if os.system(f"espeak '{message}' &") != 0:
+                os.system(f"say '{message}' &")
+        except Exception as e:
+            print(f"[ERROR] TTS: System command failed: {e}")
 
 def advanced_image_comparison(img1, img2, method="combined"):
     """
