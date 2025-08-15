@@ -41,13 +41,24 @@ def sign_executable_if_possible(exe_path):
     # Find signtool
     signtool = find_signtool()
     if not signtool:
-        return False
+        print("[SIGN] signtool not found, attempting self-signed certificate...")
+        try:
+            # Try to use self-signed certificate approach
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("create_selfsigned_cert", "create_selfsigned_cert.py")
+            cert_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(cert_module)
+            return cert_module.sign_with_self_signed(exe_path)
+        except Exception as e:
+            print(f"[SIGN] Self-signed certificate failed: {e}")
+            return False
     
     # Look for certificate files
     cert_files = [
         "ScreenAlert-Certificate.pfx",
-        "certificate.pfx",
-        "code-signing.pfx"
+        "certificate.pfx", 
+        "code-signing.pfx",
+        "ScreenAlert-SelfSigned.pfx"  # Add self-signed option
     ]
     
     cert_path = None
@@ -67,8 +78,24 @@ def sign_executable_if_possible(exe_path):
             with open(cert_path, "wb") as f:
                 f.write(base64.b64decode(cert_base64))
     
+    # If no certificate found, try to create self-signed
     if not cert_path:
-        return False
+        print("[SIGN] No certificate found, creating self-signed certificate...")
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("create_selfsigned_cert", "create_selfsigned_cert.py")
+            cert_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(cert_module)
+            
+            # Create self-signed certificate
+            self_signed_path = "ScreenAlert-SelfSigned.pfx"
+            if cert_module.create_self_signed_certificate(output_pfx=self_signed_path):
+                cert_path = self_signed_path
+            else:
+                return False
+        except Exception as e:
+            print(f"[SIGN] Failed to create self-signed certificate: {e}")
+            return False
     
     # Get password
     password = os.environ.get('SIGNING_PASSWORD', 'ScreenAlert2025!')
@@ -90,8 +117,10 @@ def sign_executable_if_possible(exe_path):
         if cert_path == "temp_certificate.pfx":
             os.remove(cert_path)
         
+        print(f"[SUCCESS] Executable signed with certificate: {cert_path}")
         return True
-    except subprocess.CalledProcessError:
+    except subprocess.CalledProcessError as e:
+        print(f"[ERROR] Signing failed: {e.stderr}")
         # Clean up temporary certificate on failure too
         if cert_path == "temp_certificate.pfx" and os.path.exists(cert_path):
             os.remove(cert_path)
