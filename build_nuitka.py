@@ -178,15 +178,31 @@ def build_with_nuitka(sign=True):
     dist_dir = Path("dist-nuitka")
     if dist_dir.exists():
         print(f"[BUILD] Removing existing dist directory: {dist_dir}")
-        shutil.rmtree(dist_dir)
+        try:
+            shutil.rmtree(dist_dir)
+        except PermissionError as e:
+            print(f"[WARNING] Could not remove existing dist directory: {e}")
+            print("[WARNING] This may be because the executable is still running or locked")
+            print("[WARNING] Trying to continue with build anyway...")
+            # Try to rename the directory instead
+            import tempfile
+            backup_dir = Path(tempfile.mktemp(prefix="dist-nuitka-backup-"))
+            try:
+                dist_dir.rename(backup_dir)
+                print(f"[BUILD] Moved existing directory to {backup_dir}")
+            except Exception as rename_error:
+                print(f"[ERROR] Could not move existing directory: {rename_error}")
+                print("[ERROR] Please close any running ScreenAlert instances and try again")
+                return None
     
-    # Base command
+    # Base command with required plugins
     cmd = [
         sys.executable,
         "-m", "nuitka",
         "--standalone",
         "--onefile",
         "--assume-yes-for-downloads",
+        "--enable-plugin=tk-inter",  # Required for tkinter
         "--warn-implicit-exceptions",
         "--warn-unusual-code",
         "--output-dir=dist-nuitka",
