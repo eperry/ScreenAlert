@@ -150,7 +150,7 @@ def ensure_config_exists():
 def build_with_nuitka():
     """Build ScreenAlert using Nuitka for native compilation (antivirus-safe)."""
     
-    print("🚀 Building ScreenAlert with Nuitka (Antivirus-Safe + Pre-compiled Optimizations)")
+    print("[BUILD] Building ScreenAlert with Nuitka (Antivirus-Safe + Pre-compiled Optimizations)")
     print("=" * 80)
     
     if not check_nuitka():
@@ -159,7 +159,7 @@ def build_with_nuitka():
     # Load optimization config if available
     optimization_config = load_optimization_config()
     if optimization_config:
-        print("🔧 Using pre-compiled module optimizations...")
+        print("[OPTIMIZATION] Using pre-compiled module optimizations...")
     
     # Ensure output directory exists
     output_dir = Path("dist-nuitka")
@@ -184,7 +184,7 @@ def build_with_nuitka():
         '--file-description=Screen monitoring and alert system',
         '--product-version=1.4.2',
         '--file-version=1.4.2.0',
-        '--copyright=© 2025 ScreenAlert',
+        '--copyright=(C) 2025 ScreenAlert',
         '--company-name=ScreenAlert',
         f'--output-dir={output_dir.absolute()}',
         '--output-filename=ScreenAlert.exe',
@@ -243,11 +243,11 @@ def build_with_nuitka():
             try:
                 sign_result = sign_executable_if_possible(exe_path)
                 if sign_result:
-                    print(f"✅ Executable signed successfully!")
+                    print(f"[SUCCESS] Executable signed successfully!")
                 else:
-                    print(f"ℹ️  Executable not signed (certificate not available)")
+                    print(f"[INFO] Executable not signed (certificate not available)")
             except Exception as e:
-                print(f"⚠️  Code signing failed: {e}")
+                print(f"[WARNING] Code signing failed: {e}")
             
             return True
         else:
