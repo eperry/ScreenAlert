@@ -87,30 +87,16 @@ jobs:
       run: |
         python -m pip install --upgrade pip --no-warn-script-location
         
-        # Check if we have cached Nuitka installation
-        $nuitkaInstalled = python -c "try: import nuitka; print('installed')" 2>$null
-        if ($nuitkaInstalled -ne "installed") {
-            Write-Host "Installing Nuitka and core dependencies..."
-            pip install --no-deps nuitka ordered-set zstandard
-        } else {
-            Write-Host "Nuitka found in cache, skipping installation"
-        }
-        
         # Install project dependencies with caching awareness
         Write-Host "Installing project dependencies..."
         pip install -r screenalert_requirements.txt --no-warn-script-location
         
-    - name: Setup Nuitka pre-compilation optimizations
-      run: |
-        Write-Host "Setting up Nuitka pre-compilation optimizations..."
-        python setup_nuitka_precompiled.py
-        
-    - name: Build with Nuitka (optimized with code signing)
+    - name: Build with Nuitka (robust build process)
       env:
         SIGNING_CERTIFICATE: ${{ secrets.SIGNING_CERTIFICATE }}
         SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
       run: |
-        Write-Host "Building ScreenAlert with Nuitka optimization framework..." -ForegroundColor Green
+        Write-Host "Building ScreenAlert with robust Nuitka build..." -ForegroundColor Green
         python build_nuitka.py
         
     - name: Create release archive
