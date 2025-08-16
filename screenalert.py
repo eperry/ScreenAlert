@@ -17,6 +17,8 @@ import cv2
 from datetime import datetime
 import sys
 import atexit
+import logging
+import logging.handlers
 try:
     import fcntl  # Unix-like systems only
 except ImportError:
@@ -30,6 +32,39 @@ APP_REPO_URL = "https://github.com/eperry/ScreenAlert"
 # Single instance protection
 LOCK_FILE = None
 LOCK_FILE_PATH = None
+
+def setup_logging():
+    """Setup rotating file logging for ScreenAlert"""
+    app_data_dir = get_app_data_dir()
+    log_dir = os.path.join(app_data_dir, 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+    
+    # Create timestamped log filename
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_filename = f"screenalert_{timestamp}.log"
+    log_path = os.path.join(log_dir, log_filename)
+    
+    # Configure logging
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format='%(asctime)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s',
+        handlers=[
+            # Rotating file handler (keeps last 10 log files, 10MB each)
+            logging.handlers.RotatingFileHandler(
+                log_path, 
+                maxBytes=10*1024*1024,  # 10MB
+                backupCount=10
+            )
+        ]
+    )
+    
+    # Log startup information
+    logging.info(f"ScreenAlert v{APP_VERSION} starting up")
+    logging.info(f"Log file: {log_path}")
+    logging.info(f"Platform: {platform.system()} {platform.release()}")
+    logging.info(f"Python: {sys.version}")
+    
+    return log_path
 
 def get_app_data_dir():
     """Get the Windows application data directory for ScreenAlert"""
@@ -191,13 +226,13 @@ if platform.system() == "Windows":
     try:
         import win32com.client
     except ImportError:
-        print("pywin32 not installed. Advanced Windows features may not work.")
+        logging.warning("pywin32 not installed. Advanced Windows features may not work.")
         win32com = None
     
     try:
         import pyttsx3
     except ImportError:
-        print("pyttsx3 not installed. Will use native Windows TTS.")
+        logging.info("pyttsx3 not installed. Will use native Windows TTS.")
         pyttsx3 = None
 
 # Configuration and data paths
@@ -541,7 +576,7 @@ def load_config():
                 
                 return config
         except Exception as e:
-            print(f"Config load failed: {e}, using defaults.")
+            logging.warning(f"Config load failed: {e}, using defaults.")
     
     # Default configuration with new paths
     default_config = {
@@ -908,11 +943,11 @@ def save_screen_capture(region_img, region_name, event_type, capture_settings):
         # Save the image
         region_img.save(filepath, 'PNG')
         
-        print(f"Screen capture saved: {filepath}")
+        logging.info(f"Screen capture saved: {filepath}")
         return filepath
         
     except Exception as e:
-        print(f"Error saving screen capture: {e}")
+        logging.error(f"Error saving screen capture: {e}")
         return None
 
 def create_rotated_text_image(text, width, height, color="#fff", bgcolor=None, font_size=18):
@@ -963,27 +998,27 @@ def play_sound(sound_file):
 def speak_tts(message):
     """Speak a TTS message with improved compiled executable compatibility"""
     if not message:
-        print("[DEBUG] TTS: No message provided")
+        logging.debug("TTS: No message provided")
         return
     
-    print(f"[DEBUG] TTS: Attempting to speak: '{message}'")
+    logging.debug(f"TTS: Attempting to speak: '{message}'")
     
     # For Windows, prioritize native SAPI over pyttsx3 for better compiled compatibility
     if platform.system() == "Windows":
         # Method 1: Try Windows SAPI first (most reliable in compiled executables)
         try:
             if 'win32com' in globals() and win32com:
-                print("[DEBUG] TTS: Using Windows SAPI (win32com)")
+                logging.debug("TTS: Using Windows SAPI (win32com)")
                 speaker = win32com.client.Dispatch("SAPI.SpVoice")
                 speaker.Speak(message)
-                print("[DEBUG] TTS: Windows SAPI speech completed successfully")
+                logging.debug("TTS: Windows SAPI speech completed successfully")
                 return
         except Exception as e:
-            print(f"[WARNING] TTS: Windows SAPI failed: {e}")
+            logging.warning(f"TTS: Windows SAPI failed: {e}")
         
         # Method 2: Try PowerShell SAPI (fallback for win32com issues)
         try:
-            print("[DEBUG] TTS: Using PowerShell SAPI")
+            logging.debug("TTS: Using PowerShell SAPI")
             import subprocess
             
             # Escape single quotes in the message
@@ -1001,18 +1036,18 @@ $synth.Speak('{escaped_message}')
             ], capture_output=True, text=True, timeout=10)
             
             if result.returncode == 0:
-                print("[DEBUG] TTS: PowerShell SAPI speech completed successfully")
+                logging.debug("TTS: PowerShell SAPI speech completed successfully")
                 return
             else:
-                print(f"[WARNING] TTS: PowerShell SAPI failed: {result.stderr}")
+                logging.warning(f"TTS: PowerShell SAPI failed: {result.stderr}")
                 
         except Exception as e:
-            print(f"[WARNING] TTS: PowerShell SAPI failed: {e}")
+            logging.warning(f"TTS: PowerShell SAPI failed: {e}")
         
         # Method 3: Try pyttsx3 (last resort, often fails in compiled executables)
         try:
             if pyttsx3:
-                print("[DEBUG] TTS: Using pyttsx3 as fallback")
+                logging.debug("TTS: Using pyttsx3 as fallback")
                 engine = pyttsx3.init()
                 
                 # Set properties for better speech
@@ -1027,21 +1062,21 @@ $synth.Speak('{escaped_message}')
                 
                 engine.say(message)
                 engine.runAndWait()
-                print("[DEBUG] TTS: pyttsx3 speech completed successfully")
+                logging.debug("TTS: pyttsx3 speech completed successfully")
                 return
         except Exception as e:
-            print(f"[WARNING] TTS: pyttsx3 failed: {e}")
+            logging.warning(f"TTS: pyttsx3 failed: {e}")
         
-        print("[ERROR] TTS: All Windows TTS methods failed")
+        logging.error("TTS: All Windows TTS methods failed")
     
     else:
         # Non-Windows systems
-        print("[DEBUG] TTS: Using system TTS commands")
+        logging.debug("TTS: Using system TTS commands")
         try:
             if os.system(f"espeak '{message}' &") != 0:
                 os.system(f"say '{message}' &")
         except Exception as e:
-            print(f"[ERROR] TTS: System command failed: {e}")
+            logging.error(f"TTS: System command failed: {e}")
 
 def advanced_image_comparison(img1, img2, method="combined"):
     """
@@ -1095,15 +1130,24 @@ def advanced_image_comparison(img1, img2, method="combined"):
         return results.get('ssim', 0.5), 1.0, f"SSIM: {results.get('ssim', 'N/A'):.4f}"
 
 def main():
+    # Setup logging first
+    log_path = setup_logging()
+    logging.info("ScreenAlert starting up...")
+    
     # Check for single instance
     if not acquire_instance_lock():
+        logging.warning("Another instance is already running, exiting")
         return  # Exit if another instance is running
+    
+    logging.info("Single instance lock acquired successfully")
     
     config = load_config()
     regions = config["regions"]
     interval = int(config.get("interval", 1000))
     highlight_time = int(config.get("highlight_time", 5))
     target_window = config.get("target_window")
+
+    logging.info(f"Configuration loaded: {len(regions)} regions, {interval}ms interval")
 
     root = tk.Tk()
     root.title("ScreenAlert - Enhanced Interface")
