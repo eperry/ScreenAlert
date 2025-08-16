@@ -195,7 +195,7 @@ def build_with_nuitka(sign=True):
                 print("[ERROR] Please close any running ScreenAlert instances and try again")
                 return None
     
-    # Base command with required plugins
+    # Base command with required plugins and performance optimizations
     cmd = [
         sys.executable,
         "-m", "nuitka",
@@ -203,8 +203,13 @@ def build_with_nuitka(sign=True):
         "--onefile",
         "--assume-yes-for-downloads",
         "--enable-plugin=tk-inter",  # Required for tkinter
+        "--windows-console-mode=disable",  # Hide console window
         "--warn-implicit-exceptions",
         "--warn-unusual-code",
+        "--lto=yes",  # Link-time optimization for better performance
+        "--jobs=8",   # Use more CPU cores for faster compilation
+        "--python-flag=no_docstrings",  # Remove docstrings for smaller size
+        "--python-flag=no_asserts",     # Remove assert statements for production
         "--output-dir=dist-nuitka",
         "--output-filename=ScreenAlert.exe",
         "--include-data-file=screenalert_config.json=screenalert_config.json",
