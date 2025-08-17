@@ -2,6 +2,15 @@
 """
 ScreenAlert - Robust Nuitka Builder
 Builds ScreenAlert using Nuitka with robust module detection and error handling
+
+##########################################################################
+# CRITICAL: NO UNICODE CHARACTERS IN ANY PRINT STATEMENTS!            #
+# GitHub Actions CI environment has cp1252 encoding issues with Unicode #
+# Use only ASCII characters in all output messages.                     #
+#                                                                        #
+# DO NOT USE: checkmarks, arrows, emojis, or any non-ASCII symbols      #
+# USE INSTEAD: [OK] [SKIP] [ERROR] [SUCCESS] [WARNING] [INFO] etc.      #
+##########################################################################
 """
 
 import subprocess
@@ -250,10 +259,10 @@ def build_with_nuitka(sign=True):
         try:
             __import__(module_name)
             optional_modules.extend(module_flags)
-            print(f"[BUILD] ✓ Including {module_name}")
+            print(f"[BUILD] [OK] Including {module_name}")  # NO UNICODE! GitHub Actions breaks!
             available_count += 1
         except ImportError:
-            print(f"[BUILD] ✗ Skipping {module_name} (not available)")
+            print(f"[BUILD] [SKIP] Skipping {module_name} (not available)")  # NO UNICODE!
     
     print(f"[BUILD] Module availability: {available_count}/{total_count}")
     
