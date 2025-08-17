@@ -25,7 +25,7 @@ except ImportError:
     fcntl = None  # Windows doesn't have fcntl
 
 # Application Information
-APP_VERSION = "1.4.3"
+APP_VERSION = "1.5"
 APP_AUTHOR = "Ed Perry"
 APP_REPO_URL = "https://github.com/eperry/ScreenAlert"
 
