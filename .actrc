@@ -1,0 +1,14 @@
+# Act configuration for ScreenAlert
+# This file configures act to use reasonable defaults
+
+# Use smaller Ubuntu image instead of full Windows (faster startup)
+-P windows-latest=catthehacker/ubuntu:act-latest
+
+# Set default platform
+--platform windows-latest
+
+# Enable verbose output for debugging
+--verbose
+
+# Use .secrets file for secrets (if it exists)
+--secret-file .secrets
