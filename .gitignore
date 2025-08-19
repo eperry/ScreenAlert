@@ -57,6 +57,7 @@ compilation-report.xml
 *.local
 *.env
 .env.*
+.secrets
 
 # Backup files
 *~
