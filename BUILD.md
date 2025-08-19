@@ -1,66 +1,147 @@
 # ScreenAlert Build Guide
 
-## ⚡ Single Build Method: Act (Local GitHub Actions)
+ScreenAlert uses **ACT (local GitHub Actions)** for all builds to ensure consistency, reproducibility, and cross-platform compatibility.
 
-This project uses **one unified build method**: running GitHub Actions locally using `act`. This ensures 100% consistency between local builds and CI/CD.
+## 🚀 Building ScreenAlert
 
-## 🚀 Quick Start
-
-### 1. Setup (One Time)
+### Quick Start
 ```powershell
-# Install and setup act
-.\scripts\install-act.ps1
-
-# Start Docker Desktop (required for act)
+.\run-github-actions.ps1
 ```
 
-### 2. Build Commands
+This command runs the complete build process in a containerized environment using the same workflow that runs in GitHub Actions CI/CD.
 
+## 🏗️ Build System Architecture
+
+### ACT-Only Building
+**Direct Windows builds are disabled.** All builds must go through ACT for these reasons:
+
+✅ **Consistency**: Same build environment across Windows, Linux, and macOS  
+✅ **Reproducibility**: Containerized builds eliminate "works on my machine" issues  
+✅ **Dependency Management**: No local Python/library conflicts  
+✅ **CI/CD Parity**: Matches exactly what runs in GitHub Actions  
+
+### Build Process Overview
+1. **ACT** launches a Linux container (Ubuntu-based)
+2. **Python 3.11.13** is installed with cross-platform dependencies
+3. **Nuitka** compiles ScreenAlert to a standalone executable
+4. **Artifacts** are generated and cached for future builds
+
+## 📋 Requirements
+
+### System Requirements
+- **Docker Desktop** (for ACT containerization)
+- **PowerShell 5.1+** (Windows PowerShell or PowerShell Core)
+- **ACT** (nektos/act) - automatically installed by run script
+
+### No Manual Dependencies
+- ❌ No local Python installation required
+- ❌ No pip package management needed  
+- ❌ No virtual environment setup required
+- ❌ No Nuitka installation needed
+
+Everything is handled automatically in the containerized build environment.
+
+## 🛠️ Build Commands
+
+### Primary Build Command
 ```powershell
-# Test build (simulate push)
-act push
-
-# Build with version (simulate manual release)  
-act workflow_dispatch --input version=v1.5.2
-
-# Build specific job only
-act -j build-windows
-
-# List available workflows
-act -l
+.\run-github-actions.ps1
 ```
 
-## 📁 What Gets Built
+### Build Options
+```powershell
+# Job-only execution (skips setup checks)
+.\run-github-actions.ps1 -JobOnly
 
-- `dist-nuitka/ScreenAlert.exe` - Standalone executable (~77MB)  
-- `ScreenAlert-v1.5.2.zip` - Release package with docs
-- `SHA256-Hashes.txt` - File integrity hashes
+# Verbose output for debugging
+.\run-github-actions.ps1 -Verbose
+```
 
-## 🔧 Requirements
+## 📁 Build Output
 
-- **Docker Desktop** - Must be running
-- **act** - Installed via the setup script
-- **Python 3.11+** - In virtual environment
-- **Git** - For version tagging
+### Generated Files
+```
+dist-nuitka/
+  └── ScreenAlert.exe          # Standalone executable
+  
+ScreenAlert-main.zip           # Distribution package
+hashes.txt                     # File integrity hashes
+```
 
-## 💡 Benefits
+### Build Artifacts
+- **Executable**: `dist-nuitka/ScreenAlert.exe`
+- **Package**: `ScreenAlert-main.zip` 
+- **Hashes**: File integrity verification
+- **Logs**: Complete build output and debug info
 
-- **Identical to GitHub Actions** - Same environment, same results
-- **No GitHub pushes needed** - Test locally first  
-- **Professional workflow** - Industry standard process
-- **One method only** - No confusion, no maintenance burden
+## 🔧 Troubleshooting
 
-## 🆘 Troubleshooting
+### Common Issues
 
-| Issue | Solution |
-|-------|----------|
-| Docker not found | Start Docker Desktop |
-| act not found | Run `.\scripts\install-act.ps1` |
-| Build fails | Check virtual environment is active |
-| No workflows | Run from project root directory |
+**"Docker not running"**
+- Start Docker Desktop
+- Ensure Docker daemon is running
 
-## 🎯 Workflow Files
+**"ACT not found"**
+- The script will automatically install ACT
+- Manual install: `winget install nektos.act`
 
-- `.github/workflows/build-release.yml` - Main build workflow
-- `build/build_nuitka.py` - Core build script  
-- `scripts/install-act.ps1` - Setup and usage guide
+**"Build timeout"**
+- Large dependencies may take time on first run
+- Subsequent builds use cached layers
+
+**"Container pull failed"**  
+- Check internet connection
+- Verify Docker can pull images
+
+### Debug Mode
+```powershell
+.\run-github-actions.ps1 -Verbose
+```
+
+This provides detailed output for troubleshooting build issues.
+
+## 🚫 Disabled Commands
+
+These scripts now redirect to ACT builds:
+
+- `.\build-direct.ps1` → Use `.\run-github-actions.ps1`
+- `.\check-build.ps1` → Use `.\run-github-actions.ps1`
+- `python build/build_nuitka.py` → Use ACT workflow
+
+## 🎯 Why ACT-Only?
+
+### Traditional Problems
+- **Environment Drift**: Different Python versions, missing libraries
+- **Platform Issues**: Windows-specific bugs that don't appear on Linux
+- **Dependency Hell**: Conflicting package versions
+- **Inconsistent Results**: Builds work locally but fail in CI
+
+### ACT Solutions
+- **Hermetic Builds**: Completely isolated, repeatable environment
+- **Cross-Platform**: Same container on Windows, macOS, and Linux  
+- **Version Locked**: Exact Python and dependency versions
+- **CI/CD Identical**: Same process as production deployments
+
+## 📖 Advanced Usage
+
+### Custom Workflows
+The build uses `.github/workflows/build-release.yml` which can be modified for:
+- Different Python versions
+- Additional build targets
+- Custom optimization flags
+- Extended testing phases
+
+### Cache Management
+ACT automatically caches:
+- Python packages (pip cache)
+- Compiled modules
+- Nuitka artifacts  
+- Container layers
+
+Cache is stored in Docker volumes for fast subsequent builds.
+
+---
+
+**Summary**: Use `.\run-github-actions.ps1` for all builds. Direct Windows compilation is disabled to ensure consistency and reliability.

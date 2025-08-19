@@ -11,6 +11,12 @@ Builds ScreenAlert using Nuitka with robust module detection and error handling
 # DO NOT USE: checkmarks, arrows, emojis, or any non-ASCII symbols      #
 # USE INSTEAD: [OK] [SKIP] [ERROR] [SUCCESS] [WARNING] [INFO] etc.      #
 ##########################################################################
+
+##########################################################################
+# BUILD ENVIRONMENT RESTRICTION                                         #
+# This script ONLY runs in ACT (local GitHub Actions) environment.     #
+# Direct Windows CLI execution is DISABLED for consistency.             #
+##########################################################################
 """
 
 import subprocess
@@ -19,6 +25,36 @@ import os
 import shutil
 import json
 import glob
+
+def check_execution_environment():
+    """Ensure this script only runs in ACT/CI environment, not directly on Windows."""
+    # Check if running in ACT environment
+    if os.environ.get('ACT') == 'true':
+        print("[BUILD] Running in ACT environment - proceeding with build")
+        return True
+    
+    # Check if running in GitHub Actions
+    if os.environ.get('GITHUB_ACTIONS') == 'true':
+        print("[BUILD] Running in GitHub Actions environment - proceeding with build")
+        return True
+    
+    # Direct Windows execution detected - block it
+    print("[ERROR] Direct Windows execution detected!")
+    print("[ERROR] This build script is designed to run ONLY through ACT (local GitHub Actions)")
+    print("[ERROR] ")
+    print("[ERROR] To build ScreenAlert, please use:")
+    print("[ERROR]   .\\run-github-actions.ps1")
+    print("[ERROR] ")
+    print("[ERROR] This ensures consistent builds across all environments and uses the")
+    print("[ERROR] proper containerized build environment with all dependencies.")
+    print("[ERROR] ")
+    print("[ERROR] Build cancelled.")
+    return False
+
+def is_act_environment():
+    """Check if we're running in ACT or GitHub Actions environment"""
+    return os.environ.get('ACT') == 'true' or os.environ.get('GITHUB_ACTIONS') == 'true'
+
 from pathlib import Path
 
 def find_signtool():
@@ -51,8 +87,9 @@ def sign_executable_if_possible(exe_path):
     if not signtool:
         print("[SIGN] signtool not found, attempting self-signed certificate...")
         try:
+            # Try to use self-signed certificate approach
             import importlib.util
-            spec = importlib.util.spec_from_file_location("create_selfsigned_cert", "../security/create_selfsigned_cert.py")
+            spec = importlib.util.spec_from_file_location("create_selfsigned_cert", "create_selfsigned_cert.py")
             cert_module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(cert_module)
             return cert_module.sign_with_self_signed(exe_path)
@@ -62,10 +99,10 @@ def sign_executable_if_possible(exe_path):
     
     # Look for certificate files
     cert_files = [
-        "../security/certificates/ScreenAlert-Certificate.pfx",
-        "../security/certificates/certificate.pfx", 
-        "../security/certificates/code-signing.pfx",
-        "../security/certificates/ScreenAlert-SelfSigned.pfx"  # Add self-signed option
+        "ScreenAlert-Certificate.pfx",
+        "certificate.pfx", 
+        "code-signing.pfx",
+        "ScreenAlert-SelfSigned.pfx"  # Add self-signed option
     ]
     
     cert_path = None
@@ -90,12 +127,12 @@ def sign_executable_if_possible(exe_path):
         print("[SIGN] No certificate found, creating self-signed certificate...")
         try:
             import importlib.util
-            spec = importlib.util.spec_from_file_location("create_selfsigned_cert", "../security/create_selfsigned_cert.py")
+            spec = importlib.util.spec_from_file_location("create_selfsigned_cert", "create_selfsigned_cert.py")
             cert_module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(cert_module)
             
             # Create self-signed certificate
-            self_signed_path = "../security/certificates/ScreenAlert-SelfSigned.pfx"
+            self_signed_path = "ScreenAlert-SelfSigned.pfx"
             if cert_module.create_self_signed_certificate(output_pfx=self_signed_path):
                 cert_path = self_signed_path
             else:
@@ -155,7 +192,7 @@ def check_nuitka():
 
 def ensure_config_exists():
     """Ensure configuration file exists"""
-    config_file = Path("../screenalert_config.json")  # Adjust path since we're in build/ subdirectory
+    config_file = Path("screenalert_config.json")
     if not config_file.exists():
         print(f"[CONFIG] Creating default config file...")
         default_config = {
@@ -183,7 +220,7 @@ def build_with_nuitka(sign=True):
     # Ensure config file exists
     ensure_config_exists()
     
-    dist_dir = Path("../dist-nuitka")  # Adjust path since we're in build/ subdirectory
+    dist_dir = Path("dist-nuitka")
     if dist_dir.exists():
         print(f"[BUILD] Removing existing dist directory: {dist_dir}")
         try:
@@ -204,6 +241,39 @@ def build_with_nuitka(sign=True):
                 return None
     
     # Base command with required plugins and performance optimizations
+    # Base Nuitka command with proper file paths
+    # Determine the correct path to screenalert.py (should be in parent directory)
+    script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "screenalert.py"))
+    config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "screenalert_config.json"))
+    
+    print(f"[BUILD] Main script path: {script_path}")
+    print(f"[BUILD] Config file path: {config_path}")
+    
+    # Verify files exist
+    if not os.path.exists(script_path):
+        print(f"[ERROR] Cannot find screenalert.py at: {script_path}")
+        return None
+        
+    # For config file, create a minimal default if it doesn't exist
+    if not os.path.exists(config_path):
+        print(f"[CONFIG] Creating default config file...")
+        default_config = {
+            "regions": [],
+            "settings": {
+                "check_interval": 1.0,
+                "screenshot_delay": 0.1,
+                "alert_sound": True,
+                "alert_voice": True
+            }
+        }
+        try:
+            with open(config_path, 'w') as f:
+                json.dump(default_config, f, indent=2)
+            print(f"[CONFIG] Created default config at: {config_path}")
+        except Exception as e:
+            print(f"[WARNING] Could not create config file: {e}")
+            print("[BUILD] Proceeding without config file inclusion...")
+    
     cmd = [
         sys.executable,
         "-m", "nuitka",
@@ -218,11 +288,19 @@ def build_with_nuitka(sign=True):
         "--jobs=8",   # Use more CPU cores for faster compilation
         "--python-flag=no_docstrings",  # Remove docstrings for smaller size
         "--python-flag=no_asserts",     # Remove assert statements for production
-        "--output-dir=../dist-nuitka",
-        "--output-filename=ScreenAlert.exe",
-        "--include-data-file=../screenalert_config.json=screenalert_config.json",
-        "../screenalert.py"
+        "--output-dir=dist-nuitka",
+        "--output-filename=ScreenAlert.exe"
     ]
+    
+    # Add config file if it exists
+    if os.path.exists(config_path):
+        cmd.append(f"--include-data-file={config_path}=screenalert_config.json")
+        print(f"[CONFIG] Including config file in build")
+    else:
+        print(f"[CONFIG] Building without config file")
+    
+    # Add the main script
+    cmd.append(script_path)
     
     # Test and include optional modules with detailed availability checking
     optional_modules = []
@@ -256,12 +334,39 @@ def build_with_nuitka(sign=True):
     
     for module_name, module_flags in modules_to_test:
         try:
-            __import__(module_name)
-            optional_modules.extend(module_flags)
-            print(f"[BUILD] [OK] Including {module_name}")  # NO UNICODE! GitHub Actions breaks!
-            available_count += 1
+            # Special handling for GUI modules in headless environment
+            if module_name in ['pyautogui', 'cv2', 'tkinter'] and is_act_environment():
+                # Set up headless environment for GUI libraries
+                if 'DISPLAY' not in os.environ:
+                    os.environ['DISPLAY'] = ':99'  # Virtual display
+                if 'QT_QPA_PLATFORM' not in os.environ:
+                    os.environ['QT_QPA_PLATFORM'] = 'offscreen'  # Qt headless mode
+                
+                # Skip actual import for problematic modules, just check if they exist
+                import importlib.util
+                spec = importlib.util.find_spec(module_name)
+                if spec is not None:
+                    optional_modules.extend(module_flags)
+                    print(f"[BUILD] [OK] Including {module_name} (headless mode)")
+                    available_count += 1
+                else:
+                    print(f"[BUILD] [SKIP] Skipping {module_name} (not available)")
+            else:
+                # Normal import testing for non-GUI modules
+                __import__(module_name)
+                optional_modules.extend(module_flags)
+                print(f"[BUILD] [OK] Including {module_name}")  # NO UNICODE! GitHub Actions breaks!
+                available_count += 1
         except ImportError:
             print(f"[BUILD] [SKIP] Skipping {module_name} (not available)")  # NO UNICODE!
+        except Exception as e:
+            # Handle GUI-related errors in headless environment
+            if "DISPLAY" in str(e) or "tkinter" in str(e).lower():
+                print(f"[BUILD] [OK] Including {module_name} (headless mode)")
+                optional_modules.extend(module_flags)
+                available_count += 1
+            else:
+                print(f"[BUILD] [SKIP] Skipping {module_name} ({str(e)[:50]}...)")
     
     print(f"[BUILD] Module availability: {available_count}/{total_count}")
     
@@ -296,6 +401,10 @@ def build_with_nuitka(sign=True):
         return None
 
 if __name__ == "__main__":
+    # First, verify we're running in the correct environment
+    if not check_execution_environment():
+        sys.exit(1)
+    
     result = build_with_nuitka()
     if result:
         print(f"\n[SUCCESS] Build completed successfully!")
