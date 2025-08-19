@@ -39,12 +39,12 @@ jobs:
       if: matrix.os == 'ubuntu-latest'
       run: |
         sudo apt update
-        sudo apt install -y wmctrl xwininfo python3-tk python3-dev
+        sudo apt install -y wmctrl x11-utils python3-tk python3-dev
     
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.11.13'
+        python-version: '3.11'
         cache: 'pip'
         cache-dependency-path: '${{ matrix.requirements_file }}'
     

@@ -15,162 +15,11 @@ import platform
 import time
 import cv2
 from datetime import datetime
-import sys
-import atexit
-import logging
-import logging.handlers
-try:
-    import fcntl  # Unix-like systems only
-except ImportError:
-    fcntl = None  # Windows doesn't have fcntl
 
 # Application Information
-APP_VERSION = "1.5.1"
+APP_VERSION = "2.1.0"
 APP_AUTHOR = "Ed Perry"
 APP_REPO_URL = "https://github.com/eperry/ScreenAlert"
-
-# Single instance protection
-LOCK_FILE = None
-LOCK_FILE_PATH = None
-
-def setup_logging():
-    """Setup rotating file logging for ScreenAlert"""
-    app_data_dir = get_app_data_dir()
-    log_dir = os.path.join(app_data_dir, 'logs')
-    os.makedirs(log_dir, exist_ok=True)
-    
-    # Create timestamped log filename
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_filename = f"screenalert_{timestamp}.log"
-    log_path = os.path.join(log_dir, log_filename)
-    
-    # Configure logging
-    logging.basicConfig(
-        level=logging.DEBUG,
-        format='%(asctime)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s',
-        handlers=[
-            # Rotating file handler (keeps last 10 log files, 10MB each)
-            logging.handlers.RotatingFileHandler(
-                log_path, 
-                maxBytes=10*1024*1024,  # 10MB
-                backupCount=10
-            )
-        ]
-    )
-    
-    # Log startup information
-    logging.info(f"ScreenAlert v{APP_VERSION} starting up")
-    logging.info(f"Log file: {log_path}")
-    logging.info(f"Platform: {platform.system()} {platform.release()}")
-    logging.info(f"Python: {sys.version}")
-    
-    return log_path
-
-def get_app_data_dir():
-    """Get the Windows application data directory for ScreenAlert"""
-    if platform.system() == "Windows":
-        # Use Windows APPDATA for configuration
-        app_data = os.environ.get('APPDATA', os.path.expanduser('~'))
-        app_dir = os.path.join(app_data, 'ScreenAlert')
-    else:
-        # Fallback for other platforms
-        app_dir = os.path.expanduser('~/.screenalert')
-    
-    # Create directory if it doesn't exist
-    os.makedirs(app_dir, exist_ok=True)
-    return app_dir
-
-def acquire_instance_lock():
-    """Acquire a lock to prevent multiple instances"""
-    global LOCK_FILE, LOCK_FILE_PATH
-    
-    app_data_dir = get_app_data_dir()
-    LOCK_FILE_PATH = os.path.join(app_data_dir, 'screenalert.lock')
-    
-    try:
-        if platform.system() == "Windows":
-            # Windows-specific locking using file creation
-            if os.path.exists(LOCK_FILE_PATH):
-                # Check if the process is still running
-                try:
-                    with open(LOCK_FILE_PATH, 'r') as f:
-                        old_pid = int(f.read().strip())
-                    
-                    # Try to check if process is still running
-                    import psutil
-                    if psutil.pid_exists(old_pid):
-                        # Process exists, check if it's actually ScreenAlert
-                        try:
-                            proc = psutil.Process(old_pid)
-                            if 'screenalert' in proc.name().lower():
-                                msgbox.showerror("ScreenAlert", 
-                                    "ScreenAlert is already running.\n\n"
-                                    "Only one instance can run at a time.")
-                                return False
-                        except (psutil.NoSuchProcess, psutil.AccessDenied):
-                            pass
-                    
-                    # Old process is gone, remove stale lock file
-                    os.remove(LOCK_FILE_PATH)
-                except (ValueError, FileNotFoundError, ImportError):
-                    # Invalid PID or psutil not available, remove lock file
-                    try:
-                        os.remove(LOCK_FILE_PATH)
-                    except FileNotFoundError:
-                        pass
-            
-            # Create new lock file with current PID
-            LOCK_FILE = open(LOCK_FILE_PATH, 'w')
-            LOCK_FILE.write(str(os.getpid()))
-            LOCK_FILE.flush()
-            
-        else:
-            # Unix-like systems using fcntl
-            if fcntl is None:
-                # fcntl not available, fallback to simple file check
-                if os.path.exists(LOCK_FILE_PATH):
-                    msgbox.showerror("ScreenAlert", 
-                        "ScreenAlert may already be running.\n\n"
-                        "Only one instance can run at a time.")
-                    return False
-                
-                LOCK_FILE = open(LOCK_FILE_PATH, 'w')
-                LOCK_FILE.write(str(os.getpid()))
-                LOCK_FILE.flush()
-            else:
-                LOCK_FILE = open(LOCK_FILE_PATH, 'w')
-                fcntl.flock(LOCK_FILE.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                LOCK_FILE.write(str(os.getpid()))
-                LOCK_FILE.flush()
-            
-        # Register cleanup function
-        atexit.register(release_instance_lock)
-        return True
-        
-    except (IOError, OSError, ImportError) as e:
-        if "psutil" not in str(e):
-            msgbox.showerror("ScreenAlert", 
-                "ScreenAlert is already running.\n\n"
-                "Only one instance can run at a time.")
-        return False
-
-def release_instance_lock():
-    """Release the instance lock"""
-    global LOCK_FILE, LOCK_FILE_PATH
-    
-    if LOCK_FILE:
-        try:
-            LOCK_FILE.close()
-        except:
-            pass
-        LOCK_FILE = None
-    
-    if LOCK_FILE_PATH and os.path.exists(LOCK_FILE_PATH):
-        try:
-            os.remove(LOCK_FILE_PATH)
-        except:
-            pass
-        LOCK_FILE_PATH = None
 
 class ToolTip:
     """
@@ -224,19 +73,12 @@ from ctypes import windll
 if platform.system() == "Windows":
     import winsound
     try:
-        import win32com.client
-    except ImportError:
-        logging.warning("pywin32 not installed. Advanced Windows features may not work.")
-        win32com = None
-    
-    try:
         import pyttsx3
     except ImportError:
-        logging.info("pyttsx3 not installed. Will use native Windows TTS.")
+        print("pyttsx3 not installed. TTS will not work.")
         pyttsx3 = None
 
-# Configuration and data paths
-CONFIG_FILE = os.path.join(get_app_data_dir(), "screenalert_config.json")
+CONFIG_FILE = "screenalert_config.json"
 
 def get_window_list():
     """Get list of all visible windows with titles"""
@@ -324,115 +166,31 @@ def capture_window(hwnd):
         print(f"Failed to capture window {hwnd}: {e}")
         return None
 
-def find_window_by_title(window_title, exact_match=False, target_size=None, size_tolerance=50):
-    """
-    Try to find a window by its title with improved matching
-    Enhanced with size-based matching to prevent selecting wrong windows
-    
-    Args:
-        window_title: Title of the window to find
-        exact_match: If True, only exact title matches are considered
-        target_size: Tuple of (width, height) of the original window for size-based matching
-        size_tolerance: Pixel tolerance for size matching (default 50px)
-    """
+def find_window_by_title(window_title, exact_match=False):
+    """Try to find a window by its title with improved matching"""
     windows = get_window_list()
     
-    # Strategy 1: Find windows with exact title match, prefer size match if provided
-    exact_matches = []
+    # First try exact match
     for window in windows:
         if window['title'] == window_title:
-            exact_matches.append(window)
-    
-    # If we have size info and multiple exact matches, prefer the one with matching size
-    if exact_matches and target_size:
-        target_width, target_height = target_size
-        logging.debug(f"Looking for window '{window_title}' with target size {target_width}x{target_height}")
-        
-        for window in exact_matches:
-            rect = window['rect']
-            win_width = rect[2] - rect[0]
-            win_height = rect[3] - rect[1]
-            
-            logging.debug(f"Checking window '{window['title']}' size {win_width}x{win_height}")
-            
-            # Check if size matches within tolerance
-            if (abs(win_width - target_width) <= size_tolerance and 
-                abs(win_height - target_height) <= size_tolerance):
-                logging.info(f"Found exact title and size match: '{window['title']}' ({win_width}x{win_height})")
-                return window
-        
-        # If no size match found, log this and return the largest window (most likely the main window)
-        if exact_matches:
-            largest_window = max(exact_matches, key=lambda w: (w['rect'][2] - w['rect'][0]) * (w['rect'][3] - w['rect'][1]))
-            largest_rect = largest_window['rect']
-            largest_size = f"{largest_rect[2] - largest_rect[0]}x{largest_rect[3] - largest_rect[1]}"
-            logging.warning(f"No size match found for '{window_title}', selecting largest window: {largest_size}")
-            return largest_window
-    
-    # Return first exact match if no size filtering needed
-    if exact_matches:
-        return exact_matches[0]
+            return window
     
     # If exact match fails and we're not forcing exact match, try partial matching
     if not exact_match:
-        partial_matches = []
-        
         # Try partial match - useful if title changes slightly
         for window in windows:
             if window_title.lower() in window['title'].lower():
-                partial_matches.append(window)
-        
-        # If we have partial matches and size info, prefer size match
-        if partial_matches and target_size:
-            target_width, target_height = target_size
-            for window in partial_matches:
-                rect = window['rect']
-                win_width = rect[2] - rect[0]
-                win_height = rect[3] - rect[1]
-                
-                if (abs(win_width - target_width) <= size_tolerance and 
-                    abs(win_height - target_height) <= size_tolerance):
-                    logging.info(f"Found partial title and size match: '{window['title']}' ({win_width}x{win_height})")
-                    return window
-            
-            # Return largest partial match
-            if partial_matches:
-                largest_window = max(partial_matches, key=lambda w: (w['rect'][2] - w['rect'][0]) * (w['rect'][3] - w['rect'][1]))
-                return largest_window
-        
-        if partial_matches:
-            return partial_matches[0]
+                return window
         
         # Try reverse match - see if window title is a subset of our stored title
         # This helps when applications add/remove version numbers or status text
-        reverse_matches = []
         for window in windows:
             if window['title'].lower() in window_title.lower():
-                reverse_matches.append(window)
-        
-        if reverse_matches and target_size:
-            target_width, target_height = target_size
-            for window in reverse_matches:
-                rect = window['rect']
-                win_width = rect[2] - rect[0]
-                win_height = rect[3] - rect[1]
-                
-                if (abs(win_width - target_width) <= size_tolerance and 
-                    abs(win_height - target_height) <= size_tolerance):
-                    logging.info(f"Found reverse title and size match: '{window['title']}' ({win_width}x{win_height})")
-                    return window
-            
-            if reverse_matches:
-                largest_window = max(reverse_matches, key=lambda w: (w['rect'][2] - w['rect'][0]) * (w['rect'][3] - w['rect'][1]))
-                return largest_window
-        
-        if reverse_matches:
-            return reverse_matches[0]
+                return window
         
         # Try fuzzy matching for applications that change their titles significantly
         # Look for common words between titles
         title_words = set(window_title.lower().split())
-        fuzzy_matches = []
         for window in windows:
             window_words = set(window['title'].lower().split())
             # If at least 50% of words match, consider it a potential match
@@ -440,26 +198,7 @@ def find_window_by_title(window_title, exact_match=False, target_size=None, size
                 common_words = title_words.intersection(window_words)
                 match_ratio = len(common_words) / max(len(title_words), len(window_words))
                 if match_ratio >= 0.5 and len(common_words) >= 2:  # At least 2 words in common
-                    fuzzy_matches.append(window)
-        
-        if fuzzy_matches and target_size:
-            target_width, target_height = target_size
-            for window in fuzzy_matches:
-                rect = window['rect']
-                win_width = rect[2] - rect[0]
-                win_height = rect[3] - rect[1]
-                
-                if (abs(win_width - target_width) <= size_tolerance and 
-                    abs(win_height - target_height) <= size_tolerance):
-                    logging.info(f"Found fuzzy title and size match: '{window['title']}' ({win_width}x{win_height})")
                     return window
-            
-            if fuzzy_matches:
-                largest_window = max(fuzzy_matches, key=lambda w: (w['rect'][2] - w['rect'][0]) * (w['rect'][3] - w['rect'][1]))
-                return largest_window
-        
-        if fuzzy_matches:
-            return fuzzy_matches[0]
     
     return None
 
@@ -578,54 +317,6 @@ def create_no_window_image(width=120, height=100, bg_color="#333"):
     return img
 
 def load_config():
-    """Load configuration with migration support for Windows data directory"""
-    # Check for old config file in current directory first
-    old_config_path = "screenalert_config.json"
-    
-    if os.path.exists(old_config_path) and not os.path.exists(CONFIG_FILE):
-        # Migrate old config to new location
-        try:
-            with open(old_config_path, 'r') as f:
-                config = json.load(f)
-            
-            # Update capture_directory to new location if it was default
-            if config.get("capture_directory") == "ScreenEvents":
-                config["capture_directory"] = os.path.join(get_app_data_dir(), "ScreenEvents")
-            
-            # Migrate old screen events if they exist
-            old_events_dir = "ScreenEvents"
-            new_events_dir = config.get("capture_directory", os.path.join(get_app_data_dir(), "ScreenEvents"))
-            
-            if os.path.exists(old_events_dir) and old_events_dir != new_events_dir:
-                try:
-                    import shutil
-                    if not os.path.exists(new_events_dir):
-                        shutil.copytree(old_events_dir, new_events_dir)
-                        print(f"Migrated screen events from {old_events_dir} to {new_events_dir}")
-                    else:
-                        # Directory exists, copy files that don't exist
-                        for item in os.listdir(old_events_dir):
-                            old_item = os.path.join(old_events_dir, item)
-                            new_item = os.path.join(new_events_dir, item)
-                            if not os.path.exists(new_item):
-                                if os.path.isfile(old_item):
-                                    shutil.copy2(old_item, new_item)
-                        print(f"Migrated additional screen events to {new_events_dir}")
-                except Exception as e:
-                    print(f"Warning: Could not migrate screen events: {e}")
-            
-            # Save config to new location
-            with open(CONFIG_FILE, 'w') as f:
-                json.dump(config, f, indent=2)
-            
-            print(f"Configuration migrated from {old_config_path} to {CONFIG_FILE}")
-            
-            # Continue with normal processing
-        except Exception as e:
-            print(f"Error migrating config: {e}")
-            # Fall through to normal loading
-    
-    # Normal config loading
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r") as f:
@@ -669,20 +360,10 @@ def load_config():
                     config["target_window"] = None
                 if "window_filter" not in config:
                     config["window_filter"] = ""
-                
-                # Ensure capture_directory uses new default location if still set to old default
-                if config.get("capture_directory") == "ScreenEvents":
-                    config["capture_directory"] = os.path.join(get_app_data_dir(), "ScreenEvents")
-                    # Save the updated config
-                    with open(CONFIG_FILE, 'w') as f:
-                        json.dump(config, f, indent=2)
-                
                 return config
         except Exception as e:
-            logging.warning(f"Config load failed: {e}, using defaults.")
-    
-    # Default configuration with new paths
-    default_config = {
+            print(f"Config load failed: {e}, using defaults.")
+    return {
         "regions": [],
         "interval": 1000,
         "highlight_time": 5,
@@ -701,14 +382,8 @@ def load_config():
         "unavailable_color": "#05f",
         "pause_reminder_interval": 60,
         "target_window": None,
-        "window_filter": "",
-        "capture_directory": os.path.join(get_app_data_dir(), "ScreenEvents")
+        "window_filter": ""
     }
-    
-    # Create default capture directory
-    os.makedirs(default_config["capture_directory"], exist_ok=True)
-    
-    return default_config
 
 def save_config(
     regions, interval, highlight_time, default_sound="", default_tts="", alert_threshold=0.99,
@@ -719,13 +394,8 @@ def save_config(
     unavailable_text="Unavailable", unavailable_color="#05f",
     pause_reminder_interval=60, target_window=None, window_filter="",
     capture_on_alert=False, capture_on_green=False, 
-    capture_directory=None, capture_filename_format="{region_name} - {event_type} - {timestamp}"
+    capture_directory="ScreenEvents", capture_filename_format="{region_name} - {event_type} - {timestamp}"
 ):
-    """Save configuration with proper default paths"""
-    # Use Windows data directory as default if not specified
-    if capture_directory is None:
-        capture_directory = os.path.join(get_app_data_dir(), "ScreenEvents")
-    
     serializable_regions = []
     for r in regions:
         r_copy = dict(r)
@@ -756,12 +426,8 @@ def save_config(
         "capture_directory": capture_directory,
         "capture_filename_format": capture_filename_format
     }
-    
-    # Ensure capture directory exists
-    os.makedirs(capture_directory, exist_ok=True)
-    
     with open(CONFIG_FILE, "w") as f:
-        json.dump(config, f, indent=2)
+        json.dump(config, f)
 
 class WindowSelector:
     def __init__(self, master, current_window=None, monitor_id=None, window_filter=""):
@@ -1046,11 +712,11 @@ def save_screen_capture(region_img, region_name, event_type, capture_settings):
         # Save the image
         region_img.save(filepath, 'PNG')
         
-        logging.info(f"Screen capture saved: {filepath}")
+        print(f"Screen capture saved: {filepath}")
         return filepath
         
     except Exception as e:
-        logging.error(f"Error saving screen capture: {e}")
+        print(f"Error saving screen capture: {e}")
         return None
 
 def create_rotated_text_image(text, width, height, color="#fff", bgcolor=None, font_size=18):
@@ -1099,87 +765,18 @@ def play_sound(sound_file):
         print(f"Failed to play sound: {e}")
 
 def speak_tts(message):
-    """Speak a TTS message with improved compiled executable compatibility"""
     if not message:
-        logging.debug("TTS: No message provided")
         return
-    
-    logging.debug(f"TTS: Attempting to speak: '{message}'")
-    
-    # For Windows, prioritize native SAPI over pyttsx3 for better compiled compatibility
-    if platform.system() == "Windows":
-        # Method 1: Try Windows SAPI first (most reliable in compiled executables)
-        try:
-            if 'win32com' in globals() and win32com:
-                logging.debug("TTS: Using Windows SAPI (win32com)")
-                speaker = win32com.client.Dispatch("SAPI.SpVoice")
-                speaker.Speak(message)
-                logging.debug("TTS: Windows SAPI speech completed successfully")
-                return
-        except Exception as e:
-            logging.warning(f"TTS: Windows SAPI failed: {e}")
-        
-        # Method 2: Try PowerShell SAPI (fallback for win32com issues)
-        try:
-            logging.debug("TTS: Using PowerShell SAPI")
-            import subprocess
-            
-            # Escape single quotes in the message
-            escaped_message = message.replace("'", "''")
-            
-            # PowerShell command to use SAPI
-            ps_cmd = f"""
-Add-Type -AssemblyName System.Speech
-$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
-$synth.Speak('{escaped_message}')
-"""
-            
-            result = subprocess.run([
-                'powershell', '-Command', ps_cmd
-            ], capture_output=True, text=True, timeout=10)
-            
-            if result.returncode == 0:
-                logging.debug("TTS: PowerShell SAPI speech completed successfully")
-                return
-            else:
-                logging.warning(f"TTS: PowerShell SAPI failed: {result.stderr}")
-                
-        except Exception as e:
-            logging.warning(f"TTS: PowerShell SAPI failed: {e}")
-        
-        # Method 3: Try pyttsx3 (last resort, often fails in compiled executables)
-        try:
-            if pyttsx3:
-                logging.debug("TTS: Using pyttsx3 as fallback")
-                engine = pyttsx3.init()
-                
-                # Set properties for better speech
-                try:
-                    rate = engine.getProperty('rate')
-                    engine.setProperty('rate', max(150, rate - 50))  # Slower speech
-                    
-                    volume = engine.getProperty('volume')
-                    engine.setProperty('volume', min(1.0, volume + 0.1))  # Slightly louder
-                except:
-                    pass  # Ignore property setting errors
-                
-                engine.say(message)
-                engine.runAndWait()
-                logging.debug("TTS: pyttsx3 speech completed successfully")
-                return
-        except Exception as e:
-            logging.warning(f"TTS: pyttsx3 failed: {e}")
-        
-        logging.error("TTS: All Windows TTS methods failed")
-    
-    else:
-        # Non-Windows systems
-        logging.debug("TTS: Using system TTS commands")
-        try:
+    try:
+        if platform.system() == "Windows" and pyttsx3:
+            engine = pyttsx3.init()
+            engine.say(message)
+            engine.runAndWait()
+        else:
             if os.system(f"espeak '{message}' &") != 0:
                 os.system(f"say '{message}' &")
-        except Exception as e:
-            logging.error(f"TTS: System command failed: {e}")
+    except Exception as e:
+        print(f"Failed to speak TTS: {e}")
 
 def advanced_image_comparison(img1, img2, method="combined"):
     """
@@ -1233,24 +830,11 @@ def advanced_image_comparison(img1, img2, method="combined"):
         return results.get('ssim', 0.5), 1.0, f"SSIM: {results.get('ssim', 'N/A'):.4f}"
 
 def main():
-    # Setup logging first
-    log_path = setup_logging()
-    logging.info("ScreenAlert starting up...")
-    
-    # Check for single instance
-    if not acquire_instance_lock():
-        logging.warning("Another instance is already running, exiting")
-        return  # Exit if another instance is running
-    
-    logging.info("Single instance lock acquired successfully")
-    
     config = load_config()
     regions = config["regions"]
     interval = int(config.get("interval", 1000))
     highlight_time = int(config.get("highlight_time", 5))
     target_window = config.get("target_window")
-
-    logging.info(f"Configuration loaded: {len(regions)} regions, {interval}ms interval")
 
     root = tk.Tk()
     root.title("ScreenAlert - Enhanced Interface")
@@ -1683,13 +1267,13 @@ Features:
         close_btn.pack(side=tk.LEFT, padx=5)
 
     def manual_reconnect():
-        """Manually trigger window reconnection check with enhanced size-based matching"""
-        logging.info("Manual window reconnection check initiated...")
+        """Manually trigger window reconnection check"""
+        print("Manual window reconnection check initiated...")
         reconnected = try_reconnect_windows()
         if reconnected > 0:
-            msgbox.showinfo("Reconnection Success", f"Successfully reconnected {reconnected} window(s) using enhanced size-based matching!")
+            msgbox.showinfo("Reconnection Success", f"Successfully reconnected {reconnected} window(s)!")
         else:
-            msgbox.showinfo("Reconnection Check", "No disconnected windows found or no windows could be reconnected.\n\nAll windows may still be available or no matching windows found with similar size/title.")
+            msgbox.showinfo("Reconnection Check", "No disconnected windows found or no windows could be reconnected.")
 
     def toggle_pause():
         nonlocal paused, last_reminder_time
@@ -1938,7 +1522,7 @@ Features:
         return True  # All active regions are connected
 
     def try_reconnect_windows():
-        """Try to reconnect to windows that are no longer available - Enhanced with size matching"""
+        """Try to reconnect to windows that are no longer available - Enhanced version"""
         nonlocal target_window, current_window_img
         
         reconnected_count = 0
@@ -1949,34 +1533,21 @@ Features:
             # Always try to capture to see if window is still available
             test_img = capture_window(target_window['hwnd'])
             if not test_img:
-                logging.info(f"Global target window unavailable: {target_window['title']} (HWND: {target_window['hwnd']})")
+                print(f"Global target window unavailable: {target_window['title']} (HWND: {target_window['hwnd']})")
                 
-                # Calculate original window size for better matching
-                original_rect = target_window.get('rect', [0, 0, 0, 0])
-                original_size = (original_rect[2] - original_rect[0], original_rect[3] - original_rect[1])
+                # Try only exact title matching - no fuzzy matching to prevent wrong windows
+                new_window = None
                 
-                # Try to find replacement window using title and size matching
-                new_window = find_window_by_title(
-                    target_window['title'], 
-                    exact_match=True,  # Start with exact match
-                    target_size=original_size,
-                    size_tolerance=50
-                )
-                
-                if not new_window:
-                    # If exact match with size fails, try fuzzy matching with size
-                    logging.info(f"No exact match found, trying fuzzy matching with size for: {target_window['title']}")
-                    new_window = find_window_by_title(
-                        target_window['title'], 
-                        exact_match=False,
-                        target_size=original_size,
-                        size_tolerance=100  # More tolerant for fuzzy matching
-                    )
+                # Only try exact title match - safer and more reliable
+                new_window = find_window_by_title(target_window['title'], exact_match=True)
+                if new_window:
+                    print(f"  Found exact match: {new_window['title']} (HWND: {new_window['hwnd']})")
+                else:
+                    print(f"  No exact match found for: {target_window['title']}")
+                    print(f"  (Fuzzy matching disabled to prevent incorrect window attachment)")
                 
                 if new_window:
-                    new_rect = new_window['rect']
-                    new_size = (new_rect[2] - new_rect[0], new_rect[3] - new_rect[1])
-                    logging.info(f"Successfully reconnected global target window: {new_window['title']} (new HWND: {new_window['hwnd']}, size: {new_size[0]}x{new_size[1]})")
+                    print(f"Successfully reconnected global target window: {new_window['title']} (new HWND: {new_window['hwnd']})")
                     target_window = new_window
                     current_window_img = capture_window(target_window['hwnd'])
                     reconnected_count += 1
@@ -1993,10 +1564,9 @@ Features:
                         unavailable_text=unavailable_text_var.get(), unavailable_color=unavailable_color_var.get()
                     )
                 else:
-                    logging.warning(f"Could not reconnect global target window: {target_window['title']} (original size: {original_size[0]}x{original_size[1]})")
                     failed_reconnections.append(f"Global target: {target_window['title']}")
         
-        # Check each region's target window with enhanced size-based matching
+        # Check each region's target window with enhanced matching
         for idx, region in enumerate(regions):
             region_window = region.get("target_window")
             if region_window:
@@ -2004,34 +1574,21 @@ Features:
                 test_img = capture_window(region_window['hwnd'])
                 if not test_img:
                     region_name = region.get('name', f'Region {idx+1}')
-                    logging.info(f"Region {idx} '{region_name}' window unavailable: {region_window['title']} (HWND: {region_window['hwnd']})")
+                    print(f"Region {idx} '{region_name}' window unavailable: {region_window['title']} (HWND: {region_window['hwnd']})")
                     
-                    # Calculate original window size for better matching
-                    original_rect = region_window.get('rect', [0, 0, 0, 0])
-                    original_size = (original_rect[2] - original_rect[0], original_rect[3] - original_rect[1])
+                    # Try only exact title matching - no fuzzy matching to prevent wrong windows
+                    new_window = None
                     
-                    # Try to find replacement window using title and size matching
-                    new_window = find_window_by_title(
-                        region_window['title'], 
-                        exact_match=True,
-                        target_size=original_size,
-                        size_tolerance=50
-                    )
-                    
-                    if not new_window:
-                        # If exact match with size fails, try fuzzy matching with size
-                        logging.info(f"No exact match found for region {idx}, trying fuzzy matching with size for: {region_window['title']}")
-                        new_window = find_window_by_title(
-                            region_window['title'], 
-                            exact_match=False,
-                            target_size=original_size,
-                            size_tolerance=100  # More tolerant for fuzzy matching
-                        )
+                    # Only try exact title match - safer and more reliable
+                    new_window = find_window_by_title(region_window['title'], exact_match=True)
+                    if new_window:
+                        print(f"  Found exact match for region {idx}: {new_window['title']}")
+                    else:
+                        print(f"  No exact match found for region {idx}: {region_window['title']}")
+                        print(f"  (Fuzzy matching disabled to prevent incorrect window attachment)")
                     
                     if new_window:
-                        new_rect = new_window['rect']
-                        new_size = (new_rect[2] - new_rect[0], new_rect[3] - new_rect[1])
-                        logging.info(f"Successfully reconnected region {idx} to window: {new_window['title']} (new HWND: {new_window['hwnd']}, size: {new_size[0]}x{new_size[1]})")
+                        print(f"Successfully reconnected region {idx} to window: {new_window['title']} (new HWND: {new_window['hwnd']})")
                         region["target_window"] = new_window
                         reconnected_count += 1
                         
@@ -2042,13 +1599,12 @@ Features:
                                 if new_window_img:
                                     previous_screenshots[idx] = crop_region(new_window_img, region["rect"])
                             except Exception as e:
-                                logging.error(f"Error updating screenshot for reconnected region {idx}: {e}")
+                                print(f"Error updating screenshot for reconnected region {idx}: {e}")
                     else:
-                        logging.warning(f"Could not reconnect region {idx} '{region_name}': {region_window['title']} (original size: {original_size[0]}x{original_size[1]})")
                         failed_reconnections.append(f"Region {idx} '{region_name}': {region_window['title']}")
         
         if reconnected_count > 0:
-            logging.info(f"Reconnected {reconnected_count} window(s) using enhanced size-based matching")
+            print(f"Reconnected {reconnected_count} window(s)")
             # Save all region updates
             save_config(
                 regions, interval_var.get(), highlight_time_var.get(),
@@ -2066,7 +1622,6 @@ Features:
             update_region_display(force_update=True)
         
         if failed_reconnections:
-            logging.warning(f"Failed to reconnect the following windows: {'; '.join(failed_reconnections)}")
             print(f"Failed to reconnect {len(failed_reconnections)} window(s):")
             for failure in failed_reconnections:
                 print(f"  - {failure}")
