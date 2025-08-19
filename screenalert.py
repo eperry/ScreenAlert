@@ -17,7 +17,23 @@ import cv2
 from datetime import datetime
 
 # Application Information
-APP_VERSION = "2.1.0"
+def get_app_version():
+    """Get application version from git tags, fallback to default"""
+    try:
+        import subprocess
+        # Get the latest git tag
+        result = subprocess.run(['git', 'describe', '--tags', '--abbrev=0'], 
+                              capture_output=True, text=True, cwd=os.path.dirname(__file__) or '.')
+        if result.returncode == 0 and result.stdout.strip():
+            version = result.stdout.strip()
+            # Remove 'v' prefix if present
+            return version[1:] if version.startswith('v') else version
+    except Exception:
+        pass
+    # Fallback version if git tag detection fails
+    return "1.1.0"
+
+APP_VERSION = get_app_version()
 APP_AUTHOR = "Ed Perry"
 APP_REPO_URL = "https://github.com/eperry/ScreenAlert"
 
