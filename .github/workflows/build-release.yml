@@ -97,7 +97,8 @@ jobs:
         SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
       run: |
         Write-Host "Building ScreenAlert with robust Nuitka build..." -ForegroundColor Green
-        python build/build_nuitka.py
+        cd build
+        python build_nuitka.py
         
     - name: Create release archive
       run: |
