@@ -36,8 +36,8 @@ htmlcov/
 coverage.xml
 
 # Distribution / packaging
-build/
-dist/
+build/dist/
+build/output/
 *.egg-info/
 .eggs/
 *.manifest
@@ -46,8 +46,8 @@ dist/
 *.spec
 
 # Compilation outputs (Nuitka)
-dist-nuitka/
-dist-dev/
+build/dist-nuitka/
+build/dist-dev/
 *.build/
 *.dist/
 *.onefile-build/
