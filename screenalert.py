@@ -78,7 +78,32 @@ if platform.system() == "Windows":
         print("pyttsx3 not installed. TTS will not work.")
         pyttsx3 = None
 
-CONFIG_FILE = "screenalert_config.json"
+def get_config_dir():
+    """Get the appropriate config directory for the current platform"""
+    if platform.system() == "Windows":
+        # Use Windows AppData\Roaming directory
+        appdata = os.environ.get('APPDATA', os.path.expanduser('~'))
+        config_dir = os.path.join(appdata, 'ScreenAlert')
+    else:
+        # Use ~/.config for Linux/macOS
+        config_dir = os.path.join(os.path.expanduser('~'), '.config', 'ScreenAlert')
+    
+    # Create directory if it doesn't exist
+    os.makedirs(config_dir, exist_ok=True)
+    return config_dir
+
+CONFIG_FILE = os.path.join(get_config_dir(), "screenalert_config.json")
+
+def migrate_config():
+    """Migrate config from current directory to AppData if needed"""
+    old_config = "screenalert_config.json"
+    if os.path.exists(old_config) and not os.path.exists(CONFIG_FILE):
+        try:
+            import shutil
+            shutil.move(old_config, CONFIG_FILE)
+            print(f"Config file migrated to {CONFIG_FILE}")
+        except Exception as e:
+            print(f"Failed to migrate config file: {e}")
 
 def get_window_list():
     """Get list of all visible windows with titles"""
@@ -317,6 +342,7 @@ def create_no_window_image(width=120, height=100, bg_color="#333"):
     return img
 
 def load_config():
+    migrate_config()  # Migrate old config if needed
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r") as f:
