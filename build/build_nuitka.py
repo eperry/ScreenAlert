@@ -51,9 +51,8 @@ def sign_executable_if_possible(exe_path):
     if not signtool:
         print("[SIGN] signtool not found, attempting self-signed certificate...")
         try:
-            # Try to use self-signed certificate approach
             import importlib.util
-            spec = importlib.util.spec_from_file_location("create_selfsigned_cert", "create_selfsigned_cert.py")
+            spec = importlib.util.spec_from_file_location("create_selfsigned_cert", "../security/create_selfsigned_cert.py")
             cert_module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(cert_module)
             return cert_module.sign_with_self_signed(exe_path)
@@ -63,10 +62,10 @@ def sign_executable_if_possible(exe_path):
     
     # Look for certificate files
     cert_files = [
-        "ScreenAlert-Certificate.pfx",
-        "certificate.pfx", 
-        "code-signing.pfx",
-        "ScreenAlert-SelfSigned.pfx"  # Add self-signed option
+        "../security/certificates/ScreenAlert-Certificate.pfx",
+        "../security/certificates/certificate.pfx", 
+        "../security/certificates/code-signing.pfx",
+        "../security/certificates/ScreenAlert-SelfSigned.pfx"  # Add self-signed option
     ]
     
     cert_path = None
@@ -91,12 +90,12 @@ def sign_executable_if_possible(exe_path):
         print("[SIGN] No certificate found, creating self-signed certificate...")
         try:
             import importlib.util
-            spec = importlib.util.spec_from_file_location("create_selfsigned_cert", "create_selfsigned_cert.py")
+            spec = importlib.util.spec_from_file_location("create_selfsigned_cert", "../security/create_selfsigned_cert.py")
             cert_module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(cert_module)
             
             # Create self-signed certificate
-            self_signed_path = "ScreenAlert-SelfSigned.pfx"
+            self_signed_path = "../security/certificates/ScreenAlert-SelfSigned.pfx"
             if cert_module.create_self_signed_certificate(output_pfx=self_signed_path):
                 cert_path = self_signed_path
             else:
@@ -156,7 +155,7 @@ def check_nuitka():
 
 def ensure_config_exists():
     """Ensure configuration file exists"""
-    config_file = Path("screenalert_config.json")
+    config_file = Path("../screenalert_config.json")  # Adjust path since we're in build/ subdirectory
     if not config_file.exists():
         print(f"[CONFIG] Creating default config file...")
         default_config = {
@@ -184,7 +183,7 @@ def build_with_nuitka(sign=True):
     # Ensure config file exists
     ensure_config_exists()
     
-    dist_dir = Path("dist-nuitka")
+    dist_dir = Path("../dist-nuitka")  # Adjust path since we're in build/ subdirectory
     if dist_dir.exists():
         print(f"[BUILD] Removing existing dist directory: {dist_dir}")
         try:
@@ -219,10 +218,10 @@ def build_with_nuitka(sign=True):
         "--jobs=8",   # Use more CPU cores for faster compilation
         "--python-flag=no_docstrings",  # Remove docstrings for smaller size
         "--python-flag=no_asserts",     # Remove assert statements for production
-        "--output-dir=dist-nuitka",
+        "--output-dir=../dist-nuitka",
         "--output-filename=ScreenAlert.exe",
-        "--include-data-file=screenalert_config.json=screenalert_config.json",
-        "screenalert.py"
+        "--include-data-file=../screenalert_config.json=screenalert_config.json",
+        "../screenalert.py"
     ]
     
     # Test and include optional modules with detailed availability checking
