@@ -2067,8 +2067,6 @@ Features:
         
         if failed_reconnections:
             logging.warning(f"Failed to reconnect the following windows: {'; '.join(failed_reconnections)}")
-        
-        return reconnected_count
             print(f"Failed to reconnect {len(failed_reconnections)} window(s):")
             for failure in failed_reconnections:
                 print(f"  - {failure}")
