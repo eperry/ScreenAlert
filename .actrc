@@ -1,4 +1,0 @@
-# ACT Configuration - Windows containers
--P windows-latest=catthehacker/ubuntu:act-latest
---bind
---use-gitignore=false
