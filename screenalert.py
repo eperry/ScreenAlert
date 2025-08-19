@@ -25,7 +25,7 @@ except ImportError:
     fcntl = None  # Windows doesn't have fcntl
 
 # Application Information
-APP_VERSION = "1.5"
+APP_VERSION = "1.5.1"
 APP_AUTHOR = "Ed Perry"
 APP_REPO_URL = "https://github.com/eperry/ScreenAlert"
 
@@ -324,31 +324,115 @@ def capture_window(hwnd):
         print(f"Failed to capture window {hwnd}: {e}")
         return None
 
-def find_window_by_title(window_title, exact_match=False):
-    """Try to find a window by its title with improved matching"""
+def find_window_by_title(window_title, exact_match=False, target_size=None, size_tolerance=50):
+    """
+    Try to find a window by its title with improved matching
+    Enhanced with size-based matching to prevent selecting wrong windows
+    
+    Args:
+        window_title: Title of the window to find
+        exact_match: If True, only exact title matches are considered
+        target_size: Tuple of (width, height) of the original window for size-based matching
+        size_tolerance: Pixel tolerance for size matching (default 50px)
+    """
     windows = get_window_list()
     
-    # First try exact match
+    # Strategy 1: Find windows with exact title match, prefer size match if provided
+    exact_matches = []
     for window in windows:
         if window['title'] == window_title:
-            return window
+            exact_matches.append(window)
+    
+    # If we have size info and multiple exact matches, prefer the one with matching size
+    if exact_matches and target_size:
+        target_width, target_height = target_size
+        logging.debug(f"Looking for window '{window_title}' with target size {target_width}x{target_height}")
+        
+        for window in exact_matches:
+            rect = window['rect']
+            win_width = rect[2] - rect[0]
+            win_height = rect[3] - rect[1]
+            
+            logging.debug(f"Checking window '{window['title']}' size {win_width}x{win_height}")
+            
+            # Check if size matches within tolerance
+            if (abs(win_width - target_width) <= size_tolerance and 
+                abs(win_height - target_height) <= size_tolerance):
+                logging.info(f"Found exact title and size match: '{window['title']}' ({win_width}x{win_height})")
+                return window
+        
+        # If no size match found, log this and return the largest window (most likely the main window)
+        if exact_matches:
+            largest_window = max(exact_matches, key=lambda w: (w['rect'][2] - w['rect'][0]) * (w['rect'][3] - w['rect'][1]))
+            largest_rect = largest_window['rect']
+            largest_size = f"{largest_rect[2] - largest_rect[0]}x{largest_rect[3] - largest_rect[1]}"
+            logging.warning(f"No size match found for '{window_title}', selecting largest window: {largest_size}")
+            return largest_window
+    
+    # Return first exact match if no size filtering needed
+    if exact_matches:
+        return exact_matches[0]
     
     # If exact match fails and we're not forcing exact match, try partial matching
     if not exact_match:
+        partial_matches = []
+        
         # Try partial match - useful if title changes slightly
         for window in windows:
             if window_title.lower() in window['title'].lower():
-                return window
+                partial_matches.append(window)
+        
+        # If we have partial matches and size info, prefer size match
+        if partial_matches and target_size:
+            target_width, target_height = target_size
+            for window in partial_matches:
+                rect = window['rect']
+                win_width = rect[2] - rect[0]
+                win_height = rect[3] - rect[1]
+                
+                if (abs(win_width - target_width) <= size_tolerance and 
+                    abs(win_height - target_height) <= size_tolerance):
+                    logging.info(f"Found partial title and size match: '{window['title']}' ({win_width}x{win_height})")
+                    return window
+            
+            # Return largest partial match
+            if partial_matches:
+                largest_window = max(partial_matches, key=lambda w: (w['rect'][2] - w['rect'][0]) * (w['rect'][3] - w['rect'][1]))
+                return largest_window
+        
+        if partial_matches:
+            return partial_matches[0]
         
         # Try reverse match - see if window title is a subset of our stored title
         # This helps when applications add/remove version numbers or status text
+        reverse_matches = []
         for window in windows:
             if window['title'].lower() in window_title.lower():
-                return window
+                reverse_matches.append(window)
+        
+        if reverse_matches and target_size:
+            target_width, target_height = target_size
+            for window in reverse_matches:
+                rect = window['rect']
+                win_width = rect[2] - rect[0]
+                win_height = rect[3] - rect[1]
+                
+                if (abs(win_width - target_width) <= size_tolerance and 
+                    abs(win_height - target_height) <= size_tolerance):
+                    logging.info(f"Found reverse title and size match: '{window['title']}' ({win_width}x{win_height})")
+                    return window
+            
+            if reverse_matches:
+                largest_window = max(reverse_matches, key=lambda w: (w['rect'][2] - w['rect'][0]) * (w['rect'][3] - w['rect'][1]))
+                return largest_window
+        
+        if reverse_matches:
+            return reverse_matches[0]
         
         # Try fuzzy matching for applications that change their titles significantly
         # Look for common words between titles
         title_words = set(window_title.lower().split())
+        fuzzy_matches = []
         for window in windows:
             window_words = set(window['title'].lower().split())
             # If at least 50% of words match, consider it a potential match
@@ -356,7 +440,26 @@ def find_window_by_title(window_title, exact_match=False):
                 common_words = title_words.intersection(window_words)
                 match_ratio = len(common_words) / max(len(title_words), len(window_words))
                 if match_ratio >= 0.5 and len(common_words) >= 2:  # At least 2 words in common
+                    fuzzy_matches.append(window)
+        
+        if fuzzy_matches and target_size:
+            target_width, target_height = target_size
+            for window in fuzzy_matches:
+                rect = window['rect']
+                win_width = rect[2] - rect[0]
+                win_height = rect[3] - rect[1]
+                
+                if (abs(win_width - target_width) <= size_tolerance and 
+                    abs(win_height - target_height) <= size_tolerance):
+                    logging.info(f"Found fuzzy title and size match: '{window['title']}' ({win_width}x{win_height})")
                     return window
+            
+            if fuzzy_matches:
+                largest_window = max(fuzzy_matches, key=lambda w: (w['rect'][2] - w['rect'][0]) * (w['rect'][3] - w['rect'][1]))
+                return largest_window
+        
+        if fuzzy_matches:
+            return fuzzy_matches[0]
     
     return None
 
@@ -1580,13 +1683,13 @@ Features:
         close_btn.pack(side=tk.LEFT, padx=5)
 
     def manual_reconnect():
-        """Manually trigger window reconnection check"""
-        print("Manual window reconnection check initiated...")
+        """Manually trigger window reconnection check with enhanced size-based matching"""
+        logging.info("Manual window reconnection check initiated...")
         reconnected = try_reconnect_windows()
         if reconnected > 0:
-            msgbox.showinfo("Reconnection Success", f"Successfully reconnected {reconnected} window(s)!")
+            msgbox.showinfo("Reconnection Success", f"Successfully reconnected {reconnected} window(s) using enhanced size-based matching!")
         else:
-            msgbox.showinfo("Reconnection Check", "No disconnected windows found or no windows could be reconnected.")
+            msgbox.showinfo("Reconnection Check", "No disconnected windows found or no windows could be reconnected.\n\nAll windows may still be available or no matching windows found with similar size/title.")
 
     def toggle_pause():
         nonlocal paused, last_reminder_time
@@ -1835,7 +1938,7 @@ Features:
         return True  # All active regions are connected
 
     def try_reconnect_windows():
-        """Try to reconnect to windows that are no longer available - Enhanced version"""
+        """Try to reconnect to windows that are no longer available - Enhanced with size matching"""
         nonlocal target_window, current_window_img
         
         reconnected_count = 0
@@ -1846,21 +1949,34 @@ Features:
             # Always try to capture to see if window is still available
             test_img = capture_window(target_window['hwnd'])
             if not test_img:
-                print(f"Global target window unavailable: {target_window['title']} (HWND: {target_window['hwnd']})")
+                logging.info(f"Global target window unavailable: {target_window['title']} (HWND: {target_window['hwnd']})")
                 
-                # Try only exact title matching - no fuzzy matching to prevent wrong windows
-                new_window = None
+                # Calculate original window size for better matching
+                original_rect = target_window.get('rect', [0, 0, 0, 0])
+                original_size = (original_rect[2] - original_rect[0], original_rect[3] - original_rect[1])
                 
-                # Only try exact title match - safer and more reliable
-                new_window = find_window_by_title(target_window['title'], exact_match=True)
+                # Try to find replacement window using title and size matching
+                new_window = find_window_by_title(
+                    target_window['title'], 
+                    exact_match=True,  # Start with exact match
+                    target_size=original_size,
+                    size_tolerance=50
+                )
+                
+                if not new_window:
+                    # If exact match with size fails, try fuzzy matching with size
+                    logging.info(f"No exact match found, trying fuzzy matching with size for: {target_window['title']}")
+                    new_window = find_window_by_title(
+                        target_window['title'], 
+                        exact_match=False,
+                        target_size=original_size,
+                        size_tolerance=100  # More tolerant for fuzzy matching
+                    )
+                
                 if new_window:
-                    print(f"  Found exact match: {new_window['title']} (HWND: {new_window['hwnd']})")
-                else:
-                    print(f"  No exact match found for: {target_window['title']}")
-                    print(f"  (Fuzzy matching disabled to prevent incorrect window attachment)")
-                
-                if new_window:
-                    print(f"Successfully reconnected global target window: {new_window['title']} (new HWND: {new_window['hwnd']})")
+                    new_rect = new_window['rect']
+                    new_size = (new_rect[2] - new_rect[0], new_rect[3] - new_rect[1])
+                    logging.info(f"Successfully reconnected global target window: {new_window['title']} (new HWND: {new_window['hwnd']}, size: {new_size[0]}x{new_size[1]})")
                     target_window = new_window
                     current_window_img = capture_window(target_window['hwnd'])
                     reconnected_count += 1
@@ -1877,9 +1993,10 @@ Features:
                         unavailable_text=unavailable_text_var.get(), unavailable_color=unavailable_color_var.get()
                     )
                 else:
+                    logging.warning(f"Could not reconnect global target window: {target_window['title']} (original size: {original_size[0]}x{original_size[1]})")
                     failed_reconnections.append(f"Global target: {target_window['title']}")
         
-        # Check each region's target window with enhanced matching
+        # Check each region's target window with enhanced size-based matching
         for idx, region in enumerate(regions):
             region_window = region.get("target_window")
             if region_window:
@@ -1887,21 +2004,34 @@ Features:
                 test_img = capture_window(region_window['hwnd'])
                 if not test_img:
                     region_name = region.get('name', f'Region {idx+1}')
-                    print(f"Region {idx} '{region_name}' window unavailable: {region_window['title']} (HWND: {region_window['hwnd']})")
+                    logging.info(f"Region {idx} '{region_name}' window unavailable: {region_window['title']} (HWND: {region_window['hwnd']})")
                     
-                    # Try only exact title matching - no fuzzy matching to prevent wrong windows
-                    new_window = None
+                    # Calculate original window size for better matching
+                    original_rect = region_window.get('rect', [0, 0, 0, 0])
+                    original_size = (original_rect[2] - original_rect[0], original_rect[3] - original_rect[1])
                     
-                    # Only try exact title match - safer and more reliable
-                    new_window = find_window_by_title(region_window['title'], exact_match=True)
+                    # Try to find replacement window using title and size matching
+                    new_window = find_window_by_title(
+                        region_window['title'], 
+                        exact_match=True,
+                        target_size=original_size,
+                        size_tolerance=50
+                    )
+                    
+                    if not new_window:
+                        # If exact match with size fails, try fuzzy matching with size
+                        logging.info(f"No exact match found for region {idx}, trying fuzzy matching with size for: {region_window['title']}")
+                        new_window = find_window_by_title(
+                            region_window['title'], 
+                            exact_match=False,
+                            target_size=original_size,
+                            size_tolerance=100  # More tolerant for fuzzy matching
+                        )
+                    
                     if new_window:
-                        print(f"  Found exact match for region {idx}: {new_window['title']}")
-                    else:
-                        print(f"  No exact match found for region {idx}: {region_window['title']}")
-                        print(f"  (Fuzzy matching disabled to prevent incorrect window attachment)")
-                    
-                    if new_window:
-                        print(f"Successfully reconnected region {idx} to window: {new_window['title']} (new HWND: {new_window['hwnd']})")
+                        new_rect = new_window['rect']
+                        new_size = (new_rect[2] - new_rect[0], new_rect[3] - new_rect[1])
+                        logging.info(f"Successfully reconnected region {idx} to window: {new_window['title']} (new HWND: {new_window['hwnd']}, size: {new_size[0]}x{new_size[1]})")
                         region["target_window"] = new_window
                         reconnected_count += 1
                         
@@ -1912,12 +2042,13 @@ Features:
                                 if new_window_img:
                                     previous_screenshots[idx] = crop_region(new_window_img, region["rect"])
                             except Exception as e:
-                                print(f"Error updating screenshot for reconnected region {idx}: {e}")
+                                logging.error(f"Error updating screenshot for reconnected region {idx}: {e}")
                     else:
+                        logging.warning(f"Could not reconnect region {idx} '{region_name}': {region_window['title']} (original size: {original_size[0]}x{original_size[1]})")
                         failed_reconnections.append(f"Region {idx} '{region_name}': {region_window['title']}")
         
         if reconnected_count > 0:
-            print(f"Reconnected {reconnected_count} window(s)")
+            logging.info(f"Reconnected {reconnected_count} window(s) using enhanced size-based matching")
             # Save all region updates
             save_config(
                 regions, interval_var.get(), highlight_time_var.get(),
@@ -1935,6 +2066,9 @@ Features:
             update_region_display(force_update=True)
         
         if failed_reconnections:
+            logging.warning(f"Failed to reconnect the following windows: {'; '.join(failed_reconnections)}")
+        
+        return reconnected_count
             print(f"Failed to reconnect {len(failed_reconnections)} window(s):")
             for failure in failed_reconnections:
                 print(f"  - {failure}")
