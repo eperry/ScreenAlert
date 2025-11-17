@@ -31,7 +31,7 @@ def get_app_version():
     except Exception:
         pass
     # Fallback version if git tag detection fails
-    return "1.1.0"
+    return "1.2.0"
 
 APP_VERSION = get_app_version()
 APP_AUTHOR = "Ed Perry"
@@ -207,39 +207,62 @@ def capture_window(hwnd):
         print(f"Failed to capture window {hwnd}: {e}")
         return None
 
-def find_window_by_title(window_title, exact_match=False):
-    """Try to find a window by its title with improved matching"""
+def find_window_by_title(window_title, exact_match=False, expected_size=None, size_tolerance=20):
+    """Try to find a window by its title with improved matching and optional size validation
+    
+    Args:
+        window_title: The window title to search for
+        exact_match: If True, only exact title matches are considered
+        expected_size: Optional tuple (width, height) to validate window size
+        size_tolerance: Pixels of tolerance for size matching (default 20)
+    """
     windows = get_window_list()
     
-    # First try exact match
+    def size_matches(window_size, expected_size, tolerance):
+        """Check if window size matches expected size within tolerance"""
+        if not expected_size:
+            return True
+        width_diff = abs(window_size[0] - expected_size[0])
+        height_diff = abs(window_size[1] - expected_size[1])
+        return width_diff <= tolerance and height_diff <= tolerance
+    
+    # First try exact match with size validation
     for window in windows:
         if window['title'] == window_title:
-            return window
+            if size_matches(window['size'], expected_size, size_tolerance):
+                return window
+    
+    # If exact match with size fails, try exact match without size (size may have changed)
+    if not exact_match:
+        for window in windows:
+            if window['title'] == window_title:
+                print(f"  Found exact title match but size differs: expected {expected_size}, got {window['size']}")
+                return window
     
     # If exact match fails and we're not forcing exact match, try partial matching
     if not exact_match:
-        # Try partial match - useful if title changes slightly
+        # Try partial match with size validation
         for window in windows:
             if window_title.lower() in window['title'].lower():
-                return window
+                if size_matches(window['size'], expected_size, size_tolerance):
+                    return window
         
-        # Try reverse match - see if window title is a subset of our stored title
-        # This helps when applications add/remove version numbers or status text
+        # Try reverse match with size validation
         for window in windows:
             if window['title'].lower() in window_title.lower():
-                return window
+                if size_matches(window['size'], expected_size, size_tolerance):
+                    return window
         
-        # Try fuzzy matching for applications that change their titles significantly
-        # Look for common words between titles
+        # Try fuzzy matching with size validation
         title_words = set(window_title.lower().split())
         for window in windows:
             window_words = set(window['title'].lower().split())
-            # If at least 50% of words match, consider it a potential match
             if title_words and window_words:
                 common_words = title_words.intersection(window_words)
                 match_ratio = len(common_words) / max(len(title_words), len(window_words))
-                if match_ratio >= 0.5 and len(common_words) >= 2:  # At least 2 words in common
-                    return window
+                if match_ratio >= 0.5 and len(common_words) >= 2:
+                    if size_matches(window['size'], expected_size, size_tolerance):
+                        return window
     
     return None
 
@@ -402,6 +425,8 @@ def load_config():
                     config["target_window"] = None
                 if "window_filter" not in config:
                     config["window_filter"] = ""
+                if "last_window_filter" not in config:
+                    config["last_window_filter"] = ""
                 return config
         except Exception as e:
             print(f"Config load failed: {e}, using defaults.")
@@ -463,6 +488,7 @@ def save_config(
         "pause_reminder_interval": pause_reminder_interval,
         "target_window": target_window,
         "window_filter": window_filter,
+        "last_window_filter": window_filter,
         "capture_on_alert": capture_on_alert,
         "capture_on_green": capture_on_green,
         "capture_directory": capture_directory,
@@ -472,10 +498,11 @@ def save_config(
         json.dump(config, f)
 
 class WindowSelector:
-    def __init__(self, master, current_window=None, monitor_id=None, window_filter=""):
+    def __init__(self, master, current_window=None, monitor_id=None, window_filter="", last_filter=""):
         self.selected_window = None
         self.monitor_id = monitor_id
-        self.window_filter = window_filter
+        # Use last_filter if window_filter is empty, otherwise use window_filter
+        self.window_filter = window_filter if window_filter else last_filter
         self.top = tk.Toplevel(master)
         self.top.title(f"Select Target Window{f' (Monitor {monitor_id + 1})' if monitor_id is not None else ''}")
         self.top.geometry("700x600")
@@ -1329,7 +1356,7 @@ Features:
         # Get current monitor if window has one assigned
         current_monitor = target_window.get('monitor_id') if target_window else None
         
-        selector = WindowSelector(root, target_window, current_monitor, window_filter_var.get())
+        selector = WindowSelector(root, target_window, current_monitor, window_filter_var.get(), config.get('last_window_filter', ''))
         root.wait_window(selector.top)
         if selector.selected_window:
             target_window = selector.selected_window
@@ -1363,7 +1390,7 @@ Features:
         
         # First, prompt user to select a window for this region
         current_monitor = target_window.get('monitor_id') if target_window else None
-        window_selector = WindowSelector(root, target_window, current_monitor, window_filter_var.get())
+        window_selector = WindowSelector(root, target_window, current_monitor, window_filter_var.get(), config.get('last_window_filter', ''))
         root.wait_window(window_selector.top)
         
         if not window_selector.selected_window:
@@ -1577,16 +1604,29 @@ Features:
             if not test_img:
                 print(f"Global target window unavailable: {target_window['title']} (HWND: {target_window['hwnd']})")
                 
-                # Try only exact title matching - no fuzzy matching to prevent wrong windows
+                # Try to find window with title and size matching
                 new_window = None
+                expected_size = target_window.get('size')
                 
-                # Only try exact title match - safer and more reliable
-                new_window = find_window_by_title(target_window['title'], exact_match=True)
+                # First try exact title + size match (most reliable)
+                new_window = find_window_by_title(
+                    target_window['title'], 
+                    exact_match=True, 
+                    expected_size=expected_size,
+                    size_tolerance=20
+                )
+                
                 if new_window:
-                    print(f"  Found exact match: {new_window['title']} (HWND: {new_window['hwnd']})")
+                    print(f"  Found exact match with size validation: {new_window['title']} (HWND: {new_window['hwnd']})")
+                    print(f"  Size: {new_window['size']} (expected: {expected_size})")
                 else:
-                    print(f"  No exact match found for: {target_window['title']}")
-                    print(f"  (Fuzzy matching disabled to prevent incorrect window attachment)")
+                    # Try without size validation (window may have been resized)
+                    new_window = find_window_by_title(target_window['title'], exact_match=True)
+                    if new_window:
+                        print(f"  Found exact title match (size changed): {new_window['title']} (HWND: {new_window['hwnd']})")
+                        print(f"  Size changed from {expected_size} to {new_window['size']}")
+                    else:
+                        print(f"  No exact match found for: {target_window['title']}")
                 
                 if new_window:
                     print(f"Successfully reconnected global target window: {new_window['title']} (new HWND: {new_window['hwnd']})")
@@ -1618,16 +1658,29 @@ Features:
                     region_name = region.get('name', f'Region {idx+1}')
                     print(f"Region {idx} '{region_name}' window unavailable: {region_window['title']} (HWND: {region_window['hwnd']})")
                     
-                    # Try only exact title matching - no fuzzy matching to prevent wrong windows
+                    # Try to find window with title and size matching
                     new_window = None
+                    expected_size = region_window.get('size')
                     
-                    # Only try exact title match - safer and more reliable
-                    new_window = find_window_by_title(region_window['title'], exact_match=True)
+                    # First try exact title + size match (most reliable)
+                    new_window = find_window_by_title(
+                        region_window['title'], 
+                        exact_match=True, 
+                        expected_size=expected_size,
+                        size_tolerance=20
+                    )
+                    
                     if new_window:
-                        print(f"  Found exact match for region {idx}: {new_window['title']}")
+                        print(f"  Found exact match for region {idx} with size validation: {new_window['title']}")
+                        print(f"  Size: {new_window['size']} (expected: {expected_size})")
                     else:
-                        print(f"  No exact match found for region {idx}: {region_window['title']}")
-                        print(f"  (Fuzzy matching disabled to prevent incorrect window attachment)")
+                        # Try without size validation (window may have been resized)
+                        new_window = find_window_by_title(region_window['title'], exact_match=True)
+                        if new_window:
+                            print(f"  Found exact title match for region {idx} (size changed): {new_window['title']}")
+                            print(f"  Size changed from {expected_size} to {new_window['size']}")
+                        else:
+                            print(f"  No exact match found for region {idx}: {region_window['title']}")
                     
                     if new_window:
                         print(f"Successfully reconnected region {idx} to window: {new_window['title']} (new HWND: {new_window['hwnd']})")
@@ -2284,7 +2337,7 @@ Features:
                     current_region_window = regions[idx].get("target_window", target_window)
                     current_monitor = current_region_window.get('monitor_id') if current_region_window else None
                     
-                    selector = WindowSelector(root, current_region_window, current_monitor, window_filter_var.get())
+                    selector = WindowSelector(root, current_region_window, current_monitor, window_filter_var.get(), config.get('last_window_filter', ''))
                     root.wait_window(selector.top)
                     if selector.selected_window:
                         regions[idx]["target_window"] = selector.selected_window
