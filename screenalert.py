@@ -1,4 +1,102 @@
 ﻿# -*- coding: utf-8 -*-
+import sys
+import io
+import logging
+import logging.handlers
+from datetime import datetime
+
+# Application version must be retrieved early
+def get_app_version():
+    """Get application version from git tags, fallback to default"""
+    try:
+        import subprocess
+        import os
+        # Get the latest git tag
+        result = subprocess.run(['git', 'describe', '--tags', '--abbrev=0'], 
+                              capture_output=True, text=True, cwd=os.path.dirname(__file__) or '.')
+        if result.returncode == 0 and result.stdout.strip():
+            version = result.stdout.strip()
+            # Remove 'v' prefix if present
+            return version[1:] if version.startswith('v') else version
+    except Exception:
+        pass
+    # Fallback version if git tag detection fails
+    return "1.2.0"
+
+# Set up logging before importing anything else that might print
+def setup_logging():
+    """Set up logging to file and suppress console output"""
+    try:
+        # Create logs directory
+        import os
+        import platform
+        appdata = os.environ.get('APPDATA', os.path.expanduser('~'))
+        logs_dir = os.path.join(appdata, 'ScreenAlert', 'logs')
+        os.makedirs(logs_dir, exist_ok=True)
+        
+        # Create logger
+        logger = logging.getLogger('screenalert')
+        logger.setLevel(logging.DEBUG)
+        
+        # Create rotating file handler
+        log_file = os.path.join(logs_dir, f'screenalert_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log')
+        handler = logging.handlers.RotatingFileHandler(
+            log_file, maxBytes=10*1024*1024, backupCount=10
+        )
+        handler.setLevel(logging.DEBUG)
+        
+        # Create formatter
+        formatter = logging.Formatter(
+            '%(asctime)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        handler.setFormatter(formatter)
+        
+        # Add handler to logger
+        logger.addHandler(handler)
+        
+        # Log startup information
+        logger.info(f"ScreenAlert v{get_app_version()} starting up")
+        logger.info(f"Log file: {log_file}")
+        logger.info(f"Platform: {platform.platform()}")
+        logger.info(f"Python: {sys.version}")
+        
+        # Redirect print statements to logger
+        class PrintToLogger(io.StringIO):
+            def __init__(self, log):
+                super().__init__()
+                self.log = log
+                self.linebuf = ''
+            
+            def write(self, buf):
+                if buf == '\n':
+                    if self.linebuf:
+                        self.log.info(self.linebuf)
+                        self.linebuf = ''
+                else:
+                    self.linebuf += buf
+            
+            def flush(self):
+                if self.linebuf:
+                    self.log.info(self.linebuf)
+                    self.linebuf = ''
+        
+        # Suppress stdout and stderr
+        sys.stdout = PrintToLogger(logger)
+        sys.stderr = PrintToLogger(logger)
+        
+        logger.info("Logging system initialized - all output redirected to log file")
+        return logger
+    except Exception as e:
+        # Fallback if logging setup fails - try to print to stderr
+        import traceback
+        sys.stderr.write(f"Warning: Could not set up logging: {e}\n")
+        traceback.print_exc(file=sys.stderr)
+        return None
+
+# Initialize logging
+LOGGER = setup_logging()
+
 import pyautogui
 from PIL import ImageTk, Image, ImageDraw, ImageFont, ImageFilter
 import tkinter as tk
@@ -14,25 +112,8 @@ import tkinter.messagebox as msgbox
 import platform
 import time
 import cv2
-from datetime import datetime
 
-# Application Information
-def get_app_version():
-    """Get application version from git tags, fallback to default"""
-    try:
-        import subprocess
-        # Get the latest git tag
-        result = subprocess.run(['git', 'describe', '--tags', '--abbrev=0'], 
-                              capture_output=True, text=True, cwd=os.path.dirname(__file__) or '.')
-        if result.returncode == 0 and result.stdout.strip():
-            version = result.stdout.strip()
-            # Remove 'v' prefix if present
-            return version[1:] if version.startswith('v') else version
-    except Exception:
-        pass
-    # Fallback version if git tag detection fails
-    return "1.2.0"
-
+# Application constants
 APP_VERSION = get_app_version()
 APP_AUTHOR = "Ed Perry"
 APP_REPO_URL = "https://github.com/eperry/ScreenAlert"
@@ -91,7 +172,7 @@ if platform.system() == "Windows":
     try:
         import pyttsx3
     except ImportError:
-        print("pyttsx3 not installed. TTS will not work.")
+        # pyttsx3 not installed - TTS will not work (logged via logging system)
         pyttsx3 = None
 
 def get_config_dir():
@@ -117,7 +198,8 @@ def migrate_config():
         try:
             import shutil
             shutil.move(old_config, CONFIG_FILE)
-            print(f"Config file migrated to {CONFIG_FILE}")
+            if LOGGER:
+                LOGGER.info(f"Config file migrated to {CONFIG_FILE}")
         except Exception as e:
             print(f"Failed to migrate config file: {e}")
 
@@ -263,6 +345,28 @@ def find_window_by_title(window_title, exact_match=False, expected_size=None, si
                 if match_ratio >= 0.5 and len(common_words) >= 2:
                     if size_matches(window['size'], expected_size, size_tolerance):
                         return window
+    
+    return None
+
+def find_largest_window_by_title(window_title):
+    """Find all windows with matching title and return the largest one by area"""
+    windows = get_window_list()
+    matching_windows = []
+    
+    # Find all exact matches
+    for window in windows:
+        if window['title'] == window_title:
+            matching_windows.append(window)
+    
+    # If no exact matches, try partial match
+    if not matching_windows:
+        for window in windows:
+            if window_title.lower() in window['title'].lower():
+                matching_windows.append(window)
+    
+    # Return the largest window by area
+    if matching_windows:
+        return max(matching_windows, key=lambda w: w['size'][0] * w['size'][1])
     
     return None
 
@@ -616,13 +720,23 @@ class WindowSelector:
         current_filter = getattr(self, 'filter_var', None)
         filter_text = current_filter.get() if current_filter else self.window_filter
         
+        # Add monitor_id to each window if not already present
+        if hasattr(self, 'monitor_var'):
+            current_monitor = self.monitor_var.get()
+        else:
+            current_monitor = self.monitor_id if self.monitor_id is not None else 0
+        
         for window in all_windows:
+            # Set monitor_id for each window
+            if 'monitor_id' not in window:
+                window['monitor_id'] = current_monitor
             if not filter_text or filter_text.lower() in window['title'].lower():
                 self.current_windows.append(window)
         
         # Populate listbox with filtered windows
         for window in self.current_windows:
-            display_text = f"{window['title']} ({window['size'][0]}x{window['size'][1]})"
+            monitor_id = window.get('monitor_id', 0)
+            display_text = f"{window['title']} - {window['size'][0]}x{window['size'][1]} - Monitor {monitor_id + 1}"
             self.listbox.insert(tk.END, display_text)
         
         if not self.current_windows:
@@ -663,6 +777,8 @@ class WindowSelector:
                 else:
                     monitor_id = self.monitor_id if self.monitor_id is not None else 0
                 self.selected_window['monitor_id'] = monitor_id
+        # Store the filter that was used for this selection
+        self.used_filter = self.filter_var.get() if hasattr(self, 'filter_var') else ""
         self.top.destroy()
     
     def cancel(self):
@@ -1337,7 +1453,7 @@ Features:
 
     def manual_reconnect():
         """Manually trigger window reconnection check"""
-        print("Manual window reconnection check initiated...")
+        # print("Manual window reconnection check initiated...")
         reconnected = try_reconnect_windows()
         if reconnected > 0:
             msgbox.showinfo("Reconnection Success", f"Successfully reconnected {reconnected} window(s)!")
@@ -1367,6 +1483,8 @@ Features:
             
             # Clear existing screenshots to force refresh
             previous_screenshots = []
+            # Get the filter that was used in the selector for next time
+            used_filter = getattr(selector, 'used_filter', window_filter_var.get())
             save_config(
                 regions, interval_var.get(), highlight_time_var.get(),
                 default_sound_var.get(), default_tts_var.get(), alert_threshold_var.get(),
@@ -1375,7 +1493,7 @@ Features:
                 alert_text=alert_text_var.get(), alert_color=alert_color_var.get(),
                 disabled_text=disabled_text_var.get(), disabled_color=disabled_color_var.get(),
                 pause_reminder_interval=pause_reminder_interval_var.get(),
-                target_window=target_window, window_filter=window_filter_var.get(),
+                target_window=target_window, window_filter=used_filter,
                 unavailable_text=unavailable_text_var.get(), unavailable_color=unavailable_color_var.get(),
                 capture_on_alert=capture_on_alert_var.get(), capture_on_green=capture_on_green_var.get(),
                 capture_directory=capture_directory_var.get(), capture_filename_format=capture_filename_format_var.get()
@@ -1448,6 +1566,8 @@ Features:
             print(f"Successfully added region: {region_name}")
             print(f"Total regions now: {len(regions)}")
             update_region_display(force_update=True)  # Force update after adding region
+            # Get the filter that was used in the selector for next time
+            used_filter = getattr(window_selector, 'used_filter', window_filter_var.get())
             save_config(
                 regions, interval_var.get(), highlight_time_var.get(),
                 default_sound_var.get(), default_tts_var.get(), alert_threshold_var.get(),
@@ -1456,7 +1576,7 @@ Features:
                 alert_text=alert_text_var.get(), alert_color=alert_color_var.get(),
                 disabled_text=disabled_text_var.get(), disabled_color=disabled_color_var.get(),
                 pause_reminder_interval=pause_reminder_interval_var.get(),
-                target_window=target_window, window_filter=window_filter_var.get(),
+                target_window=target_window, window_filter=used_filter,
                 unavailable_text=unavailable_text_var.get(), unavailable_color=unavailable_color_var.get(),
                 capture_on_alert=capture_on_alert_var.get(), capture_on_green=capture_on_green_var.get(),
                 capture_directory=capture_directory_var.get(), capture_filename_format=capture_filename_format_var.get()
@@ -1590,7 +1710,7 @@ Features:
                 
         return True  # All active regions are connected
 
-    def try_reconnect_windows():
+    def try_reconnect_windows(largest=False):
         """Try to reconnect to windows that are no longer available - Enhanced version"""
         nonlocal target_window, current_window_img
         
@@ -1608,13 +1728,17 @@ Features:
                 new_window = None
                 expected_size = target_window.get('size')
                 
-                # First try exact title + size match (most reliable)
-                new_window = find_window_by_title(
-                    target_window['title'], 
-                    exact_match=True, 
-                    expected_size=expected_size,
-                    size_tolerance=20
-                )
+                # If largest parameter is True, find the largest matching window
+                if largest:
+                    new_window = find_largest_window_by_title(target_window['title'])
+                else:
+                    # First try exact title + size match (most reliable)
+                    new_window = find_window_by_title(
+                        target_window['title'], 
+                        exact_match=True, 
+                        expected_size=expected_size,
+                        size_tolerance=20
+                    )
                 
                 if new_window:
                     print(f"  Found exact match with size validation: {new_window['title']} (HWND: {new_window['hwnd']})")
@@ -1629,7 +1753,7 @@ Features:
                         print(f"  No exact match found for: {target_window['title']}")
                 
                 if new_window:
-                    print(f"Successfully reconnected global target window: {new_window['title']} (new HWND: {new_window['hwnd']})")
+                    # # print(f"Successfully reconnected global target window: {new_window['title']} (new HWND: {new_window['hwnd']})")
                     target_window = new_window
                     current_window_img = capture_window(target_window['hwnd'])
                     reconnected_count += 1
@@ -2061,15 +2185,18 @@ Features:
                 img_canvas.create_image(0, 0, anchor="nw", image=imgtk)
                 update_region_display.img_refs.append(imgtk)
 
-            # Name label - show window info
+            # Name label - show full window info with size
             region_window = region.get("target_window", target_window)
             if region_window:
-                window_info = f" [{region_window['title'][:20]}...]" if len(region_window['title']) > 20 else f" [{region_window['title']}]"
+                window_title = region_window['title']
+                window_size = region_window.get('size', (0, 0))
+                monitor_id = region_window.get('monitor_id', 0)
+                window_info = f" [{window_title}] {window_size[0]}x{window_size[1]} (Monitor {monitor_id + 1})"
                 # Use the window availability we already checked
                 if not window_available:
                     window_info += " - UNAVAILABLE"
             else:
-                window_info = " [No Window]"
+                window_info = " [No Window Selected]"
             
             name_label.config(text=region.get("name", f"Region {idx+1}") + window_info)
 
@@ -2341,6 +2468,8 @@ Features:
                     root.wait_window(selector.top)
                     if selector.selected_window:
                         regions[idx]["target_window"] = selector.selected_window
+                        # Get the filter that was used in the selector for next time
+                        used_filter = getattr(selector, 'used_filter', window_filter_var.get())
                         save_config(
                             regions, interval_var.get(), highlight_time_var.get(),
                             default_sound_var.get(), default_tts_var.get(), alert_threshold_var.get(),
@@ -2349,7 +2478,7 @@ Features:
                             alert_text=alert_text_var.get(), alert_color=alert_color_var.get(),
                             disabled_text=disabled_text_var.get(), disabled_color=disabled_color_var.get(),
                             pause_reminder_interval=pause_reminder_interval_var.get(),
-                            target_window=target_window, window_filter=window_filter_var.get(),
+                            target_window=target_window, window_filter=used_filter,
                             unavailable_text=unavailable_text_var.get(), unavailable_color=unavailable_color_var.get()
                         )
                         # Reset the previous screenshot for this region to force refresh
