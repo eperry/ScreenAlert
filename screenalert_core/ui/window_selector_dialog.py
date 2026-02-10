@@ -22,6 +22,7 @@ class WindowSelectorDialog:
         """
         self.window_manager = window_manager
         self.selected_window: Optional[Dict] = None
+        self.windows: List[Dict] = []  # Initialize windows list BEFORE UI
         
         # Create dialog
         self.dialog = tk.Toplevel(parent)
