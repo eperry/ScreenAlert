@@ -25,6 +25,7 @@ class ScreenAlertMainWindow:
         self.engine = engine
         self.config = engine.config
         self.window_manager = engine.window_manager
+        self.thumbnail_map = {}  # hwnd -> thumbnail_id mapping
         
         # Create root window
         self.root = tk.Tk()
@@ -125,8 +126,9 @@ class ScreenAlertMainWindow:
             title = window_info['title']
             
             try:
-                self.config.add_thumbnail(hwnd=hwnd, title=title)
-                self.engine.add_thumbnail(hwnd=hwnd, title=title)
+                thumbnail_id = self.config.add_thumbnail(window_title=title, window_hwnd=hwnd)
+                self.thumbnail_map[hwnd] = thumbnail_id
+                self.engine.add_thumbnail(window_title=title, window_hwnd=hwnd)
                 self._update_thumbnail_list()
                 self.status_var.set(f"Added: {title}")
             except Exception as e:
@@ -134,7 +136,7 @@ class ScreenAlertMainWindow:
     
     def _start_monitoring(self) -> None:
         """Start monitoring"""
-        thumbnails = self.config.get_thumbnails()
+        thumbnails = self.config.get_all_thumbnails()
         if not thumbnails:
             msgbox.showwarning("Warning", "Add at least one window first")
             return
@@ -170,13 +172,14 @@ class ScreenAlertMainWindow:
             return
         
         idx = self.thumbnail_list.curselection()[0]
-        thumbnails = self.config.get_thumbnails()
+        thumbnails = self.config.get_all_thumbnails()
         if idx >= len(thumbnails):
             return
         
         thumbnail = thumbnails[idx]
-        hwnd = thumbnail['hwnd']
-        title = thumbnail.get('title', 'Unknown')
+        thumbnail_id = thumbnail['id']
+        hwnd = thumbnail['window_hwnd']
+        title = thumbnail.get('window_title', 'Unknown')
         
         try:
             image = self.window_manager.capture_window(hwnd)
@@ -188,10 +191,16 @@ class ScreenAlertMainWindow:
             regions = dialog.show()
             
             if regions:
-                for region in regions:
+                for i, region in enumerate(regions):
                     x, y, w, h = region
-                    self.config.add_region_to_thumbnail(hwnd, x, y, w, h)
-                    self.engine.add_region(hwnd=hwnd, x=x, y=y, width=w, height=h)
+                    region_dict = {
+                        "name": f"Region_{i+1}",
+                        "rect": [x, y, w, h],
+                        "alert_threshold": 0.99,
+                        "enabled": True
+                    }
+                    self.config.add_region_to_thumbnail(thumbnail_id, region_dict)
+                    self.engine.add_region(thumbnail_id, f"Region_{i+1}", (x, y, w, h))
                 
                 self.status_var.set(f"Added {len(regions)} region(s) to {title}")
                 self._update_thumbnail_list()
@@ -205,17 +214,18 @@ class ScreenAlertMainWindow:
             return
         
         idx = self.thumbnail_list.curselection()[0]
-        thumbnails = self.config.get_thumbnails()
+        thumbnails = self.config.get_all_thumbnails()
         if idx >= len(thumbnails):
             return
         
         thumbnail = thumbnails[idx]
-        hwnd = thumbnail['hwnd']
-        title = thumbnail.get('title', 'Unknown')
+        thumbnail_id = thumbnail['id']
+        hwnd = thumbnail['window_hwnd']
+        title = thumbnail.get('window_title', 'Unknown')
         
         try:
-            self.engine.remove_thumbnail(hwnd)
-            self.config.remove_thumbnail(hwnd)
+            self.engine.remove_thumbnail(thumbnail_id)
+            self.config.remove_thumbnail(thumbnail_id)
             self._update_thumbnail_list()
             self.status_var.set(f"Removed: {title}")
         except Exception as e:
@@ -234,8 +244,8 @@ class ScreenAlertMainWindow:
         thumbnails = self.config.get_thumbnails()
         
         for thumbnail in thumbnails:
-            title = thumbnail.get('title', 'Unknown')
-            regions = thumbnail.get('regions', [])
+            title = thumbnail.get('window_title', 'Unknown')
+            regions = thumbnail.get('monitored_regions', [])
             text = f"{title} ({len(regions)} regions)"
             self.thumbnail_list.insert(tk.END, text)
         
@@ -247,23 +257,22 @@ class ScreenAlertMainWindow:
         if self.thumbnail_list.curselection():
             self._add_region()
     
-    def _on_alert(self, hwnd: int, region: dict) -> None:
+    def _on_alert(self, thumbnail_id: str, region_id: str, region_name: str) -> None:
         """Handle alert event"""
-        thumbnails = self.config.get_thumbnails()
-        title = next((t['title'] for t in thumbnails if t['hwnd'] == hwnd), 'Unknown')
-        self.status_var.set(f"ALERT: {title} - Region changed!")
-        logger.info(f"Alert in {title}")
+        thumbnail = self.config.get_thumbnail(thumbnail_id)
+        if thumbnail:
+            title = thumbnail.get('window_title', 'Unknown')
+            self.status_var.set(f"ALERT: {title} - {region_name} changed!")
+            logger.info(f"Alert in {title}: {region_name}")
     
-    def _on_region_change(self, hwnd: int, region_id: str) -> None:
+    def _on_region_change(self, thumbnail_id: str, region_id: str) -> None:
         """Handle region change"""
         logger.debug(f"Region changed: {region_id}")
     
-    def _on_window_lost(self, hwnd: int) -> None:
+    def _on_window_lost(self, thumbnail_id: str, window_title: str) -> None:
         """Handle lost window"""
-        thumbnails = self.config.get_thumbnails()
-        title = next((t['title'] for t in thumbnails if t['hwnd'] == hwnd), 'Unknown')
-        logger.warning(f"Window lost: {title}")
-        self.status_var.set(f"Window lost: {title}")
+        logger.warning(f"Window lost: {window_title}")
+        self.status_var.set(f"Window lost: {window_title}")
     
     def _on_exit(self) -> None:
         """Handle window close"""

@@ -10,8 +10,9 @@ import logging
 import os
 from pathlib import Path
 
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent))
+# Add workspace root to path for imports
+workspace_root = Path(__file__).parent.parent
+sys.path.insert(0, str(workspace_root))
 
 from screenalert_core.utils.constants import (
     APP_NAME, APP_VERSION, LOGS_DIR, LOG_FORMAT, LOG_DATE_FORMAT
