@@ -4,10 +4,11 @@ import logging
 import tkinter as tk
 from tkinter import ttk, messagebox as msgbox
 from typing import Optional, List
+import win32gui
 
 from screenalert_core.screening_engine import ScreenAlertEngine
 from screenalert_core.ui.window_selector_dialog import WindowSelectorDialog
-from screenalert_core.ui.region_editor_dialog import RegionEditorDialog
+from screenalert_core.ui.region_selection_overlay import RegionSelectionOverlay
 from screenalert_core.ui.settings_dialog import SettingsDialog
 
 logger = logging.getLogger(__name__)
@@ -196,7 +197,7 @@ class ScreenAlertMainWindow:
             msgbox.showerror("Error", f"Failed to open settings: {str(e)}")
     
     def _add_region(self) -> None:
-        """Add region to selected thumbnail"""
+        """Add region to selected thumbnail using screen overlay"""
         if not self.thumbnail_list.curselection():
             self.status_var.set("Select a thumbnail first")
             return
@@ -211,38 +212,62 @@ class ScreenAlertMainWindow:
         hwnd = thumbnail['window_hwnd']
         title = thumbnail.get('window_title', 'Unknown')
         
-        logger.info(f"Opening region editor for thumbnail: {title} (id={thumbnail_id}, hwnd={hwnd})")
+        logger.info(f"Starting region selection for: {title} (id={thumbnail_id}, hwnd={hwnd})")
         
         try:
-            image = self.window_manager.capture_window(hwnd)
-            if not image:
-                logger.error(f"Cannot capture window for {title}")
-                msgbox.showerror("Error", "Cannot capture window")
-                return
+            # Get the window's position on screen to convert coordinates
+            rect = win32gui.GetWindowRect(hwnd)
+            window_x = rect[0]
+            window_y = rect[1]
+            window_width = rect[2] - rect[0]
+            window_height = rect[3] - rect[1]
             
-            logger.info(f"Captured image: {image.size}, opening RegionEditorDialog")
-            dialog = RegionEditorDialog(self.root, image)
-            logger.info(f"RegionEditorDialog created, calling show()")
-            regions = dialog.show()
-            logger.info(f"RegionEditorDialog returned: {len(regions) if regions else 0} regions")
+            logger.info(f"Window position: ({window_x}, {window_y}), size: {window_width}x{window_height}")
             
-            if regions:
-                for i, region in enumerate(regions):
-                    x, y, w, h = region
+            # Activate the window (bring to front)
+            win32gui.SetForegroundWindow(hwnd)
+            
+            # Hide the ScreenAlert window
+            self.root.withdraw()
+            
+            # Show region selection overlay
+            overlay = RegionSelectionOverlay(hwnd, self.root)
+            regions_screen = overlay.show()  # Screen coordinates
+            
+            # Show the ScreenAlert window again
+            self.root.deiconify()
+            
+            if regions_screen:
+                # Convert screen coordinates to window-relative coordinates
+                for i, (x, y, w, h) in enumerate(regions_screen):
+                    # Convert screen coords to window-relative
+                    region_x = x - window_x
+                    region_y = y - window_y
+                    
+                    # Clamp to window bounds
+                    region_x = max(0, min(region_x, window_width - w))
+                    region_y = max(0, min(region_y, window_height - h))
+                    
                     region_dict = {
                         "name": f"Region_{i+1}",
-                        "rect": [x, y, w, h],
+                        "rect": [region_x, region_y, w, h],
                         "alert_threshold": 0.99,
                         "enabled": True
                     }
                     self.config.add_region_to_thumbnail(thumbnail_id, region_dict)
-                    self.engine.add_region(thumbnail_id, f"Region_{i+1}", (x, y, w, h))
+                    self.engine.add_region(thumbnail_id, f"Region_{i+1}", (region_x, region_y, w, h))
+                    logger.info(f"Added region {i+1}: window-relative ({region_x}, {region_y}, {w}, {h})")
                 
-                self.status_var.set(f"Added {len(regions)} region(s) to {title}")
+                self.status_var.set(f"Added {len(regions_screen)} region(s) to {title}")
                 self._update_thumbnail_list()
+            else:
+                self.status_var.set("Region selection cancelled")
+                
         except Exception as e:
+            self.root.deiconify()  # Ensure window is visible even on error
             logger.error(f"Error adding region to '{title}': {str(e)}", exc_info=True)
             msgbox.showerror("Error", f"Failed to add region: {str(e)}")
+
     
     def _remove_thumbnail(self) -> None:
         """Remove selected thumbnail"""
