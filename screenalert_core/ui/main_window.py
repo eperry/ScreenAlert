@@ -132,6 +132,7 @@ class ScreenAlertMainWindow:
                 self._update_thumbnail_list()
                 self.status_var.set(f"Added: {title}")
             except Exception as e:
+                logger.error(f"Error adding window '{title}': {str(e)}", exc_info=True)
                 msgbox.showerror("Error", f"Failed to add window: {str(e)}")
     
     def _start_monitoring(self) -> None:
@@ -147,6 +148,7 @@ class ScreenAlertMainWindow:
             self.btn_pause.config(state=tk.NORMAL)
             self.status_var.set("Monitoring started")
         except Exception as e:
+            logger.error(f"Error starting monitoring: {str(e)}", exc_info=True)
             msgbox.showerror("Error", f"Failed to start monitoring: {str(e)}")
     
     def _pause_monitoring(self) -> None:
@@ -157,13 +159,18 @@ class ScreenAlertMainWindow:
             self.btn_pause.config(state=tk.DISABLED)
             self.status_var.set("Monitoring paused")
         except Exception as e:
+            logger.error(f"Error pausing monitoring: {str(e)}", exc_info=True)
             msgbox.showerror("Error", f"Failed to pause monitoring: {str(e)}")
     
     def _show_settings(self) -> None:
         """Show settings dialog"""
-        dialog = SettingsDialog(self.root, self.config)
-        if dialog.show():
-            self.status_var.set("Settings updated")
+        try:
+            dialog = SettingsDialog(self.root, self.config)
+            if dialog.show():
+                self.status_var.set("Settings updated")
+        except Exception as e:
+            logger.error(f"Error opening settings dialog: {str(e)}", exc_info=True)
+            msgbox.showerror("Error", f"Failed to open settings: {str(e)}")
     
     def _add_region(self) -> None:
         """Add region to selected thumbnail"""
@@ -205,43 +212,23 @@ class ScreenAlertMainWindow:
                 self.status_var.set(f"Added {len(regions)} region(s) to {title}")
                 self._update_thumbnail_list()
         except Exception as e:
-            msgbox.showerror("Error", f"Failed to add region: {str(e)}")
-    
-    def _remove_thumbnail(self) -> None:
-        """Remove selected thumbnail"""
-        if not self.thumbnail_list.curselection():
-            self.status_var.set("Select a thumbnail to remove")
-            return
-        
-        idx = self.thumbnail_list.curselection()[0]
-        thumbnails = self.config.get_all_thumbnails()
-        if idx >= len(thumbnails):
-            return
-        
-        thumbnail = thumbnails[idx]
-        thumbnail_id = thumbnail['id']
-        hwnd = thumbnail['window_hwnd']
-        title = thumbnail.get('window_title', 'Unknown')
-        
-        try:
-            self.engine.remove_thumbnail(thumbnail_id)
-            self.config.remove_thumbnail(thumbnail_id)
-            self._update_thumbnail_list()
-            self.status_var.set(f"Removed: {title}")
-        except Exception as e:
+            logger.error(f"Error adding region to '{title}': {str(e)}", exc_info=True)
             msgbox.showerror("Error", f"Failed to remove window: {str(e)}")
     
     def _show_about(self) -> None:
         """Show about dialog"""
-        msgbox.showinfo("About ScreenAlert", 
-                       "ScreenAlert v2.0\n\n"
-                       "Advanced multi-window change detection\n"
-                       "with Pygame-based overlays")
+        try:
+            msgbox.showinfo("About ScreenAlert", 
+                           "ScreenAlert v2.0\n\n"
+                           "Advanced multi-window change detection\n"
+                           "with Pygame-based overlays")
+        except Exception as e:
+            logger.error(f"Error showing about dialog: {str(e)}", exc_info=True)
     
     def _update_thumbnail_list(self) -> None:
         """Update thumbnail list display"""
         self.thumbnail_list.delete(0, tk.END)
-        thumbnails = self.config.get_thumbnails()
+        thumbnails = self.config.get_all_thumbnails()
         
         for thumbnail in thumbnails:
             title = thumbnail.get('window_title', 'Unknown')

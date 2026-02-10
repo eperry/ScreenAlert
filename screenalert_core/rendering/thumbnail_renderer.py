@@ -223,11 +223,9 @@ class ThumbnailWindow:
                 flags
             )
             
-            # Try to make it always-on-top (platform-specific)
-            import ctypes
-            if hasattr(ctypes, 'wintypes'):
-                hwnd = pygame.display.get_surface().get_blit()
-                # Window API calls would go here
+            # Always-on-top is set via flags above (pygame.HIDDEN)
+            # Window handle management for Tkinter integration would go here
+            # For now, just use the pygame surface directly
             
             pygame.display.set_caption(self.config.get("window_title", "ScreenAlert"))
             logger.debug(f"Created window for thumbnail {self.thumbnail_id}")
