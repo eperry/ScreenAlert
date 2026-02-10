@@ -272,7 +272,7 @@ class ScreenAlertEngine:
                 # Sleep to maintain refresh rate
                 elapsed = (time.time() - start_time) * 1000  # Convert to ms
                 sleep_time = max(1, refresh_rate_ms - elapsed) / 1000  # Convert to seconds
-                time.sleep(sleep_time / 1000)
+                time.sleep(sleep_time)
             
             except Exception as e:
                 logger.error(f"Error in main loop: {e}")
