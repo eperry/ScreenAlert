@@ -283,15 +283,18 @@ class ScreenAlertMainWindow:
         """Update thumbnail list display"""
         self.thumbnail_list.delete(0, tk.END)
         thumbnails = self.config.get_all_thumbnails()
+        logger.info(f"Updating thumbnail list: {len(thumbnails)} thumbnails from config")
         
         for thumbnail in thumbnails:
             title = thumbnail.get('window_title', 'Unknown')
             regions = thumbnail.get('monitored_regions', [])
             text = f"{title} ({len(regions)} regions)"
             self.thumbnail_list.insert(tk.END, text)
+            logger.debug(f"  Added to list: {text}")
         
         count = len(thumbnails)
         self.list_label.config(text=f"Active Thumbnails ({count})")
+        logger.info(f"Thumbnail list updated: {count} total")
     
     def _on_thumbnail_double_click(self, event) -> None:
         """Handle double-click on thumbnail"""
