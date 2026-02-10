@@ -27,11 +27,23 @@ class RegionEditorDialog:
         self.is_selecting = False
         self.start_x = 0
         self.start_y = 0
+        self.min_region_size = 50
         
         # Create dialog
         self.dialog = tk.Toplevel(parent)
         self.dialog.title("Select Monitoring Regions")
         self.result = None
+        
+        # Size dialog to 75% of screen
+        screen_width = self.dialog.winfo_screenwidth()
+        screen_height = self.dialog.winfo_screenheight()
+        dialog_width = int(screen_width * 0.75)
+        dialog_height = int(screen_height * 0.75)
+        
+        # Center the dialog
+        x = (screen_width - dialog_width) // 2
+        y = (screen_height - dialog_height) // 2
+        self.dialog.geometry(f"{dialog_width}x{dialog_height}+{x}+{y}")
         
         self._build_ui()
         self._load_image()
@@ -56,6 +68,11 @@ class RegionEditorDialog:
         # Canvas for image
         canvas_frame = ttk.LabelFrame(main_frame, text="Window Preview", padding=5)
         canvas_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        
+        # Dimension display label
+        self.dimension_label = ttk.Label(canvas_frame, text="", font=("Courier", 10, "bold"),
+                                        background="yellow", foreground="black")
+        self.dimension_label.place_forget()  # Hidden initially
         
         # Create canvas with scrollbars
         h_scrollbar = ttk.Scrollbar(canvas_frame, orient=tk.HORIZONTAL)
@@ -99,13 +116,17 @@ class RegionEditorDialog:
     def _load_image(self) -> None:
         """Load window image onto canvas"""
         try:
-            # Resize if too large
-            max_width = 1000
-            max_height = 700
+            # Get available canvas space (dialog is 75% of screen)
+            # Leave room for UI elements
+            self.dialog.update_idletasks()
+            available_width = int(self.dialog.winfo_width() * 0.95)
+            available_height = int(self.dialog.winfo_height() * 0.65)  # Leave room for controls
+            
             img = self.window_image
             
-            if img.width > max_width or img.height > max_height:
-                img = ImageProcessor.resize_image(img, max_width, max_height)
+            # Resize to fit available space while maintaining aspect ratio
+            if img.width > available_width or img.height > available_height:
+                img = ImageProcessor.resize_image(img, available_width, available_height)
             
             # Convert to PhotoImage
             self.photo_image = ImageTk.PhotoImage(img)
@@ -120,7 +141,10 @@ class RegionEditorDialog:
             self.scale_x = self.window_image.width / img.width
             self.scale_y = self.window_image.height / img.height
             
-            logger.info(f"Loaded image: {img.width}x{img.height}")
+            # Draw any existing regions
+            self._draw_regions()
+            
+            logger.info(f"Loaded image: {img.width}x{img.height}, scale: {self.scale_x:.2f}x{self.scale_y:.2f}")
         
         except Exception as e:
             logger.error(f"Error loading image: {e}")
@@ -157,23 +181,57 @@ class RegionEditorDialog:
         img_x = max(0, min(img_x, self.display_width))
         img_y = max(0, min(img_y, self.display_height))
         
-        # Draw preview rectangle
-        self.canvas.delete("region_preview")
+        # Calculate region in original coordinates
+        end_x = int(img_x * self.scale_x)
+        end_y = int(img_y * self.scale_y)
         
+        x = min(self.start_x, end_x)
+        y = min(self.start_y, end_y)
+        width = abs(end_x - self.start_x)
+        height = abs(end_y - self.start_y)
+        
+        # Snap to minimum size if we're close
+        if width > 0 and width < self.min_region_size:
+            width = self.min_region_size
+            if end_x < self.start_x:
+                end_x = self.start_x - width
+            else:
+                end_x = self.start_x + width
+                
+        if height > 0 and height < self.min_region_size:
+            height = self.min_region_size
+            if end_y < self.start_y:
+                end_y = self.start_y - height
+            else:
+                end_y = self.start_y + height
+        
+        # Convert back to display coordinates
         start_display_x = int(self.start_x / self.scale_x)
         start_display_y = int(self.start_y / self.scale_y)
+        end_display_x = int(end_x / self.scale_x)
+        end_display_y = int(end_y / self.scale_y)
         
-        x1 = min(start_display_x, int(img_x))
-        y1 = min(start_display_y, int(img_y))
-        x2 = max(start_display_x, int(img_x))
-        y2 = max(start_display_y, int(img_y))
+        x1 = min(start_display_x, end_display_x)
+        y1 = min(start_display_y, end_display_y)
+        x2 = max(start_display_x, end_display_x)
+        y2 = max(start_display_y, end_display_y)
         
-        coords = self.canvas.coords(self.canvas_image_id)
+        # Draw preview rectangle
+        self.canvas.delete("region_preview")
         self.canvas.create_rectangle(
             coords[0] + x1, coords[1] + y1,
             coords[0] + x2, coords[1] + y2,
             outline="lime", width=2, tags="region_preview"
         )
+        
+        # Show dimensions near cursor
+        dim_text = f"{width}x{height}px"
+        self.dimension_label.config(text=dim_text)
+        
+        # Position label near cursor (offset so it's visible)
+        label_x = event.x + 15
+        label_y = event.y - 25
+        self.dimension_label.place(x=label_x, y=label_y)
     
     def _on_canvas_release(self, event) -> None:
         """Handle mouse release on canvas"""
@@ -182,6 +240,7 @@ class RegionEditorDialog:
         
         self.is_selecting = False
         self.canvas.delete("region_preview")
+        self.dimension_label.place_forget()  # Hide dimension label
         
         coords = self.canvas.coords(self.canvas_image_id)
         if not coords:
@@ -204,13 +263,24 @@ class RegionEditorDialog:
         width = abs(end_x - self.start_x)
         height = abs(end_y - self.start_y)
         
-        if width > 50 and height > 50:  # Minimum region size
+        # Enforce minimum size with snapping
+        if width < self.min_region_size:
+            width = self.min_region_size
+        if height < self.min_region_size:
+            height = self.min_region_size
+        
+        # Ensure region doesn't exceed image bounds
+        if x + width > self.window_image.width:
+            x = self.window_image.width - width
+        if y + height > self.window_image.height:
+            y = self.window_image.height - height
+        
+        if width >= self.min_region_size and height >= self.min_region_size:
             region = (x, y, width, height)
             self.regions.append(region)
             self._update_regions_list()
+            self._draw_regions()  # Redraw all regions
             logger.info(f"Added region: {region}")
-        else:
-            logger.warning("Region too small (minimum 50x50)")
     
     def _update_regions_list(self) -> None:
         """Update regions listbox"""
@@ -219,11 +289,42 @@ class RegionEditorDialog:
             text = f"Region {i}: ({x}, {y}) {w}x{h}"
             self.regions_listbox.insert(tk.END, text)
     
+    def _draw_regions(self) -> None:
+        """Draw all regions on canvas"""
+        # Remove old region drawings
+        self.canvas.delete("region_rect")
+        
+        coords = self.canvas.coords(self.canvas_image_id)
+        if not coords:
+            return
+        
+        # Draw each region
+        for i, (x, y, w, h) in enumerate(self.regions, 1):
+            # Convert to display coordinates
+            x1 = int(x / self.scale_x)
+            y1 = int(y / self.scale_y)
+            x2 = int((x + w) / self.scale_x)
+            y2 = int((y + h) / self.scale_y)
+            
+            self.canvas.create_rectangle(
+                coords[0] + x1, coords[1] + y1,
+                coords[0] + x2, coords[1] + y2,
+                outline="lime", width=2, tags="region_rect"
+            )
+            
+            # Add region number label
+            self.canvas.create_text(
+                coords[0] + x1 + 5, coords[1] + y1 + 5,
+                text=f"{i}", fill="lime", font=("Arial", 12, "bold"),
+                anchor="nw", tags="region_rect"
+            )
+    
     def _on_clear_last(self) -> None:
         """Remove last selected region"""
         if self.regions:
             self.regions.pop()
             self._update_regions_list()
+            self._draw_regions()  # Redraw remaining regions
     
     def _on_done(self) -> None:
         """Close dialog and return regions"""
