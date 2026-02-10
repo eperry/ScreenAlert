@@ -35,6 +35,13 @@ class ScreenAlertMainWindow:
         # Pass tkinter root to engine for overlay windows
         self.engine.set_tkinter_root(self.root)
         
+        # Rebuild thumbnail_map from config (for duplicate checking)
+        for thumbnail in self.config.get_all_thumbnails():
+            hwnd = thumbnail.get('window_hwnd')
+            thumbnail_id = thumbnail.get('id')
+            if hwnd and thumbnail_id:
+                self.thumbnail_map[hwnd] = thumbnail_id
+        
         # Configure style
         self.style = ttk.Style()
         self.style.theme_use('clam')
