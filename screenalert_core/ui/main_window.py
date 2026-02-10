@@ -32,6 +32,9 @@ class ScreenAlertMainWindow:
         self.root.title("ScreenAlert v2.0 - Multibox Monitor")
         self.root.geometry("1000x700")
         
+        # Pass tkinter root to engine for overlay windows
+        self.engine.set_tkinter_root(self.root)
+        
         # Configure style
         self.style = ttk.Style()
         self.style.theme_use('clam')

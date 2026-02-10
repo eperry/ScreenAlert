@@ -55,7 +55,8 @@ class ThumbnailRenderer:
                 thumbnail = ThumbnailWindow(
                     thumbnail_id, 
                     config,
-                    self.manager_callback
+                    self.manager_callback,
+                    parent_root=self.parent_root
                 )
                 self.thumbnails[thumbnail_id] = thumbnail
                 logger.info(f"Added thumbnail: {thumbnail_id}")
@@ -166,17 +167,20 @@ class ThumbnailWindow:
     """Individual thumbnail overlay window using tkinter Toplevel"""
     
     def __init__(self, thumbnail_id: str, config: Dict, 
-                 manager_callback: Callable = None):
+                 manager_callback: Callable = None,
+                 parent_root: Optional[tk.Tk] = None):
         """Initialize thumbnail window
         
         Args:
             thumbnail_id: Unique ID
             config: Configuration dict
             manager_callback: Callback for user interactions
+            parent_root: Parent tkinter root (optional)
         """
         self.thumbnail_id = thumbnail_id
         self.config = config
         self.manager_callback = manager_callback
+        self.parent_root = parent_root
         
         # Position and size
         pos = config.get("position", {})
@@ -209,8 +213,11 @@ class ThumbnailWindow:
     def _create_window(self) -> None:
         """Create tkinter Toplevel window"""
         try:
-            # Create toplevel window (overlay)
-            self.window = tk.Toplevel()
+            # Create toplevel window (overlay) - use parent_root if available
+            if self.parent_root:
+                self.window = tk.Toplevel(self.parent_root)
+            else:
+                self.window = tk.Toplevel()
             self.window.geometry(f"{self.width}x{self.height}+{self.x}+{self.y}")
             self.window.title(self.config.get("window_title", "ScreenAlert Thumbnail"))
             self.window.attributes('-topmost', True)  # Always on top

@@ -3,6 +3,7 @@
 import logging
 import threading
 import time
+import tkinter as tk
 from typing import Dict, Optional, List, Callable
 from PIL import Image
 
@@ -33,7 +34,8 @@ class ScreenAlertEngine:
         self.cache_manager = CacheManager(lifetime_seconds=1.0)
         self.monitoring_engine = MonitoringEngine()
         self.alert_system = AlertSystem()
-        self.renderer = ThumbnailRenderer(manager_callback=self._on_thumbnail_interaction)
+        self.tkinter_root: Optional[tk.Tk] = None  # Will be set by main_window
+        self.renderer = ThumbnailRenderer(manager_callback=self._on_thumbnail_interaction, parent_root=None)
         
         # State
         self.running = False
@@ -50,6 +52,16 @@ class ScreenAlertEngine:
         self._initialize_from_config()
         
         logger.info("ScreenAlert engine initialized")
+    
+    def set_tkinter_root(self, root: 'tk.Tk') -> None:
+        """Set the main tkinter root for overlay windows
+        
+        Args:
+            root: The main tkinter Tk instance
+        """
+        self.tkinter_root = root
+        self.renderer.parent_root = root
+        logger.debug("Set tkinter root for renderer")
     
     def _initialize_from_config(self) -> None:
         """Load thumbnails and regions from config"""
