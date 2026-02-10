@@ -1,11 +1,11 @@
-"""Pygame-based thumbnail rendering"""
+"""Tkinter-based thumbnail rendering for multiple overlay windows"""
 
 import logging
 import threading
 import time
 from typing import Dict, Optional, Callable, Tuple
-from PIL import Image
-import pygame
+from PIL import Image, ImageTk
+import tkinter as tk
 
 from screenalert_core.core.image_processor import ImageProcessor
 from screenalert_core.utils.constants import (
@@ -18,24 +18,22 @@ logger = logging.getLogger(__name__)
 
 
 class ThumbnailRenderer:
-    """Manages Pygame-based thumbnail overlay windows"""
+    """Manages tkinter-based thumbnail overlay windows"""
     
-    def __init__(self, manager_callback: Callable = None):
+    def __init__(self, manager_callback: Callable = None, parent_root: Optional[tk.Tk] = None):
         """Initialize thumbnail renderer
         
         Args:
             manager_callback: Function to call on user interactions
+            parent_root: Parent tkinter root (optional, for integration)
         """
-        try:
-            pygame.init()
-        except:
-            logger.error("Failed to initialize pygame")
-        
         self.thumbnails: Dict[str, 'ThumbnailWindow'] = {}
         self.manager_callback = manager_callback
+        self.parent_root = parent_root
         self.running = False
         self.render_thread: Optional[threading.Thread] = None
         self.lock = threading.Lock()
+        logger.info("Thumbnail renderer initialized")
     
     def add_thumbnail(self, thumbnail_id: str, config: Dict) -> bool:
         """Add a new thumbnail window
@@ -63,7 +61,7 @@ class ThumbnailRenderer:
                 return True
             
             except Exception as e:
-                logger.error(f"Error adding thumbnail {thumbnail_id}: {e}")
+                logger.error(f"Error adding thumbnail {thumbnail_id}: {e}", exc_info=True)
                 return False
     
     def remove_thumbnail(self, thumbnail_id: str) -> bool:
@@ -78,7 +76,7 @@ class ThumbnailRenderer:
                 logger.info(f"Removed thumbnail: {thumbnail_id}")
                 return True
             except Exception as e:
-                logger.error(f"Error removing thumbnail {thumbnail_id}: {e}")
+                logger.error(f"Error removing thumbnail {thumbnail_id}: {e}", exc_info=True)
                 return False
     
     def update_thumbnail_image(self, thumbnail_id: str, image: Image.Image) -> bool:
@@ -97,7 +95,6 @@ class ThumbnailRenderer:
                 return False
             
             self.thumbnails[thumbnail_id].set_position(x, y)
-            return True
     
     def update_thumbnail_size(self, thumbnail_id: str, width: int, height: int) -> bool:
         """Update thumbnail size"""
@@ -150,22 +147,23 @@ class ThumbnailRenderer:
     
     def _render_loop(self) -> None:
         """Main render loop (runs in separate thread)"""
-        clock = pygame.time.Clock()
+        last_render = {}
         
         try:
             while self.running:
                 with self.lock:
-                    for thumbnail in list(self.thumbnails.values()):
+                    for thumbnail_id, thumbnail in list(self.thumbnails.items()):
                         try:
-                            thumbnail.render()
+                            # Update window if image changed
+                            thumbnail.update_display()
                         except Exception as e:
-                            logger.error(f"Error rendering thumbnail: {e}")
+                            logger.error(f"Error rendering thumbnail: {e}", exc_info=True)
                 
-                # Cap at reasonable FPS
-                clock.tick(30)  # 30 FPS max
+                # Render at ~30 updates per second
+                time.sleep(1/30)
         
         except Exception as e:
-            logger.error(f"Error in render loop: {e}")
+            logger.error(f"Error in render loop: {e}", exc_info=True)
     
     def is_running(self) -> bool:
         """Check if renderer is running"""
@@ -173,7 +171,7 @@ class ThumbnailRenderer:
 
 
 class ThumbnailWindow:
-    """Individual thumbnail overlay window"""
+    """Individual thumbnail overlay window using tkinter Toplevel"""
     
     def __init__(self, thumbnail_id: str, config: Dict, 
                  manager_callback: Callable = None):
@@ -192,8 +190,8 @@ class ThumbnailWindow:
         pos = config.get("position", {})
         size = config.get("size", {})
         
-        self.x = pos.get("x", 0)
-        self.y = pos.get("y", 0)
+        self.x = pos.get("x", 100)
+        self.y = pos.get("y", 100)
         self.monitor = pos.get("monitor", 0)
         self.width = size.get("width", 320)
         self.height = size.get("height", 240)
@@ -204,35 +202,48 @@ class ThumbnailWindow:
         self.enabled = config.get("enabled", True)
         
         # State
-        self.current_image: Optional[pygame.Surface] = None
+        self.current_image: Optional[Image.Image] = None
+        self.photo_image: Optional[ImageTk.PhotoImage] = None
         self.is_dragging = False
         self.is_resizing = False
         self.drag_start = (0, 0)
         
-        # Create window
+        # Create tkinter window
         self._create_window()
     
     def _create_window(self) -> None:
-        """Create Pygame window"""
+        """Create tkinter Toplevel window"""
         try:
-            # Set up flags for always-on-top overlay
-            flags = pygame.HWSURFACE | pygame.DOUBLEBUF
+            # Create toplevel window (overlay)
+            self.window = tk.Toplevel()
+            self.window.geometry(f"{self.width}x{self.height}+{self.x}+{self.y}")
+            self.window.title(self.config.get("window_title", "ScreenAlert Thumbnail"))
+            self.window.attributes('-topmost', True)  # Always on top
+            self.window.attributes('-alpha', self.opacity)  # Set opacity
             
-            self.surface = pygame.display.set_mode(
-                (self.width, self.height),
-                flags
-            )
+            # Make frame with border
+            frame = tk.Frame(self.window, bg='#FF9500' if self.show_border else 'black')
+            frame.pack(fill=tk.BOTH, expand=True)
             
-            # Always-on-top is set via flags above (pygame.HIDDEN)
-            # Window handle management for Tkinter integration would go here
-            # For now, just use the pygame surface directly
+            # Border thickness
+            border_frame = tk.Frame(frame, bg='black', relief=tk.RAISED, bd=2 if self.show_border else 0)
+            border_frame.pack(fill=tk.BOTH, expand=True, padx=(2 if self.show_border else 0), 
+                            pady=(2 if self.show_border else 0))
             
-            pygame.display.set_caption(self.config.get("window_title", "ScreenAlert"))
+            # Image label
+            self.label = tk.Label(border_frame, bg='black', image=None)
+            self.label.pack(fill=tk.BOTH, expand=True)
+            
+            # Bind drag events
+            self.label.bind('<Button-1>', self._on_press)
+            self.label.bind('<B1-Motion>', self._on_drag)
+            self.label.bind('<ButtonRelease-1>', self._on_release)
+            
             logger.debug(f"Created window for thumbnail {self.thumbnail_id}")
         
         except Exception as e:
-            logger.error(f"Error creating window: {e}")
-            self.surface = None
+            logger.error(f"Error creating window: {e}", exc_info=True)
+            self.window = None
     
     def set_image(self, pil_image: Image.Image) -> None:
         """Update displayed image"""
@@ -243,25 +254,37 @@ class ThumbnailWindow:
                 maintain_aspect=True
             )
             
-            # Convert to pygame surface
-            if pil_image.mode != 'RGB':
-                pil_image = pil_image.convert('RGB')
-            
-            self.current_image = pygame.image.fromstring(
-                pil_image.tobytes(), pil_image.size, pil_image.mode
-            )
+            # Store PIL image for update
+            self.current_image = pil_image
         
         except Exception as e:
-            logger.debug(f"Error setting image: {e}")
+            logger.error(f"Error setting image: {e}", exc_info=True)
+    
+    def update_display(self) -> None:
+        """Update the displayed image in the tkinter window"""
+        if not self.window or not self.enabled or not self.current_image:
+            return
+        
+        try:
+            # Convert PIL image to PhotoImage
+            self.photo_image = ImageTk.PhotoImage(self.current_image)
+            
+            # Update label (must run in main thread)
+            if self.window and hasattr(self, 'label'):
+                self.label.config(image=self.photo_image)
+                # Keep a reference to prevent garbage collection
+                self.label.image = self.photo_image
+        
+        except Exception as e:
+            logger.debug(f"Error updating display: {e}")
     
     def set_position(self, x: int, y: int) -> None:
         """Update window position"""
         self.x = x
         self.y = y
-        if self.surface:
+        if self.window:
             try:
-                # Move window (platform-specific)
-                pass
+                self.window.geometry(f"+{x}+{y}")
             except:
                 pass
     
@@ -277,43 +300,50 @@ class ThumbnailWindow:
         self.height = height
         
         try:
-            if self.surface:
-                pygame.display.set_mode((self.width, self.height))
+            if self.window:
+                self.window.geometry(f"{width}x{height}")
+                # Force resize of current image
+                if self.current_image:
+                    self.set_image(self.current_image)
         except Exception as e:
-            logger.error(f"Error resizing window: {e}")
+            logger.error(f"Error resizing window: {e}", exc_info=True)
     
     def set_opacity(self, opacity: float) -> None:
         """Update window opacity"""
         self.opacity = max(0.2, min(opacity, 1.0))
+        if self.window:
+            try:
+                self.window.attributes('-alpha', self.opacity)
+            except:
+                pass
     
-    def render(self) -> None:
-        """Render frame"""
-        if not self.surface or not self.enabled:
+    def _on_press(self, event) -> None:
+        """Start drag operation"""
+        self.is_dragging = True
+        self.drag_start = (event.x_root, event.y_root)
+    
+    def _on_drag(self, event) -> None:
+        """Handle dragging"""
+        if not self.is_dragging or not self.window:
             return
         
-        try:
-            # Draw background
-            self.surface.fill((0, 0, 0))
-            
-            # Draw image
-            if self.current_image:
-                self.surface.blit(self.current_image, (0, 0))
-            
-            # Draw border if enabled
-            if self.show_border:
-                pygame.draw.rect(self.surface, (255, 149, 0), 
-                               (0, 0, self.width, self.height), 2)
-            
-            # Update display
-            pygame.display.flip()
+        dx = event.x_root - self.drag_start[0]
+        dy = event.y_root - self.drag_start[1]
         
-        except Exception as e:
-            logger.debug(f"Error rendering: {e}")
+        new_x = self.x + dx
+        new_y = self.y + dy
+        
+        self.set_position(new_x, new_y)
+        self.drag_start = (event.x_root, event.y_root)
+    
+    def _on_release(self, event) -> None:
+        """End drag operation"""
+        self.is_dragging = False
     
     def cleanup(self) -> None:
         """Clean up resources"""
         try:
-            if self.surface:
-                pygame.display.quit()
+            if self.window:
+                self.window.destroy()
         except:
             pass
