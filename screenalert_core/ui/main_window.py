@@ -125,6 +125,11 @@ class ScreenAlertMainWindow:
             hwnd = window_info['hwnd']
             title = window_info['title']
             
+            # Check if window already exists
+            if hwnd in self.thumbnail_map:
+                msgbox.showwarning("Duplicate", f"Window '{title}' is already being monitored")
+                return
+            
             try:
                 thumbnail_id = self.config.add_thumbnail(window_title=title, window_hwnd=hwnd)
                 self.thumbnail_map[hwnd] = thumbnail_id
