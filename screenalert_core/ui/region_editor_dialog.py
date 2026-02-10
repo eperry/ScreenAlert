@@ -89,7 +89,7 @@ class RegionEditorDialog:
         list_frame = ttk.LabelFrame(main_frame, text="Selected Regions", padding=5)
         list_frame.pack(fill=tk.X, pady=(0, 10))
         
-        self.regions_listbox = tk.Listbox(list_frame, height=4, font=("Courier", 9))
+        self.regions_listbox = tk.Listbox(list_frame, height=6, font=("Courier", 9))
         self.regions_listbox.pack(fill=tk.BOTH, expand=True)
         
         scrollbar = ttk.Scrollbar(list_frame, command=self.regions_listbox.yview)
@@ -333,12 +333,19 @@ class RegionEditorDialog:
         max_height = int(screen_height * 0.75)
         
         # Calculate size needed for image + UI
-        # Image area size (with some padding)
-        img_width = min(self.display_width + 40, max_width)  # +40 for scrollbars and padding
-        img_height = min(self.display_height + 40, max_height)
+        # Image area size (with padding for scrollbars)
+        img_width = min(self.display_width + 50, max_width)  # +50 for scrollbars
+        img_height = min(self.display_height + 50, max_height)
         
-        # Add space for instructions, regions list, and buttons
-        ui_height = 180  # Approximate height for instructions + buttons + regions list
+        # Add space for all UI elements:
+        # - Instructions: ~80px
+        # - Canvas frame label: ~30px
+        # - Window Preview label: ~30px
+        # - Selected Regions label: ~30px
+        # - Regions listbox (height=4, ~100px)
+        # - Buttons frame: ~40px
+        # - Padding: ~40px
+        ui_height = 350
         
         # Final dialog dimensions
         dialog_width = min(img_width + 20, max_width)

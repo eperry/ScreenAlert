@@ -49,6 +49,9 @@ class ScreenAlertMainWindow:
         # Build UI
         self._build_ui()
         
+        # Update thumbnail list with any saved thumbnails from config
+        self._update_thumbnail_list()
+        
         # Setup callbacks
         self.engine.on_alert = self._on_alert
         self.engine.on_region_change = self._on_region_change
