@@ -3,9 +3,12 @@
 import logging
 import tkinter as tk
 from tkinter import ttk, messagebox as msgbox
-from typing import Optional
+from typing import Optional, List
 
 from screenalert_core.screening_engine import ScreenAlertEngine
+from screenalert_core.ui.window_selector_dialog import WindowSelectorDialog
+from screenalert_core.ui.region_editor_dialog import RegionEditorDialog
+from screenalert_core.ui.settings_dialog import SettingsDialog
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +23,8 @@ class ScreenAlertMainWindow:
             engine: ScreenAlertEngine instance
         """
         self.engine = engine
+        self.config = engine.config
+        self.window_manager = engine.window_manager
         
         # Create root window
         self.root = tk.Tk()
@@ -48,7 +53,11 @@ class ScreenAlertMainWindow:
         menubar.add_cascade(label="File", menu=file_menu)
         file_menu.add_command(label="Settings...", command=self._show_settings)
         file_menu.add_separator()
-        file_menu.add_command(label="Exit", command=self.root.quit)
+        file_menu.add_command(label="Exit", command=self._on_exit)
+        
+        help_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Help", menu=help_menu)
+        help_menu.add_command(label="About", command=self._show_about)
         
         # Main content
         main_frame = ttk.Frame(self.root)
@@ -59,67 +68,216 @@ class ScreenAlertMainWindow:
         control_frame.pack(fill=tk.X, pady=(0, 10))
         
         # Buttons
-        btn_add = ttk.Button(control_frame, text="Add Window", command=self._add_window)
+        btn_add = ttk.Button(control_frame, text="➕ Add Window", command=self._add_window)
         btn_add.pack(side=tk.LEFT, padx=5)
         
-        btn_start = ttk.Button(control_frame, text="Start Monitoring", command=self._start_monitoring)
-        btn_start.pack(side=tk.LEFT, padx=5)
+        self.btn_start = ttk.Button(control_frame, text="▶ Start Monitoring", 
+                                   command=self._start_monitoring)
+        self.btn_start.pack(side=tk.LEFT, padx=5)
         
-        btn_pause = ttk.Button(control_frame, text="Pause All", command=self._pause_monitoring)
-        btn_pause.pack(side=tk.LEFT, padx=5)
+        self.btn_pause = ttk.Button(control_frame, text="⏸ Pause All", 
+                                   command=self._pause_monitoring, state=tk.DISABLED)
+        self.btn_pause.pack(side=tk.LEFT, padx=5)
+        
+        ttk.Button(control_frame, text="⚙ Settings", 
+                  command=self._show_settings).pack(side=tk.RIGHT, padx=5)
         
         # Thumbnail list
-        list_frame = ttk.LabelFrame(main_frame, text="Active Thumbnails", padding=10)
-        list_frame.pack(fill=tk.BOTH, expand=True)
+        list_frame = ttk.LabelFrame(main_frame, text="Active Thumbnails (0)", padding=5)
+        list_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        self.list_label = list_frame  # Store reference
         
-        # Scrollbar
+        # Scrollbar and listbox
         scrollbar = ttk.Scrollbar(list_frame)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
-        # Listbox
-        self.thumbnail_list = tk.Listbox(list_frame, yscrollcommand=scrollbar.set)
+        self.thumbnail_list = tk.Listbox(list_frame, yscrollcommand=scrollbar.set,
+                                        font=("Segoe UI", 10), height=12)
         self.thumbnail_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.config(command=self.thumbnail_list.yview)
+        self.thumbnail_list.bind("<Double-Button-1>", self._on_thumbnail_double_click)
+        
+        # Actions frame
+        actions_frame = ttk.Frame(main_frame)
+        actions_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        ttk.Button(actions_frame, text="Add Region", 
+                  command=self._add_region).pack(side=tk.LEFT, padx=5)
+        ttk.Button(actions_frame, text="Remove Selected", 
+                  command=self._remove_thumbnail).pack(side=tk.LEFT, padx=5)
         
         # Status bar
         self.status_var = tk.StringVar(value="Ready")
-        status_bar = ttk.Label(self.root, textvariable=self.status_var, relief=tk.SUNKEN)
-        status_bar.pack(fill=tk.X, side=tk.BOTTOM)
+        status_bar = ttk.Label(self.root, textvariable=self.status_var, 
+                             relief=tk.SUNKEN, anchor="w")
+        status_bar.pack(fill=tk.X, side=tk.BOTTOM, padx=5, pady=5)
+        
+        # Bind window close
+        self.root.protocol("WM_DELETE_WINDOW", self._on_exit)
     
     def _add_window(self) -> None:
-        """Add window dialog"""
-        msgbox.showinfo("Add Window", "Window selection UI coming soon")
+        """Add a new window to monitor"""
+        dialog = WindowSelectorDialog(self.root, self.window_manager)
+        window_info = dialog.show()
+        
+        if window_info:
+            hwnd = window_info['hwnd']
+            title = window_info['title']
+            
+            try:
+                self.config.add_thumbnail(hwnd=hwnd, title=title)
+                self.engine.add_thumbnail(hwnd=hwnd, title=title)
+                self._update_thumbnail_list()
+                self.status_var.set(f"Added: {title}")
+            except Exception as e:
+                msgbox.showerror("Error", f"Failed to add window: {str(e)}")
     
     def _start_monitoring(self) -> None:
         """Start monitoring"""
-        if self.engine.start():
-            self.status_var.set("Monitoring active")
-            msgbox.showinfo("Started", "Monitoring has been started")
-        else:
-            msgbox.showerror("Error", "Failed to start monitoring")
+        thumbnails = self.config.get_thumbnails()
+        if not thumbnails:
+            msgbox.showwarning("Warning", "Add at least one window first")
+            return
+        
+        try:
+            self.engine.start()
+            self.btn_start.config(state=tk.DISABLED)
+            self.btn_pause.config(state=tk.NORMAL)
+            self.status_var.set("Monitoring started")
+        except Exception as e:
+            msgbox.showerror("Error", f"Failed to start monitoring: {str(e)}")
     
     def _pause_monitoring(self) -> None:
         """Pause monitoring"""
-        self.engine.set_paused(True)
-        self.status_var.set("Monitoring paused")
+        try:
+            self.engine.set_paused(True)
+            self.btn_start.config(state=tk.NORMAL)
+            self.btn_pause.config(state=tk.DISABLED)
+            self.status_var.set("Monitoring paused")
+        except Exception as e:
+            msgbox.showerror("Error", f"Failed to pause monitoring: {str(e)}")
     
     def _show_settings(self) -> None:
         """Show settings dialog"""
-        msgbox.showinfo("Settings", "Settings dialog coming soon")
+        dialog = SettingsDialog(self.root, self.config)
+        if dialog.show():
+            self.status_var.set("Settings updated")
     
-    def _on_alert(self, thumbnail_id: str, region_id: str, region_name: str) -> None:
-        """Alert callback"""
-        self.status_var.set(f"ALERT: {region_name}")
-        logger.info(f"Alert triggered: {region_name}")
+    def _add_region(self) -> None:
+        """Add region to selected thumbnail"""
+        if not self.thumbnail_list.curselection():
+            self.status_var.set("Select a thumbnail first")
+            return
+        
+        idx = self.thumbnail_list.curselection()[0]
+        thumbnails = self.config.get_thumbnails()
+        if idx >= len(thumbnails):
+            return
+        
+        thumbnail = thumbnails[idx]
+        hwnd = thumbnail['hwnd']
+        title = thumbnail.get('title', 'Unknown')
+        
+        try:
+            image = self.window_manager.capture_window(hwnd)
+            if not image:
+                msgbox.showerror("Error", "Cannot capture window")
+                return
+            
+            dialog = RegionEditorDialog(self.root, image)
+            regions = dialog.show()
+            
+            if regions:
+                for region in regions:
+                    x, y, w, h = region
+                    self.config.add_region_to_thumbnail(hwnd, x, y, w, h)
+                    self.engine.add_region(hwnd=hwnd, x=x, y=y, width=w, height=h)
+                
+                self.status_var.set(f"Added {len(regions)} region(s) to {title}")
+                self._update_thumbnail_list()
+        except Exception as e:
+            msgbox.showerror("Error", f"Failed to add region: {str(e)}")
     
-    def _on_region_change(self, thumbnail_id: str, region_id: str) -> None:
-        """Region change callback"""
+    def _remove_thumbnail(self) -> None:
+        """Remove selected thumbnail"""
+        if not self.thumbnail_list.curselection():
+            self.status_var.set("Select a thumbnail to remove")
+            return
+        
+        idx = self.thumbnail_list.curselection()[0]
+        thumbnails = self.config.get_thumbnails()
+        if idx >= len(thumbnails):
+            return
+        
+        thumbnail = thumbnails[idx]
+        hwnd = thumbnail['hwnd']
+        title = thumbnail.get('title', 'Unknown')
+        
+        try:
+            self.engine.remove_thumbnail(hwnd)
+            self.config.remove_thumbnail(hwnd)
+            self._update_thumbnail_list()
+            self.status_var.set(f"Removed: {title}")
+        except Exception as e:
+            msgbox.showerror("Error", f"Failed to remove window: {str(e)}")
+    
+    def _show_about(self) -> None:
+        """Show about dialog"""
+        msgbox.showinfo("About ScreenAlert", 
+                       "ScreenAlert v2.0\n\n"
+                       "Advanced multi-window change detection\n"
+                       "with Pygame-based overlays")
+    
+    def _update_thumbnail_list(self) -> None:
+        """Update thumbnail list display"""
+        self.thumbnail_list.delete(0, tk.END)
+        thumbnails = self.config.get_thumbnails()
+        
+        for thumbnail in thumbnails:
+            title = thumbnail.get('title', 'Unknown')
+            regions = thumbnail.get('regions', [])
+            text = f"{title} ({len(regions)} regions)"
+            self.thumbnail_list.insert(tk.END, text)
+        
+        count = len(thumbnails)
+        self.list_label.config(text=f"Active Thumbnails ({count})")
+    
+    def _on_thumbnail_double_click(self, event) -> None:
+        """Handle double-click on thumbnail"""
+        if self.thumbnail_list.curselection():
+            self._add_region()
+    
+    def _on_alert(self, hwnd: int, region: dict) -> None:
+        """Handle alert event"""
+        thumbnails = self.config.get_thumbnails()
+        title = next((t['title'] for t in thumbnails if t['hwnd'] == hwnd), 'Unknown')
+        self.status_var.set(f"ALERT: {title} - Region changed!")
+        logger.info(f"Alert in {title}")
+    
+    def _on_region_change(self, hwnd: int, region_id: str) -> None:
+        """Handle region change"""
         logger.debug(f"Region changed: {region_id}")
     
-    def _on_window_lost(self, thumbnail_id: str, window_title: str) -> None:
-        """Window lost callback"""
-        logger.warning(f"Window lost: {window_title}")
-        self.status_var.set(f"Window lost: {window_title}")
+    def _on_window_lost(self, hwnd: int) -> None:
+        """Handle lost window"""
+        thumbnails = self.config.get_thumbnails()
+        title = next((t['title'] for t in thumbnails if t['hwnd'] == hwnd), 'Unknown')
+        logger.warning(f"Window lost: {title}")
+        self.status_var.set(f"Window lost: {title}")
+    
+    def _on_exit(self) -> None:
+        """Handle window close"""
+        try:
+            self.engine.stop()
+        except Exception as e:
+            logger.error(f"Error stopping engine: {str(e)}")
+        
+        try:
+            self.config.save()
+        except Exception as e:
+            logger.error(f"Error saving config: {str(e)}")
+        
+        self.root.quit()
     
     def run(self) -> None:
         """Run main window"""
