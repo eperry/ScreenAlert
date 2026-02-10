@@ -213,6 +213,33 @@ class ScreenAlertMainWindow:
                 self._update_thumbnail_list()
         except Exception as e:
             logger.error(f"Error adding region to '{title}': {str(e)}", exc_info=True)
+            msgbox.showerror("Error", f"Failed to add region: {str(e)}")
+    
+    def _remove_thumbnail(self) -> None:
+        """Remove selected thumbnail"""
+        if not self.thumbnail_list.curselection():
+            self.status_var.set("Select a thumbnail to remove")
+            return
+        
+        idx = self.thumbnail_list.curselection()[0]
+        thumbnails = self.config.get_all_thumbnails()
+        if idx >= len(thumbnails):
+            return
+        
+        thumbnail = thumbnails[idx]
+        thumbnail_id = thumbnail['id']
+        hwnd = thumbnail['window_hwnd']
+        title = thumbnail.get('window_title', 'Unknown')
+        
+        try:
+            self.engine.remove_thumbnail(thumbnail_id)
+            self.config.remove_thumbnail(thumbnail_id)
+            if hwnd in self.thumbnail_map:
+                del self.thumbnail_map[hwnd]
+            self._update_thumbnail_list()
+            self.status_var.set(f"Removed: {title}")
+        except Exception as e:
+            logger.error(f"Error removing window '{title}': {str(e)}", exc_info=True)
             msgbox.showerror("Error", f"Failed to remove window: {str(e)}")
     
     def _show_about(self) -> None:
