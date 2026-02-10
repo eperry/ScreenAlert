@@ -7,3 +7,4 @@ imagehash
 pyttsx3
 pywin32
 psutil
+pygame
