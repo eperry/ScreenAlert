@@ -277,8 +277,8 @@ class ThumbnailWindow:
             self.label.bind('<B1-Motion>', self._on_drag)
             self.label.bind('<ButtonRelease-1>', self._on_release)
             
-            # Schedule periodic queue processing
-            self._process_image_queue()
+            # Schedule periodic queue processing (use after to ensure window is fully initialized)
+            self.window.after(50, self._process_image_queue)
             
             logger.debug(f"Created window for thumbnail {self.thumbnail_id}")
         
