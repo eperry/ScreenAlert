@@ -256,18 +256,21 @@ class ScreenAlertEngine:
                         window_image = self.window_manager.capture_window(window_hwnd)
                         if window_image:
                             self.cache_manager.set(window_hwnd, window_image)
-                            logger.info(f"CAPTURED: {thumbnail_id} - size {window_image.size}")
+                            logger.info(f\"[{thumbnail_id}] CAPTURED: size {window_image.size}\")
                         else:
-                            logger.error(f"CAPTURE FAILED: {thumbnail_id} hwnd={window_hwnd}")
+                            logger.error(f\"[{thumbnail_id}] CAPTURE FAILED: hwnd={window_hwnd}\")
                             continue
                     else:
                         window_image = cached_image
+                        logger.info(f\"[{thumbnail_id}] Using cached image: {window_image.size}\")
                     
                     # Update renderer with full window image
-                    logger.info(f"RENDERER UPDATE: {thumbnail_id} - {window_image.size}")
+                    logger.info(f\"[{thumbnail_id}] Sending to renderer: {window_image.size}\")
                     result = self.renderer.update_thumbnail_image(thumbnail_id, window_image)
                     if not result:
-                        logger.error(f"RENDERER REJECTED: {thumbnail_id}")
+                        logger.error(f\"[{thumbnail_id}] RENDERER REJECTED (thumbnail not found?)\")
+                    else:
+                        logger.info(f\"[{thumbnail_id}] Renderer accepted image\")
                     
                     # Process monitoring regions (uses same captured image)
                     if not self.paused:
