@@ -3,6 +3,8 @@
 import tkinter as tk
 from typing import Tuple, List, Callable, Optional
 import logging
+import win32api
+import win32gui
 
 logger = logging.getLogger(__name__)
 
@@ -26,17 +28,26 @@ class RegionSelectionOverlay:
         self.min_region_size = 50
         self.on_complete: Optional[Callable[[List[Tuple[int, int, int, int]]], None]] = None
         
-        # Create full-screen overlay
+        # Get the window's monitor
+        monitor_info = self._get_window_monitor()
+        monitor_x = monitor_info['left']
+        monitor_y = monitor_info['top']
+        monitor_width = monitor_info['right'] - monitor_info['left']
+        monitor_height = monitor_info['bottom'] - monitor_info['top']
+        
+        logger.info(f"Window on monitor: ({monitor_x}, {monitor_y}), size: {monitor_width}x{monitor_height}")
+        
+        # Create full-screen overlay on the same monitor as the window
         self.overlay = tk.Toplevel(parent_root)
-        self.overlay.attributes('-alpha', 0.3)  # Semi-transparent
+        self.overlay.attributes('-alpha', 1.0)  # Fully opaque to gray out other apps
         self.overlay.attributes('-topmost', True)
         self.overlay.overrideredirect(True)
         
-        # Make it full screen
-        self.overlay.geometry(f"{self.overlay.winfo_screenwidth()}x{self.overlay.winfo_screenheight()}+0+0")
+        # Position overlay on the target monitor
+        self.overlay.geometry(f"{monitor_width}x{monitor_height}+{monitor_x}+{monitor_y}")
         
-        # Dark canvas
-        self.canvas = tk.Canvas(self.overlay, bg='black', highlightthickness=0)
+        # Dark canvas (fully opaque to gray out other windows)
+        self.canvas = tk.Canvas(self.overlay, bg='#1a1a1a', highlightthickness=0)
         self.canvas.pack(fill=tk.BOTH, expand=True)
         
         # Bind mouse events
@@ -46,16 +57,61 @@ class RegionSelectionOverlay:
         self.overlay.bind("<Escape>", self._on_cancel)
         
         # Instructions text
-        instruction_text = "Draw regions on the window. Press ESC when done."
+        instruction_text = "Draw a region by clicking and dragging. Selection auto-completes when finished."
         self.canvas.create_text(
-            self.overlay.winfo_screenwidth() // 2,
+            monitor_width // 2,
             30,
             text=instruction_text,
-            fill='yellow',
+            fill='#ffff00',
             font=('Arial', 14, 'bold')
         )
         
-        logger.info("Region selection overlay created - draw regions with mouse, press ESC when done")
+        # ESC hint text at bottom
+        esc_text = "Press ESC to cancel without saving"
+        self.canvas.create_text(
+            monitor_width // 2,
+            monitor_height - 30,
+            text=esc_text,
+            fill='#ffaa00',
+            font=('Arial', 12)
+        )
+        
+        logger.info("Region selection overlay created - draw region with mouse, auto-completes on release")
+    
+    def _get_window_monitor(self) -> dict:
+        """Get monitor info for the window
+        
+        Returns:
+            Dict with 'left', 'top', 'right', 'bottom' keys
+        """
+        try:
+            # Get window rect
+            rect = win32gui.GetWindowRect(self.window_hwnd)
+            window_center_x = (rect[0] + rect[2]) // 2
+            window_center_y = (rect[1] + rect[3]) // 2
+            
+            # Get monitor handle at that point
+            monitor_handle = win32api.MonitorFromPoint((window_center_x, window_center_y))
+            
+            # Get monitor info
+            monitor_info = win32api.GetMonitorInfo(monitor_handle)
+            work_area = monitor_info['Work']
+            
+            return {
+                'left': work_area[0],
+                'top': work_area[1],
+                'right': work_area[2],
+                'bottom': work_area[3]
+            }
+        except Exception as e:
+            logger.warning(f"Error getting monitor info, using primary: {e}")
+            # Fallback to screen dimensions
+            return {
+                'left': 0,
+                'top': 0,
+                'right': tk.Tk().winfo_screenwidth(),
+                'bottom': tk.Tk().winfo_screenheight()
+            }
     
     def _on_press(self, event: tk.Event) -> None:
         """Handle mouse press"""
@@ -75,25 +131,26 @@ class RegionSelectionOverlay:
         width = abs(event.x_root - self.start_x)
         height = abs(event.y_root - self.start_y)
         
-        self.canvas.create_rectangle(
-            x, y,
-            x + width, y + height,
-            outline='lime', width=3, tags="preview_rect"
-        )
-        
-        # Show dimensions
-        dim_text = f"{width}x{height}px"
-        self.canvas.delete("dimension_text")
-        self.canvas.create_text(
-            event.x_root + 10, event.y_root - 10,
-            text=dim_text,
-            fill='yellow',
-            font=('Courier', 10, 'bold'),
-            tags="dimension_text"
-        )
+        if width > 0 and height > 0:
+            self.canvas.create_rectangle(
+                x, y,
+                x + width, y + height,
+                outline='#00ff00', width=3, tags="preview_rect"
+            )
+            
+            # Show dimensions
+            dim_text = f"{width}x{height}px"
+            self.canvas.delete("dimension_text")
+            self.canvas.create_text(
+                event.x_root + 10, event.y_root - 10,
+                text=dim_text,
+                fill='#ffff00',
+                font=('Courier', 10, 'bold'),
+                tags="dimension_text"
+            )
     
     def _on_release(self, event: tk.Event) -> None:
-        """Handle mouse release - save region"""
+        """Handle mouse release - save region and auto-complete"""
         if not self.is_selecting:
             return
         
@@ -109,30 +166,28 @@ class RegionSelectionOverlay:
         if width >= self.min_region_size and height >= self.min_region_size:
             region = (x, y, width, height)
             self.regions.append(region)
+            logger.info(f"Added region: {region}, auto-completing selection")
             
-            # Draw saved region (fades slowly)
-            self.canvas.delete("saved_regions")
-            for i, (rx, ry, rw, rh) in enumerate(self.regions, 1):
-                self.canvas.create_rectangle(
-                    rx, ry, rx + rw, ry + rh,
-                    outline='lime', width=2, tags="saved_regions"
-                )
-                self.canvas.create_text(
-                    rx + 5, ry + 5,
-                    text=f"{i}",
-                    fill='lime',
-                    font=('Arial', 12, 'bold'),
-                    anchor='nw',
-                    tags="saved_regions"
-                )
-            
-            logger.info(f"Added region: {region}")
+            # Auto-complete after first region
+            self.overlay.destroy()
+        else:
+            # Region too small, show message and continue
+            self.canvas.delete("too_small_text")
+            self.canvas.create_text(
+                event.x_root, event.y_root - 30,
+                text=f"Too small ({width}x{height}). Min: {self.min_region_size}x{self.min_region_size}",
+                fill='#ff4444',
+                font=('Arial', 11, 'bold'),
+                tags="too_small_text"
+            )
+            # Clear message after 2 seconds
+            self.overlay.after(2000, lambda: self.canvas.delete("too_small_text"))
     
     def _on_cancel(self, event: tk.Event) -> None:
-        """Handle ESC key - finish selection"""
+        """Handle ESC key - cancel selection"""
+        logger.info("Region selection cancelled by user")
+        self.regions = []  # Clear any regions
         self.overlay.destroy()
-        if self.on_complete:
-            self.on_complete(self.regions)
     
     def show(self) -> List[Tuple[int, int, int, int]]:
         """Show overlay and wait for selection
@@ -142,3 +197,4 @@ class RegionSelectionOverlay:
         """
         self.overlay.wait_window()
         return self.regions
+
