@@ -82,6 +82,14 @@ class ScreenAlertEngine:
                 if not self.renderer.add_thumbnail(thumbnail_id, config):
                     logger.warning(f"Failed to add renderer for {thumbnail_id}")
                     return False
+                
+                # Immediately capture and display (same as add_thumbnail)
+                window_hwnd = config.get("window_hwnd")
+                if window_hwnd:
+                    window_image = self.window_manager.capture_window(window_hwnd)
+                    if window_image:
+                        logger.info(f"[{thumbnail_id}] Initial capture from config: {window_image.size}")
+                        self.renderer.update_thumbnail_image(thumbnail_id, window_image)
             
             # Load regions  
             for region_config in config.get("monitored_regions", []):
@@ -117,6 +125,15 @@ class ScreenAlertEngine:
             if not self.renderer.add_thumbnail(thumbnail_id, config):
                 self.config.remove_thumbnail(thumbnail_id)
                 return None
+            
+            # Immediately capture and display the window (don't wait for monitoring to start)
+            logger.info(f"[{thumbnail_id}] Capturing initial window image...")
+            window_image = self.window_manager.capture_window(window_hwnd)
+            if window_image:
+                logger.info(f"[{thumbnail_id}] Initial capture: {window_image.size}")
+                self.renderer.update_thumbnail_image(thumbnail_id, window_image)
+            else:
+                logger.warning(f"[{thumbnail_id}] Failed to capture initial image")
             
             self.config.save()
             logger.info(f"Added thumbnail: {thumbnail_id}")
@@ -256,21 +273,21 @@ class ScreenAlertEngine:
                         window_image = self.window_manager.capture_window(window_hwnd)
                         if window_image:
                             self.cache_manager.set(window_hwnd, window_image)
-                            logger.info(f\"[{thumbnail_id}] CAPTURED: size {window_image.size}\")
+                            logger.info(f"[{thumbnail_id}] CAPTURED: size {window_image.size}")
                         else:
-                            logger.error(f\"[{thumbnail_id}] CAPTURE FAILED: hwnd={window_hwnd}\")
+                            logger.error(f"[{thumbnail_id}] CAPTURE FAILED: hwnd={window_hwnd}")
                             continue
                     else:
                         window_image = cached_image
-                        logger.info(f\"[{thumbnail_id}] Using cached image: {window_image.size}\")
+                        logger.info(f"[{thumbnail_id}] Using cached image: {window_image.size}")
                     
                     # Update renderer with full window image
-                    logger.info(f\"[{thumbnail_id}] Sending to renderer: {window_image.size}\")
+                    logger.info(f"[{thumbnail_id}] Sending to renderer: {window_image.size}")
                     result = self.renderer.update_thumbnail_image(thumbnail_id, window_image)
                     if not result:
-                        logger.error(f\"[{thumbnail_id}] RENDERER REJECTED (thumbnail not found?)\")
+                        logger.error(f"[{thumbnail_id}] RENDERER REJECTED (thumbnail not found?)")
                     else:
-                        logger.info(f\"[{thumbnail_id}] Renderer accepted image\")
+                        logger.info(f"[{thumbnail_id}] Renderer accepted image")
                     
                     # Process monitoring regions (uses same captured image)
                     if not self.paused:
