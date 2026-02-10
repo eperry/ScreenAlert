@@ -3,13 +3,15 @@
 import logging
 import tkinter as tk
 from tkinter import ttk, messagebox as msgbox
-from typing import Optional, List
+from typing import Optional, List, Dict
 import win32gui
+import pyttsx3
 
 from screenalert_core.screening_engine import ScreenAlertEngine
 from screenalert_core.ui.window_selector_dialog import WindowSelectorDialog
 from screenalert_core.ui.region_selection_overlay import RegionSelectionOverlay
 from screenalert_core.ui.settings_dialog import SettingsDialog
+from screenalert_core.ui.thumbnail_card import ThumbnailCard
 
 logger = logging.getLogger(__name__)
 
@@ -27,11 +29,21 @@ class ScreenAlertMainWindow:
         self.config = engine.config
         self.window_manager = engine.window_manager
         self.thumbnail_map = {}  # hwnd -> thumbnail_id mapping
+        self.card_widgets: Dict[str, ThumbnailCard] = {}  # thumbnail_id -> ThumbnailCard widget
+        self.selected_thumbnail_id: Optional[str] = None  # Currently selected card
+        
+        # Initialize text-to-speech
+        try:
+            self.tts_engine = pyttsx3.init()
+            self.tts_engine.setProperty('rate', 150)  # Slow down for clarity
+        except Exception as e:
+            logger.warning(f"Could not initialize TTS: {e}")
+            self.tts_engine = None
         
         # Create root window
         self.root = tk.Tk()
         self.root.title("ScreenAlert v2.0 - Multibox Monitor")
-        self.root.geometry("1000x700")
+        self.root.geometry("1200x800")
         
         # Pass tkinter root to engine for overlay windows
         self.engine.set_tkinter_root(self.root)
@@ -61,7 +73,7 @@ class ScreenAlertMainWindow:
         self.engine.on_window_lost = self._on_window_lost
     
     def _build_ui(self) -> None:
-        """Build main UI"""
+        """Build main UI with thumbnail cards grid"""
         # Menu
         menubar = tk.Menu(self.root)
         self.root.config(menu=menubar)
@@ -80,13 +92,11 @@ class ScreenAlertMainWindow:
         main_frame = ttk.Frame(self.root)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
-        # Control panel
-        control_frame = ttk.LabelFrame(main_frame, text="Control Panel", padding=10)
+        # Control panel - top
+        control_frame = ttk.Frame(main_frame)
         control_frame.pack(fill=tk.X, pady=(0, 10))
         
-        # Buttons
-        btn_add = ttk.Button(control_frame, text="➕ Add Window", command=self._add_window)
-        btn_add.pack(side=tk.LEFT, padx=5)
+        ttk.Button(control_frame, text="➕ Add Window", command=self._add_window).pack(side=tk.LEFT, padx=5)
         
         self.btn_start = ttk.Button(control_frame, text="▶ Start Monitoring", 
                                    command=self._start_monitoring)
@@ -96,34 +106,34 @@ class ScreenAlertMainWindow:
                                    command=self._pause_monitoring, state=tk.DISABLED)
         self.btn_pause.pack(side=tk.LEFT, padx=5)
         
+        ttk.Button(control_frame, text="🔧 Add Region", 
+                  command=self._add_region).pack(side=tk.LEFT, padx=5)
+        ttk.Button(control_frame, text="❌ Remove Region", 
+                  command=self._remove_region).pack(side=tk.LEFT, padx=5)
+        ttk.Button(control_frame, text="❌ Remove Window", 
+                  command=self._remove_thumbnail).pack(side=tk.LEFT, padx=5)
         ttk.Button(control_frame, text="⚙ Settings", 
                   command=self._show_settings).pack(side=tk.RIGHT, padx=5)
         
-        # Thumbnail list
-        list_frame = ttk.LabelFrame(main_frame, text="Active Thumbnails (0)", padding=5)
-        list_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
-        self.list_label = list_frame  # Store reference
+        # Thumbnail cards frame with scrollbar
+        cards_frame = ttk.LabelFrame(main_frame, text="Monitoring Status", padding=10)
+        cards_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
         
-        # Scrollbar and listbox
-        scrollbar = ttk.Scrollbar(list_frame)
+        # Canvas with scrollbar for cards
+        scrollbar = ttk.Scrollbar(cards_frame, orient=tk.VERTICAL)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
-        self.thumbnail_list = tk.Listbox(list_frame, yscrollcommand=scrollbar.set,
-                                        font=("Segoe UI", 10), height=12)
-        self.thumbnail_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.config(command=self.thumbnail_list.yview)
-        self.thumbnail_list.bind("<Double-Button-1>", self._on_thumbnail_double_click)
+        self.canvas = tk.Canvas(cards_frame, bg='black', highlightthickness=0,
+                              yscrollcommand=scrollbar.set)
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.config(command=self.canvas.yview)
         
-        # Actions frame
-        actions_frame = ttk.Frame(main_frame)
-        actions_frame.pack(fill=tk.X, pady=(0, 10))
+        # Inner frame for cards
+        self.cards_inner_frame = tk.Frame(self.canvas, bg='black')
+        self.canvas_window = self.canvas.create_window(0, 0, window=self.cards_inner_frame, anchor="nw")
         
-        ttk.Button(actions_frame, text="Add Region", 
-                  command=self._add_region).pack(side=tk.LEFT, padx=5)
-        ttk.Button(actions_frame, text="Remove Region", 
-                  command=self._remove_region).pack(side=tk.LEFT, padx=5)
-        ttk.Button(actions_frame, text="Remove Selected Window", 
-                  command=self._remove_thumbnail).pack(side=tk.LEFT, padx=5)
+        # Bind canvas resize
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
         
         # Status bar
         self.status_var = tk.StringVar(value="Ready")
@@ -133,6 +143,15 @@ class ScreenAlertMainWindow:
         
         # Bind window close
         self.root.protocol("WM_DELETE_WINDOW", self._on_exit)
+    
+    def _on_canvas_configure(self, event) -> None:
+        """Handle canvas resize to update grid layout"""
+        # Update scroll region
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        # Make the inner frame as wide as canvas
+        canvas_width = event.width
+        self.canvas.itemconfig(self.canvas_window, width=canvas_width)
+
     
     def _add_window(self) -> None:
         """Add a new window to monitor"""
@@ -200,16 +219,15 @@ class ScreenAlertMainWindow:
     
     def _add_region(self) -> None:
         """Add region to selected thumbnail using screen overlay"""
-        if not self.thumbnail_list.curselection():
-            self.status_var.set("Select a thumbnail first")
+        if not self.selected_thumbnail_id:
+            self.status_var.set("Select a thumbnail first by clicking on it")
             return
         
-        idx = self.thumbnail_list.curselection()[0]
-        thumbnails = self.config.get_all_thumbnails()
-        if idx >= len(thumbnails):
+        thumbnail = self.config.get_thumbnail(self.selected_thumbnail_id)
+        if not thumbnail:
+            self.status_var.set("Thumbnail not found")
             return
         
-        thumbnail = thumbnails[idx]
         thumbnail_id = thumbnail['id']
         hwnd = thumbnail['window_hwnd']
         title = thumbnail.get('window_title', 'Unknown')
@@ -268,16 +286,15 @@ class ScreenAlertMainWindow:
     
     def _remove_region(self) -> None:
         """Remove region from selected thumbnail"""
-        if not self.thumbnail_list.curselection():
-            self.status_var.set("Select a thumbnail first")
+        if not self.selected_thumbnail_id:
+            self.status_var.set("Select a thumbnail first by clicking on it")
             return
         
-        idx = self.thumbnail_list.curselection()[0]
-        thumbnails = self.config.get_all_thumbnails()
-        if idx >= len(thumbnails):
+        thumbnail = self.config.get_thumbnail(self.selected_thumbnail_id)
+        if not thumbnail:
+            self.status_var.set("Thumbnail not found")
             return
         
-        thumbnail = thumbnails[idx]
         thumbnail_id = thumbnail['id']
         title = thumbnail.get('window_title', 'Unknown')
         regions = thumbnail.get('monitored_regions', [])
@@ -337,25 +354,29 @@ class ScreenAlertMainWindow:
     
     def _remove_thumbnail(self) -> None:
         """Remove selected thumbnail"""
-        if not self.thumbnail_list.curselection():
-            self.status_var.set("Select a thumbnail to remove")
+        if not self.selected_thumbnail_id:
+            self.status_var.set("Select a thumbnail to remove by clicking on it")
             return
         
-        idx = self.thumbnail_list.curselection()[0]
-        thumbnails = self.config.get_all_thumbnails()
-        if idx >= len(thumbnails):
+        thumbnail = self.config.get_thumbnail(self.selected_thumbnail_id)
+        if not thumbnail:
+            self.status_var.set("Thumbnail not found")
             return
         
-        thumbnail = thumbnails[idx]
         thumbnail_id = thumbnail['id']
         hwnd = thumbnail['window_hwnd']
         title = thumbnail.get('window_title', 'Unknown')
+        
+        # Confirm deletion
+        if not msgbox.askyesno("Confirm", f"Remove '{title}' and all its regions?"):
+            return
         
         try:
             self.engine.remove_thumbnail(thumbnail_id)
             self.config.remove_thumbnail(thumbnail_id)
             if hwnd in self.thumbnail_map:
                 del self.thumbnail_map[hwnd]
+            self.selected_thumbnail_id = None
             self._update_thumbnail_list()
             self.status_var.set(f"Removed: {title}")
         except Exception as e:
@@ -373,34 +394,91 @@ class ScreenAlertMainWindow:
             logger.error(f"Error showing about dialog: {str(e)}", exc_info=True)
     
     def _update_thumbnail_list(self) -> None:
-        """Update thumbnail list display"""
-        self.thumbnail_list.delete(0, tk.END)
-        thumbnails = self.config.get_all_thumbnails()
-        logger.info(f"Updating thumbnail list: {len(thumbnails)} thumbnails from config")
+        """Update thumbnail cards display"""
+        # Clear old cards
+        for widget in self.cards_inner_frame.winfo_children():
+            widget.destroy()
+        self.card_widgets.clear()
         
-        for thumbnail in thumbnails:
+        thumbnails = self.config.get_all_thumbnails()
+        logger.info(f"Updating thumbnail cards: {len(thumbnails)} thumbnails from config")
+        
+        # Create cards in grid (3 columns)
+        for idx, thumbnail in enumerate(thumbnails):
+            thumbnail_id = thumbnail.get('id')
             title = thumbnail.get('window_title', 'Unknown')
             regions = thumbnail.get('monitored_regions', [])
-            text = f"{title} ({len(regions)} regions)"
-            self.thumbnail_list.insert(tk.END, text)
-            logger.debug(f"  Added to list: {text}")
+            hwnd = thumbnail.get('window_hwnd')
+            
+            # Create card
+            card = ThumbnailCard(self.cards_inner_frame, thumbnail_id, title, len(regions))
+            card.on_click = lambda tid: self._on_card_selected(tid)
+            self.card_widgets[thumbnail_id] = card
+            
+            # Capture window image and populate card
+            if hwnd:
+                try:
+                    image = self.window_manager.capture_window(hwnd)
+                    if image:
+                        card.set_image(image)
+                        logger.debug(f"  Captured image for: {title}")
+                    else:
+                        logger.debug(f"  Could not capture image for: {title}")
+                except Exception as e:
+                    logger.debug(f"  Error capturing image for {title}: {e}")
+            
+            # Layout in grid (3 columns)
+            col = idx % 3
+            row = idx // 3
+            card.get_frame().grid(row=row, column=col, padx=5, pady=5, sticky="nsew")
+            
+            logger.debug(f"  Created card: {title} with {len(regions)} regions")
         
-        count = len(thumbnails)
-        self.list_label.config(text=f"Active Thumbnails ({count})")
-        logger.info(f"Thumbnail list updated: {count} total")
+        # Configure grid columns
+        for i in range(3):
+            self.cards_inner_frame.grid_columnconfigure(i, weight=1)
+        
+        # Update canvas scroll region
+        self.cards_inner_frame.update_idletasks()
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        
+        logger.info(f"Thumbnail cards updated: {len(thumbnails)} total")
+
     
-    def _on_thumbnail_double_click(self, event) -> None:
-        """Handle double-click on thumbnail"""
-        if self.thumbnail_list.curselection():
-            self._add_region()
-    
-    def _on_alert(self, thumbnail_id: str, region_id: str, region_name: str) -> None:
-        """Handle alert event"""
+    def _on_card_selected(self, thumbnail_id: str) -> None:
+        """Handle card selection"""
+        self.selected_thumbnail_id = thumbnail_id
         thumbnail = self.config.get_thumbnail(thumbnail_id)
         if thumbnail:
             title = thumbnail.get('window_title', 'Unknown')
-            self.status_var.set(f"ALERT: {title} - {region_name} changed!")
+            regions = thumbnail.get('monitored_regions', [])
+            self.status_var.set(f"Selected: {title} ({len(regions)} regions)")
+            logger.debug(f"Selected thumbnail: {title}")
+    
+    def _on_alert(self, thumbnail_id: str, region_id: str, region_name: str) -> None:
+        """Handle alert event with status update and TTS"""
+        thumbnail = self.config.get_thumbnail(thumbnail_id)
+        if thumbnail:
+            title = thumbnail.get('window_title', 'Unknown')
+            
+            # Update card status to ALERT (red)
+            if thumbnail_id in self.card_widgets:
+                self.card_widgets[thumbnail_id].set_status('alert')
+            
+            # Update status bar
+            self.status_var.set(f"🚨 ALERT: {title} - {region_name} changed!")
+            
+            # Speak alert via TTS
+            if self.tts_engine:
+                try:
+                    message = f"Alert! {title}, {region_name}"
+                    self.tts_engine.say(message)
+                    self.tts_engine.runAndWait()
+                except Exception as e:
+                    logger.warning(f"TTS error: {e}")
+            
             logger.info(f"Alert in {title}: {region_name}")
+
     
     def _on_region_change(self, thumbnail_id: str, region_id: str) -> None:
         """Handle region change"""
