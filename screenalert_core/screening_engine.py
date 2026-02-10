@@ -48,8 +48,8 @@ class ScreenAlertEngine:
         self.on_region_change: Callable = lambda *args, **kwargs: None
         self.on_window_lost: Callable = lambda *args, **kwargs: None
         
-        # Initialize from config
-        self._initialize_from_config()
+        # Config will be initialized after tkinter root is set
+        self._config_initialized = False
         
         logger.info("ScreenAlert engine initialized")
     
@@ -62,6 +62,12 @@ class ScreenAlertEngine:
         self.tkinter_root = root
         self.renderer.parent_root = root
         logger.debug("Set tkinter root for renderer")
+        
+        # Now that we have a tkinter root, initialize from config
+        if not self._config_initialized:
+            self._initialize_from_config()
+            self._config_initialized = True
+            logger.debug("Initialized thumbnails from config")
     
     def _initialize_from_config(self) -> None:
         """Load thumbnails and regions from config"""
