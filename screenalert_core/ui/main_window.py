@@ -41,6 +41,8 @@ class ScreenAlertMainWindow:
             thumbnail_id = thumbnail.get('id')
             if hwnd and thumbnail_id:
                 self.thumbnail_map[hwnd] = thumbnail_id
+                logger.debug(f"Restored thumbnail_map: hwnd={hwnd} -> {thumbnail_id}")
+        logger.info(f"Restored {len(self.thumbnail_map)} thumbnails in map from config")
         
         # Configure style
         self.style = ttk.Style()
