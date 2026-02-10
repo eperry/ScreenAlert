@@ -29,24 +29,15 @@ class RegionEditorDialog:
         self.start_y = 0
         self.min_region_size = 50
         
-        # Create dialog
+        # Create dialog (start with small size, will resize after loading image)
         self.dialog = tk.Toplevel(parent)
         self.dialog.title("Select Monitoring Regions")
         self.result = None
-        
-        # Size dialog to 75% of screen
-        screen_width = self.dialog.winfo_screenwidth()
-        screen_height = self.dialog.winfo_screenheight()
-        dialog_width = int(screen_width * 0.75)
-        dialog_height = int(screen_height * 0.75)
-        
-        # Center the dialog
-        x = (screen_width - dialog_width) // 2
-        y = (screen_height - dialog_height) // 2
-        self.dialog.geometry(f"{dialog_width}x{dialog_height}+{x}+{y}")
+        self.dialog.geometry("400x300")  # Temporary size
         
         self._build_ui()
         self._load_image()
+        self._resize_dialog_to_fit()
     
     def _build_ui(self) -> None:
         """Build dialog UI"""
@@ -330,6 +321,35 @@ class RegionEditorDialog:
         """Close dialog and return regions"""
         self.result = self.regions
         self.dialog.destroy()
+    
+    def _resize_dialog_to_fit(self) -> None:
+        """Resize dialog to fit image, but cap at reasonable max"""
+        # Get screen dimensions
+        screen_width = self.dialog.winfo_screenwidth()
+        screen_height = self.dialog.winfo_screenheight()
+        
+        # Max dialog size is 75% of screen
+        max_width = int(screen_width * 0.75)
+        max_height = int(screen_height * 0.75)
+        
+        # Calculate size needed for image + UI
+        # Image area size (with some padding)
+        img_width = min(self.display_width + 40, max_width)  # +40 for scrollbars and padding
+        img_height = min(self.display_height + 40, max_height)
+        
+        # Add space for instructions, regions list, and buttons
+        ui_height = 180  # Approximate height for instructions + buttons + regions list
+        
+        # Final dialog dimensions
+        dialog_width = min(img_width + 20, max_width)
+        dialog_height = min(img_height + ui_height, max_height)
+        
+        # Center the dialog
+        x = (screen_width - dialog_width) // 2
+        y = (screen_height - dialog_height) // 2
+        
+        self.dialog.geometry(f"{dialog_width}x{dialog_height}+{x}+{y}")
+        logger.info(f"Dialog resized to {dialog_width}x{dialog_height} for image {self.display_width}x{self.display_height}")
     
     def show(self) -> List[Tuple[int, int, int, int]]:
         """Show dialog and return selected regions
