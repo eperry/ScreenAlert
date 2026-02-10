@@ -286,17 +286,22 @@ class WindowManager:
             bmpinfo = saveBitMap.GetInfo()
             bmpstr = saveBitMap.GetBitmapBits(True)
             
-            # Windows bitmaps are padded to 4-byte boundaries
             width = bmpinfo['bmWidth']
             height = bmpinfo['bmHeight']
+            bits_per_pixel = bmpinfo.get('bmBitsPixel', 32)
             
-            # Calculate stride: width * 3 bytes per pixel (BGR), rounded up to multiple of 4
-            stride = ((width * 3 + 3) // 4) * 4
+            logger.debug(f"Bitmap info: {width}x{height}, {bits_per_pixel} bpp")
             
-            # Convert from BGR (Windows format) to RGB  
-            # Use stride parameter to handle Windows bitmap padding
-            img = Image.frombytes('RGB', (width, height), bmpstr, 
-                                 'raw', 'BGR', stride, -1)
+            # Handle based on bits per pixel
+            if bits_per_pixel == 32:
+                # 32-bit bitmap (BGRA or BGRX)
+                img = Image.frombuffer('RGB', (width, height), bmpstr, 
+                                      'raw', 'BGRX', 0, 1)
+            else:
+                # 24-bit bitmap with padding
+                stride = ((width * 3 + 3) // 4) * 4
+                img = Image.frombytes('RGB', (width, height), bmpstr, 
+                                     'raw', 'BGR', stride, -1)
             
             # Cleanup
             win32gui.DeleteObject(saveBitMap.GetHandle())
