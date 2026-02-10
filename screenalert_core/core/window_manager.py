@@ -285,8 +285,18 @@ class WindowManager:
             # Convert to PIL Image
             bmpinfo = saveBitMap.GetInfo()
             bmpstr = saveBitMap.GetBitmapBits(True)
-            img = Image.frombytes('RGB', (bmpinfo['bmWidth'], bmpinfo['bmHeight']), 
-                                 bmpstr, 'raw', 'BGR', bmpinfo['bmWidth'] * 3, -1)
+            
+            # Windows bitmaps are padded to 4-byte boundaries
+            width = bmpinfo['bmWidth']
+            height = bmpinfo['bmHeight']
+            
+            # Calculate stride: width * 3 bytes per pixel (BGR), rounded up to multiple of 4
+            stride = ((width * 3 + 3) // 4) * 4
+            
+            # Convert from BGR (Windows format) to RGB  
+            # Use stride parameter to handle Windows bitmap padding
+            img = Image.frombytes('RGB', (width, height), bmpstr, 
+                                 'raw', 'BGR', stride, -1)
             
             # Cleanup
             win32gui.DeleteObject(saveBitMap.GetHandle())
