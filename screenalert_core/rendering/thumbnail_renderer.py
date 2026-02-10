@@ -218,25 +218,61 @@ class ThumbnailWindow:
                 self.window = tk.Toplevel(self.parent_root)
             else:
                 self.window = tk.Toplevel()
+            
+            # Remove window decorations (no title bar)
+            self.window.overrideredirect(True)
+            
             self.window.geometry(f"{self.width}x{self.height}+{self.x}+{self.y}")
-            self.window.title(self.config.get("window_title", "ScreenAlert Thumbnail"))
             self.window.attributes('-topmost', True)  # Always on top
             self.window.attributes('-alpha', self.opacity)  # Set opacity
             
-            # Make frame with border
-            frame = tk.Frame(self.window, bg='#FF9500' if self.show_border else 'black')
-            frame.pack(fill=tk.BOTH, expand=True)
+            # Main container
+            container = tk.Frame(self.window, bg='#FF9500' if self.show_border else 'black')
+            container.pack(fill=tk.BOTH, expand=True)
             
-            # Border thickness
-            border_frame = tk.Frame(frame, bg='black', relief=tk.RAISED, bd=2 if self.show_border else 0)
-            border_frame.pack(fill=tk.BOTH, expand=True, padx=(2 if self.show_border else 0), 
+            # Custom title bar (hidden by default)
+            self.title_bar = tk.Frame(container, bg='#2e2e2e', height=25)
+            self.title_label = tk.Label(self.title_bar, 
+                                       text=self.config.get("window_title", "ScreenAlert")[:30],
+                                       bg='#2e2e2e', fg='white', 
+                                       font=('Segoe UI', 9))
+            self.title_label.pack(side=tk.LEFT, padx=5)
+            
+            # Close button on title bar
+            close_btn = tk.Label(self.title_bar, text="✕", bg='#2e2e2e', fg='white',
+                                font=('Segoe UI', 10, 'bold'), cursor='hand2')
+            close_btn.pack(side=tk.RIGHT, padx=5)
+            close_btn.bind('<Button-1>', lambda e: self.cleanup())
+            
+            # Don't pack title bar initially (starts hidden)
+            # Will be shown on mouse hover
+            
+            # Border frame
+            border_frame = tk.Frame(container, bg='black', relief=tk.RAISED, 
+                                   bd=2 if self.show_border else 0)
+            border_frame.pack(fill=tk.BOTH, expand=True, 
+                            padx=(2 if self.show_border else 0), 
                             pady=(2 if self.show_border else 0))
             
             # Image label
             self.label = tk.Label(border_frame, bg='black', image=None)
             self.label.pack(fill=tk.BOTH, expand=True)
             
-            # Bind drag events
+            # Bind hover events to show/hide title bar
+            self.window.bind('<Enter>', self._on_mouse_enter)
+            self.window.bind('<Leave>', self._on_mouse_leave)
+            self.label.bind('<Enter>', self._on_mouse_enter)
+            self.label.bind('<Leave>', self._on_mouse_leave)
+            
+            # Bind drag events to title bar
+            self.title_bar.bind('<Button-1>', self._on_press)
+            self.title_bar.bind('<B1-Motion>', self._on_drag)
+            self.title_bar.bind('<ButtonRelease-1>', self._on_release)
+            self.title_label.bind('<Button-1>', self._on_press)
+            self.title_label.bind('<B1-Motion>', self._on_drag)
+            self.title_label.bind('<ButtonRelease-1>', self._on_release)
+            
+            # Bind drag events to label too (when title bar hidden)
             self.label.bind('<Button-1>', self._on_press)
             self.label.bind('<B1-Motion>', self._on_drag)
             self.label.bind('<ButtonRelease-1>', self._on_release)
@@ -364,6 +400,27 @@ class ThumbnailWindow:
         if self.window:
             try:
                 self.window.attributes('-alpha', self.opacity)
+            except:
+                pass
+    
+    def _on_mouse_enter(self, event) -> None:
+        """Show title bar when mouse enters"""
+        if hasattr(self, 'title_bar') and self.title_bar:
+            try:
+                self.title_bar.pack(side=tk.TOP, fill=tk.X, before=self.label.master)
+            except:
+                pass
+    
+    def _on_mouse_leave(self, event) -> None:
+        """Hide title bar when mouse leaves"""
+        # Check if mouse really left the window (not just moved between child widgets)
+        if hasattr(self, 'title_bar') and self.title_bar and self.window:
+            try:
+                x, y = self.window.winfo_pointerxy()
+                widget = self.window.winfo_containing(x, y)
+                # If pointer is not over any part of this window, hide title bar
+                if widget is None or widget.winfo_toplevel() != self.window:
+                    self.title_bar.pack_forget()
             except:
                 pass
     
