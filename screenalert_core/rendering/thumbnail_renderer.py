@@ -3,6 +3,7 @@
 import logging
 import threading
 import time
+import queue
 from typing import Dict, Optional, Callable, Tuple
 from PIL import Image, ImageTk
 import tkinter as tk
@@ -146,21 +147,12 @@ class ThumbnailRenderer:
         logger.info("Thumbnail renderer stopped")
     
     def _render_loop(self) -> None:
-        """Main render loop (runs in separate thread)"""
-        last_render = {}
-        
+        """Main render loop (runs in separate thread) - can be simplified"""
         try:
             while self.running:
-                with self.lock:
-                    for thumbnail_id, thumbnail in list(self.thumbnails.items()):
-                        try:
-                            # Update window if image changed
-                            thumbnail.update_display()
-                        except Exception as e:
-                            logger.error(f"Error rendering thumbnail: {e}", exc_info=True)
-                
-                # Render at ~30 updates per second
-                time.sleep(1/30)
+                # Image queue processing now happens on main thread via window.after()
+                # This loop just keeps the renderer thread alive
+                time.sleep(0.1)
         
         except Exception as e:
             logger.error(f"Error in render loop: {e}", exc_info=True)
@@ -208,6 +200,9 @@ class ThumbnailWindow:
         self.is_resizing = False
         self.drag_start = (0, 0)
         
+        # Thread-safe queue for image updates from worker threads
+        self.image_queue: queue.Queue = queue.Queue(maxsize=1)
+        
         # Create tkinter window
         self._create_window()
     
@@ -239,14 +234,43 @@ class ThumbnailWindow:
             self.label.bind('<B1-Motion>', self._on_drag)
             self.label.bind('<ButtonRelease-1>', self._on_release)
             
+            # Schedule periodic queue processing
+            self._process_image_queue()
+            
             logger.debug(f"Created window for thumbnail {self.thumbnail_id}")
         
         except Exception as e:
             logger.error(f"Error creating window: {e}", exc_info=True)
             self.window = None
     
+    def _process_image_queue(self) -> None:
+        """Process image updates from queue (runs on main thread)"""
+        if not self.window or not self.enabled:
+            if self.window:
+                self.window.after(50, self._process_image_queue)
+            return
+        
+        try:
+            # Non-blocking check for new images
+            try:
+                pil_image = self.image_queue.get_nowait()
+                # Convert and display on main thread
+                self.photo_image = ImageTk.PhotoImage(pil_image)
+                self.label.config(image=self.photo_image)
+                self.label.image = self.photo_image
+                logger.debug(f"Updated display for {self.thumbnail_id}")
+            except queue.Empty:
+                pass
+            
+            # Schedule next check
+            if self.window:
+                self.window.after(50, self._process_image_queue)
+        
+        except Exception as e:
+            logger.error(f"Error processing image queue: {e}", exc_info=True)
+    
     def set_image(self, pil_image: Image.Image) -> None:
-        """Update displayed image"""
+        """Update displayed image (thread-safe)"""
         try:
             # Resize to fit thumbnail
             pil_image = ImageProcessor.resize_image(
@@ -254,43 +278,26 @@ class ThumbnailWindow:
                 maintain_aspect=True
             )
             
-            # Store PIL image for update
-            self.current_image = pil_image
-            logger.debug(f"Set image for {self.thumbnail_id}: {pil_image.size}")
+            # Put in queue for main thread to process
+            # Drop old image if queue is full (non-blocking)
+            try:
+                self.image_queue.put_nowait(pil_image)
+            except queue.Full:
+                # Queue full, try to remove old one and add new
+                try:
+                    self.image_queue.get_nowait()
+                    self.image_queue.put_nowait(pil_image)
+                except queue.Empty:
+                    self.image_queue.put_nowait(pil_image)
+            
+            logger.debug(f"Queued image for {self.thumbnail_id}: {pil_image.size}")
         
         except Exception as e:
             logger.error(f"Error setting image: {e}", exc_info=True)
     
     def update_display(self) -> None:
-        """Update the displayed image in the tkinter window"""
-        if not self.window or not self.enabled or not self.current_image:
-            return
-        
-        try:
-            # Schedule update on main thread using window.after()
-            # This ensures tkinter operations happen on the main thread
-            self.window.after(0, self._update_image_on_main_thread)
-        
-        except Exception as e:
-            logger.error(f"Error scheduling display update: {e}", exc_info=True)
-    
-    def _update_image_on_main_thread(self) -> None:
-        """Update image on main thread (called via window.after)"""
-        if not self.current_image or not hasattr(self, 'label'):
-            return
-        
-        try:
-            # Convert PIL image to PhotoImage on main thread
-            self.photo_image = ImageTk.PhotoImage(self.current_image)
-            
-            # Update label
-            self.label.config(image=self.photo_image)
-            # Keep a reference to prevent garbage collection
-            self.label.image = self.photo_image
-            logger.debug(f"Updated thumbnail {self.thumbnail_id} image")
-        
-        except Exception as e:
-            logger.error(f"Error updating image for {self.thumbnail_id}: {e}", exc_info=True)
+        """Placeholder - image updates now done via queue processing"""
+        pass
     
     def set_position(self, x: int, y: int) -> None:
         """Update window position"""
