@@ -266,17 +266,29 @@ class ThumbnailWindow:
             return
         
         try:
-            # Convert PIL image to PhotoImage
-            self.photo_image = ImageTk.PhotoImage(self.current_image)
-            
-            # Update label (must run in main thread)
-            if self.window and hasattr(self, 'label'):
-                self.label.config(image=self.photo_image)
-                # Keep a reference to prevent garbage collection
-                self.label.image = self.photo_image
+            # Schedule update on main thread using window.after()
+            # This ensures tkinter operations happen on the main thread
+            self.window.after(0, self._update_image_on_main_thread)
         
         except Exception as e:
-            logger.debug(f"Error updating display: {e}")
+            logger.debug(f"Error scheduling display update: {e}")
+    
+    def _update_image_on_main_thread(self) -> None:
+        """Update image on main thread (called via window.after)"""
+        if not self.current_image or not hasattr(self, 'label'):
+            return
+        
+        try:
+            # Convert PIL image to PhotoImage on main thread
+            self.photo_image = ImageTk.PhotoImage(self.current_image)
+            
+            # Update label
+            self.label.config(image=self.photo_image)
+            # Keep a reference to prevent garbage collection
+            self.label.image = self.photo_image
+        
+        except Exception as e:
+            logger.debug(f"Error updating image: {e}")
     
     def set_position(self, x: int, y: int) -> None:
         """Update window position"""
