@@ -247,27 +247,41 @@ class ThumbnailWindow:
         """Process image updates from queue (runs on main thread)"""
         if not self.window or not self.enabled:
             if self.window:
-                self.window.after(50, self._process_image_queue)
+                try:
+                    self.window.after(50, self._process_image_queue)
+                except:
+                    pass
             return
         
         try:
             # Non-blocking check for new images
             try:
                 pil_image = self.image_queue.get_nowait()
+                logger.debug(f"Processing queued image for {self.thumbnail_id}")
+                
                 # Convert and display on main thread
                 self.photo_image = ImageTk.PhotoImage(pil_image)
-                self.label.config(image=self.photo_image)
-                self.label.image = self.photo_image
-                logger.debug(f"Updated display for {self.thumbnail_id}")
+                if hasattr(self, 'label') and self.label:
+                    self.label.config(image=self.photo_image)
+                    self.label.image = self.photo_image
+                    logger.info(f"✓ Updated display for {self.thumbnail_id}")
+                else:
+                    logger.error(f"Label not found for {self.thumbnail_id}")
             except queue.Empty:
                 pass
+            except Exception as e:
+                logger.error(f"Error processing image: {e}", exc_info=True)
             
             # Schedule next check
             if self.window:
-                self.window.after(50, self._process_image_queue)
+                try:
+                    self.window.after(50, self._process_image_queue)
+                except:
+                    # Window might be destroyed, stop processing
+                    logger.debug(f"Window closed for {self.thumbnail_id}")
         
         except Exception as e:
-            logger.error(f"Error processing image queue: {e}", exc_info=True)
+            logger.error(f"Error in queue processing: {e}", exc_info=True)
     
     def set_image(self, pil_image: Image.Image) -> None:
         """Update displayed image (thread-safe)"""
