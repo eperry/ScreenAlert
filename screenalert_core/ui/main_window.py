@@ -120,7 +120,9 @@ class ScreenAlertMainWindow:
         
         ttk.Button(actions_frame, text="Add Region", 
                   command=self._add_region).pack(side=tk.LEFT, padx=5)
-        ttk.Button(actions_frame, text="Remove Selected", 
+        ttk.Button(actions_frame, text="Remove Region", 
+                  command=self._remove_region).pack(side=tk.LEFT, padx=5)
+        ttk.Button(actions_frame, text="Remove Selected Window", 
                   command=self._remove_thumbnail).pack(side=tk.LEFT, padx=5)
         
         # Status bar
@@ -248,13 +250,8 @@ class ScreenAlertMainWindow:
                     region_x = max(0, min(region_x, window_width - w))
                     region_y = max(0, min(region_y, window_height - h))
                     
-                    region_dict = {
-                        "name": f"Region_{i+1}",
-                        "rect": [region_x, region_y, w, h],
-                        "alert_threshold": 0.99,
-                        "enabled": True
-                    }
-                    self.config.add_region_to_thumbnail(thumbnail_id, region_dict)
+                    # Note: engine.add_region() internally calls config.add_region_to_thumbnail()
+                    # so we only need to call the engine method
                     self.engine.add_region(thumbnail_id, f"Region_{i+1}", (region_x, region_y, w, h))
                     logger.info(f"Added region {i+1}: window-relative ({region_x}, {region_y}, {w}, {h})")
                 
@@ -268,6 +265,75 @@ class ScreenAlertMainWindow:
             logger.error(f"Error adding region to '{title}': {str(e)}", exc_info=True)
             msgbox.showerror("Error", f"Failed to add region: {str(e)}")
 
+    
+    def _remove_region(self) -> None:
+        """Remove region from selected thumbnail"""
+        if not self.thumbnail_list.curselection():
+            self.status_var.set("Select a thumbnail first")
+            return
+        
+        idx = self.thumbnail_list.curselection()[0]
+        thumbnails = self.config.get_all_thumbnails()
+        if idx >= len(thumbnails):
+            return
+        
+        thumbnail = thumbnails[idx]
+        thumbnail_id = thumbnail['id']
+        title = thumbnail.get('window_title', 'Unknown')
+        regions = thumbnail.get('monitored_regions', [])
+        
+        if not regions:
+            msgbox.showinfo("No Regions", f"'{title}' has no regions to remove")
+            return
+        
+        # Create a simple list for user to select which region to remove
+        region_choices = [f"{r.get('name', 'Unknown')} - {r['rect']}" for r in regions]
+        
+        # Create a simple dialog to select region
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Remove Region")
+        dialog.geometry("400x300")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        ttk.Label(dialog, text=f"Select region to remove from '{title}':").pack(padx=10, pady=10)
+        
+        # Listbox for regions
+        listbox = tk.Listbox(dialog, height=10, font=("Segoe UI", 10))
+        listbox.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        
+        for choice in region_choices:
+            listbox.insert(tk.END, choice)
+        
+        if listbox.size() > 0:
+            listbox.selection_set(0)
+        
+        # Buttons
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        def remove_selected():
+            selection = listbox.curselection()
+            if not selection:
+                msgbox.showwarning("Warning", "Please select a region")
+                return
+            
+            region_idx = selection[0]
+            region = regions[region_idx]
+            region_id = region.get('id')
+            region_name = region.get('name', 'Unknown')
+            
+            try:
+                self.config.remove_region(thumbnail_id, region_id)
+                self.status_var.set(f"Removed region '{region_name}' from {title}")
+                self._update_thumbnail_list()
+                dialog.destroy()
+            except Exception as e:
+                logger.error(f"Error removing region: {str(e)}", exc_info=True)
+                msgbox.showerror("Error", f"Failed to remove region: {str(e)}")
+        
+        ttk.Button(btn_frame, text="Remove", command=remove_selected).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT, padx=5)
     
     def _remove_thumbnail(self) -> None:
         """Remove selected thumbnail"""
