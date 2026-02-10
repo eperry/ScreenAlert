@@ -55,19 +55,23 @@ class ScreenAlertEngine:
         """Load thumbnails and regions from config"""
         for thumbnail_config in self.config.get_all_thumbnails():
             self._add_thumbnail_from_config(thumbnail_config)
+            logger.debug(f"Initialized thumbnail from config: {thumbnail_config.get('id')}")
     
     def _add_thumbnail_from_config(self, config: Dict) -> bool:
-        """Add thumbnail from config dict"""
+        """Add thumbnail from config dict - mirrors add_thumbnail() flow"""
         thumbnail_id = config.get("id")
         if not thumbnail_id:
             return False
         
         try:
-            # Add to renderer
-            if not self.renderer.add_thumbnail(thumbnail_id, config):
-                return False
+            # Check if already added
+            if thumbnail_id in [t['id'] for t in self.config.get_all_thumbnails()]:
+                # Already in config, just add to renderer
+                if not self.renderer.add_thumbnail(thumbnail_id, config):
+                    logger.warning(f"Failed to add renderer for {thumbnail_id}")
+                    return False
             
-            # Load regions
+            # Load regions  
             for region_config in config.get("monitored_regions", []):
                 region_id = region_config.get("id")
                 if region_id:
@@ -77,7 +81,7 @@ class ScreenAlertEngine:
             return True
         
         except Exception as e:
-            logger.error(f"Error loading thumbnail from config: {e}")
+            logger.error(f"Error loading thumbnail from config: {e}", exc_info=True)
             return False
     
     def add_thumbnail(self, window_title: str, window_hwnd: int) -> Optional[str]:

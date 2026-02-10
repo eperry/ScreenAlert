@@ -131,11 +131,14 @@ class ScreenAlertMainWindow:
                 return
             
             try:
-                thumbnail_id = self.config.add_thumbnail(window_title=title, window_hwnd=hwnd)
-                self.thumbnail_map[hwnd] = thumbnail_id
-                self.engine.add_thumbnail(window_title=title, window_hwnd=hwnd)
-                self._update_thumbnail_list()
-                self.status_var.set(f"Added: {title}")
+                # engine.add_thumbnail() handles everything: config + renderer
+                thumbnail_id = self.engine.add_thumbnail(window_title=title, window_hwnd=hwnd)
+                if thumbnail_id:
+                    self.thumbnail_map[hwnd] = thumbnail_id
+                    self._update_thumbnail_list()
+                    self.status_var.set(f"Added: {title}")
+                else:
+                    msgbox.showerror("Error", f"Failed to add window {title}")
             except Exception as e:
                 logger.error(f"Error adding window '{title}': {str(e)}", exc_info=True)
                 msgbox.showerror("Error", f"Failed to add window: {str(e)}")
