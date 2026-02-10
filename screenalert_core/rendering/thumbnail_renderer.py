@@ -257,20 +257,23 @@ class ThumbnailWindow:
             # Non-blocking check for new images
             try:
                 pil_image = self.image_queue.get_nowait()
-                logger.debug(f"Processing queued image for {self.thumbnail_id}")
+                logger.info(f"DEQUEUE {self.thumbnail_id}: processing {pil_image.size}")
                 
                 # Convert and display on main thread
-                self.photo_image = ImageTk.PhotoImage(pil_image)
+                photo = ImageTk.PhotoImage(pil_image)
+                logger.info(f"PHOTOIMAGE {self.thumbnail_id}: created {photo}")
+                
                 if hasattr(self, 'label') and self.label:
-                    self.label.config(image=self.photo_image)
-                    self.label.image = self.photo_image
-                    logger.info(f"✓ Updated display for {self.thumbnail_id}")
+                    self.label.config(image=photo)
+                    self.label.image = photo
+                    self.photo_image = photo
+                    logger.info(f"DISPLAY_UPDATE {self.thumbnail_id}: ✓ Updated")
                 else:
-                    logger.error(f"Label not found for {self.thumbnail_id}")
+                    logger.error(f"DISPLAY_ERROR {self.thumbnail_id}: No label found")
             except queue.Empty:
                 pass
             except Exception as e:
-                logger.error(f"Error processing image: {e}", exc_info=True)
+                logger.error(f"QUEUE_PROCESS_ERROR {self.thumbnail_id}: {e}", exc_info=True)
             
             # Schedule next check
             if self.window:
@@ -281,33 +284,34 @@ class ThumbnailWindow:
                     logger.debug(f"Window closed for {self.thumbnail_id}")
         
         except Exception as e:
-            logger.error(f"Error in queue processing: {e}", exc_info=True)
+            logger.error(f"PROCESS_QUEUE_ERROR {self.thumbnail_id}: {e}", exc_info=True)
     
     def set_image(self, pil_image: Image.Image) -> None:
         """Update displayed image (thread-safe)"""
         try:
             # Resize to fit thumbnail
-            pil_image = ImageProcessor.resize_image(
+            resized = ImageProcessor.resize_image(
                 pil_image, self.width, self.height, 
                 maintain_aspect=True
             )
+            logger.info(f"SET_IMAGE {self.thumbnail_id}: resized to {resized.size}")
             
             # Put in queue for main thread to process
             # Drop old image if queue is full (non-blocking)
             try:
-                self.image_queue.put_nowait(pil_image)
+                self.image_queue.put_nowait(resized)
+                logger.info(f"QUEUED {self.thumbnail_id}: queue size now {self.image_queue.qsize()}")
             except queue.Full:
                 # Queue full, try to remove old one and add new
+                logger.debug(f"Queue full for {self.thumbnail_id}, dropping old image")
                 try:
                     self.image_queue.get_nowait()
-                    self.image_queue.put_nowait(pil_image)
+                    self.image_queue.put_nowait(resized)
                 except queue.Empty:
-                    self.image_queue.put_nowait(pil_image)
-            
-            logger.debug(f"Queued image for {self.thumbnail_id}: {pil_image.size}")
+                    self.image_queue.put_nowait(resized)
         
         except Exception as e:
-            logger.error(f"Error setting image: {e}", exc_info=True)
+            logger.error(f"SET_IMAGE ERROR {self.thumbnail_id}: {e}", exc_info=True)
     
     def update_display(self) -> None:
         """Placeholder - image updates now done via queue processing"""
