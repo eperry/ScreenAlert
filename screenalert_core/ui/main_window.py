@@ -410,6 +410,8 @@ class ScreenAlertMainWindow:
             regions = thumbnail.get('monitored_regions', [])
             hwnd = thumbnail.get('window_hwnd')
             
+            logger.debug(f"Processing thumbnail {idx}: title='{title}', hwnd={hwnd}, regions={len(regions)}")
+            
             # Create card
             card = ThumbnailCard(self.cards_inner_frame, thumbnail_id, title, len(regions))
             card.on_click = lambda tid: self._on_card_selected(tid)
@@ -418,21 +420,25 @@ class ScreenAlertMainWindow:
             # Capture window image and populate card
             if hwnd:
                 try:
+                    logger.debug(f"  Attempting to capture window {hwnd} ('{title}')")
                     image = self.window_manager.capture_window(hwnd)
                     if image:
+                        logger.debug(f"  Image captured successfully: {image.size}")
                         card.set_image(image)
-                        logger.debug(f"  Captured image for: {title}")
+                        logger.info(f"  ✓ Image set for: {title}")
                     else:
-                        logger.debug(f"  Could not capture image for: {title}")
+                        logger.warning(f"  ✗ Capture returned None for: {title}")
                 except Exception as e:
-                    logger.debug(f"  Error capturing image for {title}: {e}")
+                    logger.error(f"  ✗ Error capturing image for '{title}': {e}", exc_info=True)
+            else:
+                logger.warning(f"  ✗ No hwnd for card: {title}")
             
             # Layout in grid (3 columns)
             col = idx % 3
             row = idx // 3
             card.get_frame().grid(row=row, column=col, padx=5, pady=5, sticky="nsew")
             
-            logger.debug(f"  Created card: {title} with {len(regions)} regions")
+            logger.debug(f"  Card created: grid position row={row}, col={col}")
         
         # Configure grid columns
         for i in range(3):
@@ -442,7 +448,8 @@ class ScreenAlertMainWindow:
         self.cards_inner_frame.update_idletasks()
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
         
-        logger.info(f"Thumbnail cards updated: {len(thumbnails)} total")
+        logger.info(f"✓ Thumbnail cards updated: {len(thumbnails)} total")
+
 
     
     def _on_card_selected(self, thumbnail_id: str) -> None:
@@ -460,10 +467,22 @@ class ScreenAlertMainWindow:
         thumbnail = self.config.get_thumbnail(thumbnail_id)
         if thumbnail:
             title = thumbnail.get('window_title', 'Unknown')
+            regions = thumbnail.get('monitored_regions', [])
             
-            # Update card status to ALERT (red)
+            # Find region index for this alert
+            region_idx = -1
+            for idx, region in enumerate(regions):
+                if region.get('id') == region_id:
+                    region_idx = idx
+                    break
+            
+            # Update card status to ALERT for this region
             if thumbnail_id in self.card_widgets:
-                self.card_widgets[thumbnail_id].set_status('alert')
+                card = self.card_widgets[thumbnail_id]
+                if region_idx >= 0:
+                    card.set_status('alert', region_idx)
+                else:
+                    card.set_status('alert')
             
             # Update status bar
             self.status_var.set(f"🚨 ALERT: {title} - {region_name} changed!")
@@ -477,12 +496,29 @@ class ScreenAlertMainWindow:
                 except Exception as e:
                     logger.warning(f"TTS error: {e}")
             
-            logger.info(f"Alert in {title}: {region_name}")
+            logger.info(f"Alert in {title}: {region_name} (region_idx={region_idx})")
 
     
     def _on_region_change(self, thumbnail_id: str, region_id: str) -> None:
-        """Handle region change"""
-        logger.debug(f"Region changed: {region_id}")
+        """Handle region change - update status to WARNING"""
+        thumbnail = self.config.get_thumbnail(thumbnail_id)
+        if thumbnail:
+            regions = thumbnail.get('monitored_regions', [])
+            
+            # Find region index
+            region_idx = -1
+            for idx, region in enumerate(regions):
+                if region.get('id') == region_id:
+                    region_idx = idx
+                    break
+            
+            # Update card status to WARNING for this region
+            if thumbnail_id in self.card_widgets:
+                card = self.card_widgets[thumbnail_id]
+                if region_idx >= 0:
+                    card.set_status('warning', region_idx)
+                    logger.debug(f"Region {region_idx} in {thumbnail_id} status set to WARNING")
+
     
     def _on_window_lost(self, thumbnail_id: str, window_title: str) -> None:
         """Handle lost window"""
