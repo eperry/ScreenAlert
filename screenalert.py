@@ -1454,11 +1454,26 @@ Features:
     def manual_reconnect():
         """Manually trigger window reconnection check"""
         # print("Manual window reconnection check initiated...")
-        reconnected = try_reconnect_windows()
-        if reconnected > 0:
-            msgbox.showinfo("Reconnection Success", f"Successfully reconnected {reconnected} window(s)!")
+        result = try_reconnect_windows()
+        reconnected_regions = result.get("regions", 0)
+        reconnected_windows = result.get("windows", 0)
+        global_reconnected = result.get("global", False)
+
+        if reconnected_regions > 0:
+            msgbox.showinfo(
+                "Reconnection Success",
+                f"Successfully reconnected {reconnected_regions} region(s) across {reconnected_windows} window(s)!",
+            )
+        elif global_reconnected and reconnected_windows > 0:
+            msgbox.showinfo(
+                "Reconnection Success",
+                f"Successfully reconnected {reconnected_windows} window(s)!",
+            )
         else:
-            msgbox.showinfo("Reconnection Check", "No disconnected windows found or no windows could be reconnected.")
+            msgbox.showinfo(
+                "Reconnection Check",
+                "No disconnected windows found or no windows could be reconnected.",
+            )
 
     def toggle_pause():
         nonlocal paused, last_reminder_time
@@ -1714,8 +1729,19 @@ Features:
         """Try to reconnect to windows that are no longer available - Enhanced version"""
         nonlocal target_window, current_window_img
         
-        reconnected_count = 0
+        reconnected_windows_count = 0
+        reconnected_regions_count = 0
         failed_reconnections = []
+        reconnected_hwnds = set()
+        global_reconnected = False
+
+        def record_window_reconnection(hwnd):
+            nonlocal reconnected_windows_count
+            if hwnd is None:
+                return
+            if hwnd not in reconnected_hwnds:
+                reconnected_hwnds.add(hwnd)
+                reconnected_windows_count += 1
         
         # Check global target window
         if target_window:
@@ -1756,7 +1782,8 @@ Features:
                     # # print(f"Successfully reconnected global target window: {new_window['title']} (new HWND: {new_window['hwnd']})")
                     target_window = new_window
                     current_window_img = capture_window(target_window['hwnd'])
-                    reconnected_count += 1
+                    global_reconnected = True
+                    record_window_reconnection(target_window.get('hwnd'))
                     # Save the updated window info
                     save_config(
                         regions, interval_var.get(), highlight_time_var.get(),
@@ -1809,7 +1836,8 @@ Features:
                     if new_window:
                         print(f"Successfully reconnected region {idx} to window: {new_window['title']} (new HWND: {new_window['hwnd']})")
                         region["target_window"] = new_window
-                        reconnected_count += 1
+                        reconnected_regions_count += 1
+                        record_window_reconnection(new_window.get('hwnd'))
                         
                         # Reset the previous screenshot for this region to force refresh
                         if idx < len(previous_screenshots):
@@ -1822,8 +1850,13 @@ Features:
                     else:
                         failed_reconnections.append(f"Region {idx} '{region_name}': {region_window['title']}")
         
-        if reconnected_count > 0:
-            print(f"Reconnected {reconnected_count} window(s)")
+        if global_reconnected or reconnected_regions_count > 0:
+            if reconnected_regions_count > 0:
+                print(
+                    f"Reconnected {reconnected_regions_count} region(s) across {reconnected_windows_count} window(s)"
+                )
+            else:
+                print(f"Reconnected {reconnected_windows_count} window(s)")
             # Save all region updates
             save_config(
                 regions, interval_var.get(), highlight_time_var.get(),
@@ -1845,7 +1878,11 @@ Features:
             for failure in failed_reconnections:
                 print(f"  - {failure}")
         
-        return reconnected_count
+        return {
+            "regions": reconnected_regions_count,
+            "windows": reconnected_windows_count,
+            "global": global_reconnected,
+        }
 
     update_window_capture()
 
@@ -2518,6 +2555,22 @@ Features:
     update_region_display(force_update=True)  # Force initial update
     update_status_bar()
 
+    # Attempt to reconnect to any windows from previous session at startup
+    def startup_reconnect():
+        """Attempt to reconnect to windows that were saved from previous session"""
+        print("Performing startup window reconnection check...")
+        result = try_reconnect_windows()
+        reconnected_regions = result.get("regions", 0)
+        reconnected_windows = result.get("windows", 0)
+        global_reconnected = result.get("global", False)
+        
+        if reconnected_regions > 0:
+            print(f"Startup reconnection: Successfully reconnected {reconnected_regions} region(s) across {reconnected_windows} window(s)")
+        elif global_reconnected and reconnected_windows > 0:
+            print(f"Startup reconnection: Successfully reconnected {reconnected_windows} window(s)")
+        else:
+            print("Startup reconnection: All windows already available or no reconnection needed")
+
     # Monitoring Loop
     def check_alerts():
         nonlocal current_window_img, last_window_recheck, target_window
@@ -2729,6 +2782,10 @@ Features:
         
         root.after(interval_var.get(), check_alerts)
 
+    # Perform startup reconnection after a brief delay (allow UI to initialize)
+    root.after(1000, startup_reconnect)
+    
+    # Start monitoring loop
     root.after(5000, check_alerts)
     root.mainloop()
 
