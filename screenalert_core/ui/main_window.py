@@ -206,14 +206,20 @@ class ScreenAlertMainWindow:
         hwnd = thumbnail['window_hwnd']
         title = thumbnail.get('window_title', 'Unknown')
         
+        logger.info(f"Opening region editor for thumbnail: {title} (id={thumbnail_id}, hwnd={hwnd})")
+        
         try:
             image = self.window_manager.capture_window(hwnd)
             if not image:
+                logger.error(f"Cannot capture window for {title}")
                 msgbox.showerror("Error", "Cannot capture window")
                 return
             
+            logger.info(f"Captured image: {image.size}, opening RegionEditorDialog")
             dialog = RegionEditorDialog(self.root, image)
+            logger.info(f"RegionEditorDialog created, calling show()")
             regions = dialog.show()
+            logger.info(f"RegionEditorDialog returned: {len(regions) if regions else 0} regions")
             
             if regions:
                 for i, region in enumerate(regions):
