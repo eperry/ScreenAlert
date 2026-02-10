@@ -240,12 +240,15 @@ class ScreenAlertEngine:
                         window_image = self.window_manager.capture_window(window_hwnd)
                         if window_image:
                             self.cache_manager.set(window_hwnd, window_image)
+                            logger.debug(f"Captured new image for {window_hwnd}")
                         else:
+                            logger.warning(f"Failed to capture window {window_hwnd}")
                             continue
                     else:
                         window_image = cached_image
                     
                     # Update renderer with full window image
+                    logger.debug(f"Sending image to renderer for {thumbnail_id}")
                     self.renderer.update_thumbnail_image(thumbnail_id, window_image)
                     
                     # Process monitoring regions (uses same captured image)

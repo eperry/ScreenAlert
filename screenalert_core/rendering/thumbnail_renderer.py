@@ -256,6 +256,7 @@ class ThumbnailWindow:
             
             # Store PIL image for update
             self.current_image = pil_image
+            logger.debug(f"Set image for {self.thumbnail_id}: {pil_image.size}")
         
         except Exception as e:
             logger.error(f"Error setting image: {e}", exc_info=True)
@@ -271,7 +272,7 @@ class ThumbnailWindow:
             self.window.after(0, self._update_image_on_main_thread)
         
         except Exception as e:
-            logger.debug(f"Error scheduling display update: {e}")
+            logger.error(f"Error scheduling display update: {e}", exc_info=True)
     
     def _update_image_on_main_thread(self) -> None:
         """Update image on main thread (called via window.after)"""
@@ -286,9 +287,10 @@ class ThumbnailWindow:
             self.label.config(image=self.photo_image)
             # Keep a reference to prevent garbage collection
             self.label.image = self.photo_image
+            logger.debug(f"Updated thumbnail {self.thumbnail_id} image")
         
         except Exception as e:
-            logger.debug(f"Error updating image: {e}")
+            logger.error(f"Error updating image for {self.thumbnail_id}: {e}", exc_info=True)
     
     def set_position(self, x: int, y: int) -> None:
         """Update window position"""
