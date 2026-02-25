@@ -121,8 +121,19 @@ class ScreenAlertEngine:
             Thumbnail ID or None if failed
         """
         try:
-            # Create config entry
-            thumbnail_id = self.config.add_thumbnail(window_title, window_hwnd)
+            # Capture window metadata for identity validation on reconnect
+            metadata = self.window_manager.get_window_metadata(window_hwnd)
+            window_class = metadata.get('class', '') if metadata else ''
+            window_size = metadata.get('size') if metadata else None
+            monitor_id = metadata.get('monitor_id') if metadata else None
+            
+            # Create config entry with metadata
+            thumbnail_id = self.config.add_thumbnail(
+                window_title, window_hwnd,
+                window_class=window_class,
+                window_size=window_size,
+                monitor_id=monitor_id
+            )
             
             # Get config
             config = self.config.get_thumbnail(thumbnail_id)
@@ -247,6 +258,61 @@ class ScreenAlertEngine:
         self.paused = paused
         logger.info(f"Monitoring paused: {paused}")
     
+    def _try_reconnect(self, thumbnail_id: str, window_title: str,
+                       expected_class: str = None,
+                       expected_size=None,
+                       expected_monitor_id: int = None) -> Optional[Dict]:
+        """Try to reconnect to a window when the current handle is invalid.
+        
+        Returns:
+            New window dict if reconnected, None otherwise
+        """
+        logger.info(f"[{thumbnail_id}] Attempting reconnection for '{window_title}'")
+        
+        # Try exact title + metadata match first
+        new_window = self.window_manager.find_window_by_title(
+            window_title, exact=True,
+            expected_size=expected_size, size_tolerance=20,
+            expected_monitor_id=expected_monitor_id,
+            expected_class_name=expected_class,
+        )
+        
+        if not new_window:
+            # Fall back to largest matching window
+            new_window = self.window_manager.find_largest_window_by_title(
+                window_title,
+                expected_monitor_id=expected_monitor_id,
+                expected_class_name=expected_class,
+            )
+        
+        if not new_window:
+            # Last resort: any title match without metadata (partial matching)
+            new_window = self.window_manager.find_window_by_title(
+                window_title, exact=False
+            )
+        
+        if new_window:
+            new_hwnd = new_window['hwnd']
+            logger.info(f"[{thumbnail_id}] Reconnected: "
+                        f"new hwnd={new_hwnd}, size={new_window.get('size')}")
+            
+            # Update config with new handle and refreshed metadata
+            metadata = self.window_manager.get_window_metadata(new_hwnd)
+            updates = {"window_hwnd": new_hwnd}
+            if metadata:
+                updates["window_class"] = metadata.get('class', '')
+                updates["window_size"] = list(metadata.get('size', []))
+                updates["monitor_id"] = metadata.get('monitor_id')
+            
+            with self.lock:
+                self.config.update_thumbnail(thumbnail_id, updates)
+                self.config.save()
+            
+            return new_window
+        
+        logger.warning(f"[{thumbnail_id}] Reconnection failed for '{window_title}'")
+        return None
+    
     def _main_loop(self) -> None:
         """Main unified capture and processing loop"""
         refresh_rate_ms = self.config.get_refresh_rate()
@@ -256,9 +322,9 @@ class ScreenAlertEngine:
             try:
                 start_time = time.time()
                 
-                # Get all thumbnails
+                # Get snapshot of all thumbnails (copy to avoid mutation during iteration)
                 with self.lock:
-                    thumbnails = self.config.get_all_thumbnails()
+                    thumbnails = list(self.config.get_all_thumbnails())
                 
                 # Process each thumbnail
                 for thumbnail_config in thumbnails:
@@ -267,11 +333,32 @@ class ScreenAlertEngine:
                     
                     thumbnail_id = thumbnail_config["id"]
                     window_hwnd = thumbnail_config["window_hwnd"]
+                    window_title = thumbnail_config["window_title"]
                     
-                    # Check if window is still valid
-                    if not self.window_manager.is_window_valid(window_hwnd):
-                        self.on_window_lost(thumbnail_id, thumbnail_config["window_title"])
-                        continue
+                    # Validate window: both existence AND identity
+                    expected_class = thumbnail_config.get("window_class") or None
+                    expected_size = tuple(thumbnail_config["window_size"]) if thumbnail_config.get("window_size") else None
+                    expected_monitor = thumbnail_config.get("monitor_id")
+                    
+                    window_ok = self.window_manager.validate_window_identity(
+                        window_hwnd,
+                        expected_title=window_title,
+                        expected_class=expected_class,
+                        expected_monitor_id=expected_monitor,
+                        expected_size=expected_size
+                    )
+                    
+                    if not window_ok:
+                        # Try to reconnect to the correct window
+                        new_window = self._try_reconnect(
+                            thumbnail_id, window_title,
+                            expected_class, expected_size, expected_monitor
+                        )
+                        if new_window:
+                            window_hwnd = new_window['hwnd']
+                        else:
+                            self.on_window_lost(thumbnail_id, window_title)
+                            continue
                     
                     # UNIFIED CAPTURE
                     cached_image = self.cache_manager.get(window_hwnd)
@@ -279,21 +366,21 @@ class ScreenAlertEngine:
                         window_image = self.window_manager.capture_window(window_hwnd)
                         if window_image:
                             self.cache_manager.set(window_hwnd, window_image)
-                            logger.info(f"[{thumbnail_id}] CAPTURED: size {window_image.size}")
+                            logger.debug(f"[{thumbnail_id}] CAPTURED: size {window_image.size}")
                         else:
                             logger.error(f"[{thumbnail_id}] CAPTURE FAILED: hwnd={window_hwnd}")
                             continue
                     else:
                         window_image = cached_image
-                        logger.info(f"[{thumbnail_id}] Using cached image: {window_image.size}")
+                        logger.debug(f"[{thumbnail_id}] Using cached image: {window_image.size}")
                     
                     # Update renderer with full window image
-                    logger.info(f"[{thumbnail_id}] Sending to renderer: {window_image.size}")
+                    logger.debug(f"[{thumbnail_id}] Sending to renderer: {window_image.size}")
                     result = self.renderer.update_thumbnail_image(thumbnail_id, window_image)
                     if not result:
                         logger.error(f"[{thumbnail_id}] RENDERER REJECTED (thumbnail not found?)")
                     else:
-                        logger.info(f"[{thumbnail_id}] Renderer accepted image")
+                        logger.debug(f"[{thumbnail_id}] Renderer accepted image")
                     
                     # Process monitoring regions (uses same captured image)
                     if not self.paused:
