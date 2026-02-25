@@ -138,8 +138,19 @@ class ConfigManager:
     
     # Thumbnail management
     def add_thumbnail(self, window_title: str, window_hwnd: int, 
-                     position: Dict = None, size: Dict = None) -> str:
+                     position: Dict = None, size: Dict = None,
+                     window_class: str = None, window_size: tuple = None,
+                     monitor_id: int = None) -> str:
         """Add a new thumbnail configuration
+        
+        Args:
+            window_title: Title of the monitored window
+            window_hwnd: Handle of the monitored window
+            position: Thumbnail display position
+            size: Thumbnail display size
+            window_class: Window class name (for identity validation)
+            window_size: Actual window dimensions (width, height)
+            monitor_id: Monitor index the window is on
         
         Returns:
             Thumbnail ID
@@ -153,6 +164,9 @@ class ConfigManager:
             "id": thumbnail_id,
             "window_title": window_title,
             "window_hwnd": window_hwnd,
+            "window_class": window_class or "",
+            "window_size": list(window_size) if window_size else None,
+            "monitor_id": monitor_id,
             "position": position,
             "size": size,
             "opacity": DEFAULT_OPACITY,
