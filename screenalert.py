@@ -11,9 +11,18 @@ def get_app_version():
     try:
         import subprocess
         import os
+        run_kwargs = {
+            'capture_output': True,
+            'text': True,
+            'cwd': os.path.dirname(__file__) or '.'
+        }
+
+        # Prevent spawning a terminal window on Windows when running from pythonw.
+        if platform.system() == "Windows" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+            run_kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+
         # Get the latest git tag
-        result = subprocess.run(['git', 'describe', '--tags', '--abbrev=0'], 
-                              capture_output=True, text=True, cwd=os.path.dirname(__file__) or '.')
+        result = subprocess.run(['git', 'describe', '--tags', '--abbrev=0'], **run_kwargs)
         if result.returncode == 0 and result.stdout.strip():
             version = result.stdout.strip()
             # Remove 'v' prefix if present
@@ -21,7 +30,7 @@ def get_app_version():
     except Exception:
         pass
     # Fallback version if git tag detection fails
-    return "1.2.0"
+    return "1.2.3"
 
 # Set up logging before importing anything else that might print
 def setup_logging():
@@ -289,7 +298,8 @@ def capture_window(hwnd):
         print(f"Failed to capture window {hwnd}: {e}")
         return None
 
-def find_window_by_title(window_title, exact_match=False, expected_size=None, size_tolerance=20):
+def find_window_by_title(window_title, exact_match=False, expected_size=None, size_tolerance=20,
+                         expected_monitor_id=None, expected_class_name=None):
     """Try to find a window by its title with improved matching and optional size validation
     
     Args:
@@ -299,6 +309,23 @@ def find_window_by_title(window_title, exact_match=False, expected_size=None, si
         size_tolerance: Pixels of tolerance for size matching (default 20)
     """
     windows = get_window_list()
+
+    # Prefer windows that match saved monitor/class metadata when available
+    if expected_monitor_id is not None or expected_class_name:
+        metadata_matched = []
+        for window in windows:
+            class_ok = not expected_class_name or window.get('class_name') == expected_class_name
+            monitor_ok = True
+            if expected_monitor_id is not None:
+                window_monitor_id = get_monitor_id_for_rect(window.get('rect'))
+                window['monitor_id'] = window_monitor_id
+                monitor_ok = window_monitor_id == expected_monitor_id
+            if class_ok and monitor_ok:
+                metadata_matched.append(window)
+
+        # Only narrow the list when we have at least one metadata match
+        if metadata_matched:
+            windows = metadata_matched
     
     def size_matches(window_size, expected_size, tolerance):
         """Check if window size matches expected size within tolerance"""
@@ -313,6 +340,13 @@ def find_window_by_title(window_title, exact_match=False, expected_size=None, si
         if window['title'] == window_title:
             if size_matches(window['size'], expected_size, size_tolerance):
                 return window
+
+    # If no expected size is available, prefer the largest exact-title window
+    # to avoid binding to small utility/preview windows with the same title.
+    if expected_size is None:
+        exact_matches = [w for w in windows if w['title'] == window_title]
+        if exact_matches:
+            return max(exact_matches, key=lambda w: w['size'][0] * w['size'][1])
     
     # If exact match with size fails, try exact match without size (size may have changed)
     if not exact_match:
@@ -348,10 +382,25 @@ def find_window_by_title(window_title, exact_match=False, expected_size=None, si
     
     return None
 
-def find_largest_window_by_title(window_title):
+def find_largest_window_by_title(window_title, expected_monitor_id=None, expected_class_name=None):
     """Find all windows with matching title and return the largest one by area"""
     windows = get_window_list()
     matching_windows = []
+
+    # Apply optional metadata filter first to reduce ambiguity
+    if expected_monitor_id is not None or expected_class_name:
+        filtered = []
+        for window in windows:
+            class_ok = not expected_class_name or window.get('class_name') == expected_class_name
+            monitor_ok = True
+            if expected_monitor_id is not None:
+                window_monitor_id = get_monitor_id_for_rect(window.get('rect'))
+                window['monitor_id'] = window_monitor_id
+                monitor_ok = window_monitor_id == expected_monitor_id
+            if class_ok and monitor_ok:
+                filtered.append(window)
+        if filtered:
+            windows = filtered
     
     # Find all exact matches
     for window in windows:
@@ -410,6 +459,70 @@ def get_monitor_info():
     
     return monitors
 
+def get_monitor_id_for_rect(rect):
+    """Determine which monitor a window rect belongs to using center point."""
+    if not rect:
+        return 0
+
+    monitors = get_monitor_info()
+    if not monitors:
+        return 0
+
+    center_x = (rect[0] + rect[2]) // 2
+    center_y = (rect[1] + rect[3]) // 2
+
+    for i, monitor in enumerate(monitors):
+        if (monitor['left'] <= center_x < monitor['right'] and
+            monitor['top'] <= center_y < monitor['bottom']):
+            return i
+
+    return 0
+
+def get_window_metadata(hwnd):
+    """Get current metadata for a live window handle, or None if unavailable."""
+    try:
+        if not win32gui.IsWindow(hwnd) or not win32gui.IsWindowVisible(hwnd):
+            return None
+
+        title = win32gui.GetWindowText(hwnd)
+        if not title:
+            return None
+
+        class_name = win32gui.GetClassName(hwnd)
+        rect = win32gui.GetWindowRect(hwnd)
+        width = rect[2] - rect[0]
+        height = rect[3] - rect[1]
+        if width <= 0 or height <= 0:
+            return None
+
+        return {
+            'hwnd': hwnd,
+            'title': title,
+            'class_name': class_name,
+            'rect': rect,
+            'size': (width, height),
+            'monitor_id': get_monitor_id_for_rect(rect)
+        }
+    except Exception:
+        return None
+
+def is_window_size_significantly_different(current_size, expected_size):
+    """Detect large size mismatches that usually indicate wrong window binding."""
+    if not current_size or not expected_size:
+        return False
+
+    expected_w = max(1, expected_size[0])
+    expected_h = max(1, expected_size[1])
+    current_w = max(1, current_size[0])
+    current_h = max(1, current_size[1])
+
+    width_ratio = current_w / expected_w
+    height_ratio = current_h / expected_h
+
+    # Allow normal resize/fullscreen fluctuations, but reject major shifts.
+    return (width_ratio < 0.60 or width_ratio > 1.60 or
+            height_ratio < 0.60 or height_ratio > 1.60)
+
 def get_windows_by_monitor():
     """Get windows organized by monitor"""
     monitors = get_monitor_info()
@@ -427,13 +540,17 @@ def get_windows_by_monitor():
         for i, monitor in enumerate(monitors):
             if (monitor['left'] <= window_center_x < monitor['right'] and 
                 monitor['top'] <= window_center_y < monitor['bottom']):
-                windows_by_monitor[i].append(window)
+                window_copy = dict(window)
+                window_copy['monitor_id'] = i
+                windows_by_monitor[i].append(window_copy)
                 assigned = True
                 break
         
         # If not assigned to any monitor, assign to primary (0)
         if not assigned and windows_by_monitor:
-            windows_by_monitor[0].append(window)
+            window_copy = dict(window)
+            window_copy['monitor_id'] = 0
+            windows_by_monitor[0].append(window_copy)
     
     return windows_by_monitor, monitors
 
@@ -1745,25 +1862,46 @@ Features:
         
         # Check global target window
         if target_window:
-            # Always try to capture to see if window is still available
+            expected_size = target_window.get('size')
+            expected_monitor_id = target_window.get('monitor_id')
+            expected_class_name = target_window.get('class_name')
+
+            # Validate both availability and identity (HWNDs can be reused by other windows)
             test_img = capture_window(target_window['hwnd'])
-            if not test_img:
+            live_metadata = get_window_metadata(target_window['hwnd'])
+            metadata_mismatch = False
+            if live_metadata:
+                if target_window.get('title') and live_metadata.get('title') != target_window.get('title'):
+                    metadata_mismatch = True
+                elif expected_class_name and live_metadata.get('class_name') != expected_class_name:
+                    metadata_mismatch = True
+                elif expected_monitor_id is not None and live_metadata.get('monitor_id') != expected_monitor_id:
+                    metadata_mismatch = True
+                elif is_window_size_significantly_different(live_metadata.get('size'), expected_size):
+                    metadata_mismatch = True
+
+            if not test_img or metadata_mismatch:
                 print(f"Global target window unavailable: {target_window['title']} (HWND: {target_window['hwnd']})")
                 
                 # Try to find window with title and size matching
                 new_window = None
-                expected_size = target_window.get('size')
                 
                 # If largest parameter is True, find the largest matching window
                 if largest:
-                    new_window = find_largest_window_by_title(target_window['title'])
+                    new_window = find_largest_window_by_title(
+                        target_window['title'],
+                        expected_monitor_id=expected_monitor_id,
+                        expected_class_name=expected_class_name,
+                    )
                 else:
                     # First try exact title + size match (most reliable)
                     new_window = find_window_by_title(
                         target_window['title'], 
                         exact_match=True, 
                         expected_size=expected_size,
-                        size_tolerance=20
+                        size_tolerance=20,
+                        expected_monitor_id=expected_monitor_id,
+                        expected_class_name=expected_class_name,
                     )
                 
                 if new_window:
@@ -1771,7 +1909,12 @@ Features:
                     print(f"  Size: {new_window['size']} (expected: {expected_size})")
                 else:
                     # Try without size validation (window may have been resized)
-                    new_window = find_window_by_title(target_window['title'], exact_match=True)
+                    new_window = find_window_by_title(
+                        target_window['title'],
+                        exact_match=True,
+                        expected_monitor_id=expected_monitor_id,
+                        expected_class_name=expected_class_name,
+                    )
                     if new_window:
                         print(f"  Found exact title match (size changed): {new_window['title']} (HWND: {new_window['hwnd']})")
                         print(f"  Size changed from {expected_size} to {new_window['size']}")
@@ -1803,22 +1946,39 @@ Features:
         for idx, region in enumerate(regions):
             region_window = region.get("target_window")
             if region_window:
-                # Always try to capture to see if window is still available
+                expected_size = region_window.get('size')
+                expected_monitor_id = region_window.get('monitor_id')
+                expected_class_name = region_window.get('class_name')
+
+                # Validate both availability and identity (HWND reuse protection)
                 test_img = capture_window(region_window['hwnd'])
-                if not test_img:
+                live_metadata = get_window_metadata(region_window['hwnd'])
+                metadata_mismatch = False
+                if live_metadata:
+                    if region_window.get('title') and live_metadata.get('title') != region_window.get('title'):
+                        metadata_mismatch = True
+                    elif expected_class_name and live_metadata.get('class_name') != expected_class_name:
+                        metadata_mismatch = True
+                    elif expected_monitor_id is not None and live_metadata.get('monitor_id') != expected_monitor_id:
+                        metadata_mismatch = True
+                    elif is_window_size_significantly_different(live_metadata.get('size'), expected_size):
+                        metadata_mismatch = True
+
+                if not test_img or metadata_mismatch:
                     region_name = region.get('name', f'Region {idx+1}')
                     print(f"Region {idx} '{region_name}' window unavailable: {region_window['title']} (HWND: {region_window['hwnd']})")
                     
                     # Try to find window with title and size matching
                     new_window = None
-                    expected_size = region_window.get('size')
                     
                     # First try exact title + size match (most reliable)
                     new_window = find_window_by_title(
                         region_window['title'], 
                         exact_match=True, 
                         expected_size=expected_size,
-                        size_tolerance=20
+                        size_tolerance=20,
+                        expected_monitor_id=expected_monitor_id,
+                        expected_class_name=expected_class_name,
                     )
                     
                     if new_window:
@@ -1826,7 +1986,12 @@ Features:
                         print(f"  Size: {new_window['size']} (expected: {expected_size})")
                     else:
                         # Try without size validation (window may have been resized)
-                        new_window = find_window_by_title(region_window['title'], exact_match=True)
+                        new_window = find_window_by_title(
+                            region_window['title'],
+                            exact_match=True,
+                            expected_monitor_id=expected_monitor_id,
+                            expected_class_name=expected_class_name,
+                        )
                         if new_window:
                             print(f"  Found exact title match for region {idx} (size changed): {new_window['title']}")
                             print(f"  Size changed from {expected_size} to {new_window['size']}")
