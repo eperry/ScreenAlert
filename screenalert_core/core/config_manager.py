@@ -39,13 +39,15 @@ class ConfigManager:
                 "log_verbose": False,
                 "high_contrast": False,
                 "last_window_filter": "",
+                "last_window_size_filter_op": "==",
+                "last_window_size_filter_value": "",
                 "default_alert_threshold": DEFAULT_ALERT_THRESHOLD,
                 "change_detection_method": "ssim",
                 "alert_hold_seconds": 10,
                 "enable_sound": True,
                 "enable_tts": True,
                 "default_sound_file": "",
-                "default_tts_message": "Alert {name}",
+                "default_tts_message": "Alert {window} {region_name}",
                 "mute_until_ts": 0,
                 "pause_reminder_interval_sec": 60,
                 "capture_on_alert": False,
@@ -98,15 +100,10 @@ class ConfigManager:
     def _load_or_create_config(self) -> Dict[str, Any]:
         """Load config from file or create default"""
         try:
-            self._try_migrate_legacy_config()
             if os.path.exists(self.config_path):
                 logger.info(f"Loading config from {self.config_path}")
                 with open(self.config_path, 'r') as f:
-                    loaded_config = json.load(f)
-                # Merge with defaults to handle missing keys
-                defaults = self._get_default_config()
-                loaded_config = self._merge_configs(defaults, loaded_config)
-                return loaded_config
+                    return json.load(f)
             else:
                 logger.info(f"Config file not found, creating default at {self.config_path}")
                 return self._get_default_config()
@@ -225,10 +222,10 @@ class ConfigManager:
         self._config["app"]["default_sound_file"] = path or ""
 
     def get_default_tts_message(self) -> str:
-        return self._config.get("app", {}).get("default_tts_message", "Alert {name}")
+        return self._config.get("app", {}).get("default_tts_message", "Alert {window} {region_name}")
 
     def set_default_tts_message(self, message: str) -> None:
-        self._config["app"]["default_tts_message"] = message or "Alert {name}"
+        self._config["app"]["default_tts_message"] = message or "Alert {window} {region_name}"
 
     def get_mute_until_ts(self) -> int:
         return int(self._config.get("app", {}).get("mute_until_ts", 0))
@@ -303,6 +300,23 @@ class ConfigManager:
     def set_last_window_filter(self, filter_text: str) -> None:
         """Set last used window filter"""
         self._config["app"]["last_window_filter"] = filter_text
+
+    def get_last_window_size_filter_op(self) -> str:
+        """Get last used size filter operator."""
+        value = self._config.get("app", {}).get("last_window_size_filter_op", "==")
+        return value if value in ("==", "<=", ">=") else "=="
+
+    def set_last_window_size_filter_op(self, op: str) -> None:
+        """Set last used size filter operator."""
+        self._config["app"]["last_window_size_filter_op"] = op if op in ("==", "<=", ">=") else "=="
+
+    def get_last_window_size_filter_value(self) -> str:
+        """Get last used size filter value text."""
+        return self._config.get("app", {}).get("last_window_size_filter_value", "")
+
+    def set_last_window_size_filter_value(self, value: str) -> None:
+        """Set last used size filter value text."""
+        self._config["app"]["last_window_size_filter_value"] = value or ""
     
     # Thumbnail management
     def add_thumbnail(self, window_title: str, window_hwnd: int, 
@@ -412,7 +426,7 @@ class ConfigManager:
         region.setdefault("alert_threshold", DEFAULT_ALERT_THRESHOLD)
         region.setdefault("enabled", True)
         region.setdefault("sound_file", "")
-        region.setdefault("tts_message", "")
+        region.setdefault("tts_message", self.get_default_tts_message())
         
         thumbnail["monitored_regions"].append(region)
         logger.info(f"Added region to thumbnail {thumbnail_id}: {region.get('name', region_id)}")

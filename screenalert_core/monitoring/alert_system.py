@@ -2,6 +2,9 @@
 
 import logging
 import platform
+import queue
+import subprocess
+import threading
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -30,6 +33,9 @@ class AlertSystem:
         """Initialize alert system"""
         self.tts_engine = None
         self.pygame_initialized = False
+        self._tts_queue: "queue.Queue[Optional[str]]" = queue.Queue()
+        self._tts_stop = threading.Event()
+        self._tts_thread: Optional[threading.Thread] = None
         
         # Try to initialize pygame mixer
         if pygame:
@@ -42,12 +48,37 @@ class AlertSystem:
         # Initialize TTS engine
         if pyttsx3:
             try:
-                self.tts_engine = pyttsx3.init()
-                self.tts_engine.setProperty('rate', 150)  # Speed
-                self.tts_engine.setProperty('volume', 0.9)  # Volume
+                # Probe engine availability once.
+                probe_engine = pyttsx3.init()
+                probe_engine.setProperty('rate', 150)
+                probe_engine.setProperty('volume', 0.9)
+                self.tts_engine = probe_engine
+                self._tts_thread = threading.Thread(target=self._tts_worker, daemon=True)
+                self._tts_thread.start()
             except Exception as e:
                 logger.warning(f"Failed to initialize TTS: {e}")
                 self.tts_engine = None
+
+    def _tts_worker(self) -> None:
+        """Background worker: serializes TTS and uses fresh engine per message."""
+        while not self._tts_stop.is_set():
+            try:
+                message = self._tts_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+
+            if message is None:
+                continue
+
+            try:
+                engine = pyttsx3.init()
+                engine.setProperty('rate', 150)
+                engine.setProperty('volume', 0.9)
+                engine.say(message)
+                engine.runAndWait()
+                logger.info(f"Spoke TTS: {message}")
+            except Exception as err:
+                logger.error(f"Error speaking: {err}")
     
     def play_sound(self, sound_file: str) -> bool:
         """Play a sound file
@@ -91,15 +122,38 @@ class AlertSystem:
         """
         if not message:
             return False
+
+        # Windows-specific robust TTS path: isolated PowerShell process per utterance.
+        # This avoids pyttsx3/SAPI run-loop deadlocks that can suppress repeated alerts.
+        if platform.system() == "Windows":
+            try:
+                escaped = message.replace("'", "''")
+                ps_cmd = (
+                    "Add-Type -AssemblyName System.Speech; "
+                    "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+                    "$s.Rate = 0; $s.Volume = 100; "
+                    f"$s.Speak('{escaped}')"
+                )
+                creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                subprocess.Popen(
+                    ["powershell", "-NoProfile", "-Command", ps_cmd],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=creationflags,
+                )
+                logger.info(f"Queued TTS: {message}")
+                return True
+            except Exception as e:
+                logger.error(f"Error speaking via PowerShell TTS: {e}")
+                return False
         
         if not self.tts_engine:
             logger.warning("TTS engine not initialized, cannot speak")
             return False
         
         try:
-            self.tts_engine.say(message)
-            self.tts_engine.runAndWait()
-            logger.debug(f"Speaking: {message}")
+            self._tts_queue.put_nowait(message)
+            logger.info(f"Queued TTS: {message}")
             return True
         
         except Exception as e:
@@ -141,6 +195,17 @@ class AlertSystem:
     
     def cleanup(self) -> None:
         """Clean up resources"""
+        self._tts_stop.set()
+        try:
+            self._tts_queue.put_nowait(None)
+        except Exception:
+            pass
+        if self._tts_thread and self._tts_thread.is_alive():
+            try:
+                self._tts_thread.join(timeout=1.0)
+            except Exception:
+                pass
+
         self.stop_audio()
         if self.tts_engine:
             try:

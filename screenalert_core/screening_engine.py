@@ -5,6 +5,7 @@ import threading
 import time
 import os
 import re
+import string
 import tkinter as tk
 from datetime import datetime
 from typing import Dict, Optional, List, Callable
@@ -136,29 +137,35 @@ class ScreenAlertEngine:
             logger.error(f"Error loading thumbnail from config: {e}", exc_info=True)
             return False
     
-    def add_thumbnail(self, window_title: str, window_hwnd: int) -> Optional[str]:
+    def add_thumbnail(self, window_title: str, window_hwnd: int,
+                      window_class: str = None, window_size: tuple = None,
+                      monitor_id: int = None) -> Optional[str]:
         """Add new thumbnail for window
         
         Args:
             window_title: Window title
             window_hwnd: Window handle
+            window_class: Optional window class hint from selector
+            window_size: Optional window size hint from selector
+            monitor_id: Optional monitor index hint from selector
         
         Returns:
             Thumbnail ID or None if failed
         """
         try:
-            # Capture window metadata for identity validation on reconnect
+            # Capture window metadata for identity validation on reconnect.
+            # Prefer explicit values from selector, fill any missing values from live metadata.
             metadata = self.window_manager.get_window_metadata(window_hwnd)
-            window_class = metadata.get('class', '') if metadata else ''
-            window_size = metadata.get('size') if metadata else None
-            monitor_id = metadata.get('monitor_id') if metadata else None
+            resolved_window_class = window_class or (metadata.get('class', '') if metadata else '')
+            resolved_window_size = window_size or (metadata.get('size') if metadata else None)
+            resolved_monitor_id = monitor_id if monitor_id is not None else (metadata.get('monitor_id') if metadata else None)
             
             # Create config entry with metadata
             thumbnail_id = self.config.add_thumbnail(
                 window_title, window_hwnd,
-                window_class=window_class,
-                window_size=window_size,
-                monitor_id=monitor_id
+                window_class=resolved_window_class,
+                window_size=resolved_window_size,
+                monitor_id=resolved_monitor_id
             )
             
             # Get config
@@ -232,7 +239,7 @@ class ScreenAlertEngine:
                 "change_detection_method": self.config.get_change_detection_method(),
                 "enabled": True,
                 "sound_file": self.config.get_default_sound_file(),
-                "tts_message": self.config.get_default_tts_message()
+                "tts_message": "Alert {window} {region_name}"
             }
             
             region_id = self.config.add_region_to_thumbnail(thumbnail_id, region_config)
@@ -247,6 +254,32 @@ class ScreenAlertEngine:
         except Exception as e:
             logger.error(f"Error adding region: {e}")
             return None
+
+    def _render_tts_message(self, template: str, window_title: str, region_name: str) -> str:
+        """Render TTS template with supported placeholders.
+
+        Supported placeholders:
+            {window}
+            {region_name}
+
+        Unknown placeholders are preserved as literals.
+        """
+        if not template:
+            return ""
+
+        mapping = {
+            "window": window_title or "Unknown Window",
+            "region_name": region_name or "Region",
+        }
+
+        class _SafeDict(dict):
+            def __missing__(self, key):
+                return "{" + key + "}"
+
+        try:
+            return string.Formatter().vformat(template, (), _SafeDict(mapping)).strip()
+        except Exception:
+            return template.strip()
     
     def start(self) -> bool:
         """Start the engine"""
@@ -467,7 +500,12 @@ class ScreenAlertEngine:
                                 if region:
                                     config = region.config
                                     sound_file = config.get("sound_file", "")
-                                    tts_message = config.get("tts_message", "")
+                                    tts_template = config.get("tts_message", "") or self.config.get_default_tts_message()
+                                    tts_message = self._render_tts_message(
+                                        tts_template,
+                                        thumbnail_config.get("window_title", "Unknown"),
+                                        config.get("name", "Region"),
+                                    )
 
                                     # Optional: suppress alerts during fullscreen apps
                                     if self.config.get_suppress_fullscreen() and self.window_manager.is_foreground_fullscreen():
@@ -481,6 +519,12 @@ class ScreenAlertEngine:
                                     else:
                                         play_sound = sound_file if self.config.get_enable_sound() else ""
                                         play_tts = tts_message if self.config.get_enable_tts() else ""
+                                        logger.info(
+                                            "Dispatching alert media: sound=%s tts=%s message=%s",
+                                            bool(play_sound),
+                                            bool(play_tts),
+                                            play_tts if play_tts else ""
+                                        )
                                         self.alert_system.play_alert(play_sound, play_tts)
 
                                     # Optional: capture screenshot on alert

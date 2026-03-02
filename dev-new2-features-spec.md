@@ -13,6 +13,16 @@ Implementation status for this branch: **Complete**.
 - Core automated tests are present and passing for maintained tests under `tests/`.
 - Known non-pytest-compatible legacy root test script (`test_api_integration.py`) remains outside the maintained `tests/` suite.
 
+### Post-completion Addendum (dev-new3 integration)
+
+Follow-on UX and reliability work was implemented under `dev-new3-next-level-spec.md` and is now part of the active branch behavior:
+
+- Main action controls moved from top-button strip into menu/context-menu workflows.
+- Region cards include explicit `Name:` and `Alert Text:` fields with per-region TTS template persistence.
+- Add Window dialog was redesigned to show inline title + indented size rows, remove the separate details panel, and persist filter state.
+- Window selection metadata (`window_class`, `window_size`, `monitor_id`) is persisted for stronger reconnect matching.
+- Windows TTS reliability decision: switched to isolated `System.Speech` PowerShell invocation for each utterance to avoid repeated-alert pyttsx3/SAPI lockups.
+
 ### Latest Stabilization Updates (March 2, 2026)
 
 The following runtime issues were reproduced and fixed after the initial completion pass:
@@ -178,6 +188,7 @@ The following runtime issues were reproduced and fixed after the initial complet
 
 - Maintained test suite: `10 passed` (`pytest -q tests`)
 - Added test coverage for plugin hooks, update checker, config features, image detection, and cache/temp cleanup
+- Revalidated after dev-new3 stabilization updates: `10 passed` (`pytest -q tests`)
 
 ---
 
