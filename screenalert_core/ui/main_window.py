@@ -16,6 +16,7 @@ from screenalert_core.ui.window_selector_dialog import WindowSelectorDialog
 from screenalert_core.ui.region_selection_overlay import RegionSelectionOverlay
 from screenalert_core.ui.settings_dialog import SettingsDialog
 from screenalert_core.ui.tooltip import ToolTip
+from screenalert_core.ui.auto_hide_scrollbar import AutoHideScrollbar
 from screenalert_core.core.image_processor import ImageProcessor
 from screenalert_core.utils.update_checker import check_for_updates
 from screenalert_core.utils.constants import LOGS_DIR
@@ -33,6 +34,7 @@ class ScreenAlertMainWindow:
         self.window_manager = engine.window_manager
         self.thumbnail_map = {}  # hwnd -> thumbnail_id mapping
         self.selected_thumbnail_id: Optional[str] = None  # Currently selected window
+        self.selected_region_id: Optional[str] = None
         self.region_statuses: Dict[str, Dict[str, str]] = {}  # thumbnail_id -> region_id -> status
         self.region_widgets: Dict[str, Dict[str, tk.Widget]] = {}  # region_id -> widgets
         self.region_photos: Dict[str, ImageTk.PhotoImage] = {}  # region_id -> image
@@ -212,12 +214,13 @@ class ScreenAlertMainWindow:
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self._on_exit)
 
-        edit_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Edit", menu=edit_menu)
-        edit_menu.add_command(label="Add Window", command=self._add_window)
-        edit_menu.add_command(label="Pause All", command=self._toggle_pause)
-        edit_menu.add_separator()
-        edit_menu.add_command(label="Settings...", command=self._show_settings)
+        self.edit_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Edit", menu=self.edit_menu)
+        self.edit_menu.add_command(label="Add Window", command=self._add_window)
+        self.edit_menu.add_command(label="Pause All", command=self._toggle_pause)
+        self.edit_menu.add_command(label="Reconnect All Windows", command=self._reconnect_all_windows)
+        self.edit_menu.add_separator()
+        self.edit_menu.add_command(label="Settings...", command=self._show_settings)
         
         help_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Help", menu=help_menu)
@@ -232,27 +235,12 @@ class ScreenAlertMainWindow:
         main_frame.columnconfigure(0, weight=1)
         main_frame.rowconfigure(0, weight=1)
         
-        # Top status panel
-        control_frame = ttk.Frame(main_frame)
-        control_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        self.aggregate_status_label = tk.Label(
-            control_frame,
-            text="Overall: N/A",
-            bg="#2c3e50",
-            fg="white",
-            padx=10,
-            pady=4,
-            relief=tk.RIDGE,
-            bd=1,
-        )
-        self.aggregate_status_label.pack(side=tk.RIGHT, padx=(5, 10))
-        
         # Content area
         content_frame = ttk.Frame(main_frame)
-        content_frame.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
+        content_frame.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
         content_frame.columnconfigure(1, weight=1)
         content_frame.rowconfigure(0, weight=1)
-        main_frame.rowconfigure(1, weight=1)
+        main_frame.rowconfigure(0, weight=1)
         
         # Left: tree of windows/regions
         tree_frame = ttk.LabelFrame(content_frame, text="Windows", padding=8)
@@ -263,49 +251,53 @@ class ScreenAlertMainWindow:
         
         self.window_tree = ttk.Treeview(tree_frame, show="tree")
         self.window_tree.grid(row=0, column=0, sticky="nsew")
-        tree_scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.window_tree.yview)
-        tree_scroll.grid(row=0, column=1, sticky="ns")
-        self.window_tree.configure(yscrollcommand=tree_scroll.set)
+        self.tree_scroll = AutoHideScrollbar(tree_frame, orient=tk.VERTICAL, command=self.window_tree.yview)
+        self.tree_scroll.grid(row=0, column=1, sticky="ns")
+        self.window_tree.configure(yscrollcommand=self.tree_scroll.set)
         self.window_tree.bind("<<TreeviewSelect>>", self._on_tree_select)
         self.window_tree.bind("<Button-3>", self._on_tree_right_click)
         
         # Right: window info + region cards
-        detail_frame = ttk.Frame(content_frame)
-        detail_frame.grid(row=0, column=1, sticky="nsew")
-        detail_frame.rowconfigure(1, weight=1)
-        detail_frame.columnconfigure(0, weight=1)
+        self.detail_frame = ttk.Frame(content_frame)
+        self.detail_frame.grid(row=0, column=1, sticky="nsew")
+        self.detail_frame.rowconfigure(1, weight=1)
+        self.detail_frame.columnconfigure(0, weight=1)
         
-        info_frame = ttk.LabelFrame(detail_frame, text="Window Info", padding=8)
-        info_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        info_frame.columnconfigure(1, weight=1)
+        self.info_frame = ttk.LabelFrame(self.detail_frame, text="Window Info", padding=6)
+        self.info_frame.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        self.info_frame.columnconfigure(1, weight=1)
         
-        ttk.Label(info_frame, text="Title:").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        ttk.Label(self.info_frame, text="Title:").grid(row=0, column=0, sticky="w", padx=(0, 6))
         self.window_title_var = tk.StringVar(value="")
-        ttk.Label(info_frame, textvariable=self.window_title_var).grid(row=0, column=1, sticky="w")
+        ttk.Label(self.info_frame, textvariable=self.window_title_var).grid(row=0, column=1, sticky="w")
         
-        ttk.Label(info_frame, text="HWND:").grid(row=1, column=0, sticky="w", padx=(0, 6))
+        ttk.Label(self.info_frame, text="HWND:").grid(row=1, column=0, sticky="w", padx=(0, 6))
         self.window_hwnd_var = tk.StringVar(value="")
-        ttk.Label(info_frame, textvariable=self.window_hwnd_var).grid(row=1, column=1, sticky="w")
+        ttk.Label(self.info_frame, textvariable=self.window_hwnd_var).grid(row=1, column=1, sticky="w")
         
-        ttk.Label(info_frame, text="Regions:").grid(row=2, column=0, sticky="w", padx=(0, 6))
+        ttk.Label(self.info_frame, text="Regions:").grid(row=2, column=0, sticky="w", padx=(0, 6))
         self.window_region_count_var = tk.StringVar(value="0")
-        ttk.Label(info_frame, textvariable=self.window_region_count_var).grid(row=2, column=1, sticky="w")
+        ttk.Label(self.info_frame, textvariable=self.window_region_count_var).grid(row=2, column=1, sticky="w")
+
+        ttk.Label(self.info_frame, text="Size:").grid(row=3, column=0, sticky="w", padx=(0, 6))
+        self.window_size_var = tk.StringVar(value="")
+        ttk.Label(self.info_frame, textvariable=self.window_size_var).grid(row=3, column=1, sticky="w")
         
-        self._preview_placeholder = ImageTk.PhotoImage(Image.new("RGB", (240, 135), "#1a1a1a"))
-        self.window_preview_label = tk.Label(info_frame, bg="#1a1a1a",
+        self._preview_placeholder = ImageTk.PhotoImage(Image.new("RGB", (180, 100), "#1a1a1a"))
+        self.window_preview_label = tk.Label(self.info_frame, bg="#1a1a1a",
                                              image=self._preview_placeholder)
-        self.window_preview_label.grid(row=0, column=2, rowspan=3, sticky="e", padx=(10, 0))
+        self.window_preview_label.grid(row=0, column=2, rowspan=4, sticky="e", padx=(10, 0))
         
-        regions_frame = ttk.LabelFrame(detail_frame, text="Regions", padding=8)
-        regions_frame.grid(row=1, column=0, sticky="nsew")
-        regions_frame.rowconfigure(0, weight=1)
-        regions_frame.columnconfigure(0, weight=1)
+        self.regions_frame = ttk.LabelFrame(self.detail_frame, text="Regions", padding=8)
+        self.regions_frame.grid(row=1, column=0, sticky="nsew")
+        self.regions_frame.rowconfigure(0, weight=1)
+        self.regions_frame.columnconfigure(0, weight=1)
         
-        self.region_canvas = tk.Canvas(regions_frame, bg="#202020", highlightthickness=0)
+        self.region_canvas = tk.Canvas(self.regions_frame, bg="#202020", highlightthickness=0)
         self.region_canvas.grid(row=0, column=0, sticky="nsew")
-        region_scroll = ttk.Scrollbar(regions_frame, orient=tk.VERTICAL, command=self.region_canvas.yview)
-        region_scroll.grid(row=0, column=1, sticky="ns")
-        self.region_canvas.configure(yscrollcommand=region_scroll.set)
+        self.region_scroll = AutoHideScrollbar(self.regions_frame, orient=tk.VERTICAL, command=self.region_canvas.yview)
+        self.region_scroll.grid(row=0, column=1, sticky="ns")
+        self.region_canvas.configure(yscrollcommand=self.region_scroll.set)
         
         self.regions_inner_frame = tk.Frame(self.region_canvas, bg="#202020")
         self.region_canvas_window = self.region_canvas.create_window(0, 0, window=self.regions_inner_frame, anchor="nw")
@@ -313,9 +305,26 @@ class ScreenAlertMainWindow:
         
         # Status bar
         self.status_var = tk.StringVar(value="Ready")
-        status_bar = ttk.Label(self.root, textvariable=self.status_var, 
-                             relief=tk.SUNKEN, anchor="w")
-        status_bar.pack(fill=tk.X, side=tk.BOTTOM, padx=5, pady=5)
+        self.aggregate_status_var = tk.StringVar(value="Overall: N/A")
+        self._update_pause_menu_labels()
+
+        status_bar_frame = tk.Frame(self.root, bd=1, relief=tk.SUNKEN)
+        status_bar_frame.pack(fill=tk.X, side=tk.BOTTOM, padx=5, pady=5)
+
+        self.status_text_label = ttk.Label(status_bar_frame, textvariable=self.status_var, anchor="w")
+        self.status_text_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 4), pady=2)
+
+        self.aggregate_status_badge = tk.Label(
+            status_bar_frame,
+            textvariable=self.aggregate_status_var,
+            bg="#2c3e50",
+            fg="white",
+            padx=10,
+            pady=2,
+            relief=tk.RIDGE,
+            bd=1,
+        )
+        self.aggregate_status_badge.pack(side=tk.RIGHT, padx=(4, 4), pady=2)
 
         # DPI awareness (Windows only)
         try:
@@ -331,6 +340,7 @@ class ScreenAlertMainWindow:
         """Handle region canvas resize"""
         self.region_canvas.configure(scrollregion=self.region_canvas.bbox("all"))
         self.region_canvas.itemconfig(self.region_canvas_window, width=event.width)
+        self.region_scroll.set(*self.region_canvas.yview())
 
     
     def _add_window(self) -> None:
@@ -406,9 +416,18 @@ class ScreenAlertMainWindow:
                 # Pause
                 self.engine.set_paused(True)
                 self.status_var.set("Monitoring paused")
+            self._update_pause_menu_labels()
         except Exception as e:
             logger.error(f"Error toggling pause: {e}", exc_info=True)
-    
+
+    def _update_pause_menu_labels(self) -> None:
+        """Update pause/resume label in menu items based on engine state."""
+        label = "Resume All" if self.engine.paused else "Pause All"
+        try:
+            self.edit_menu.entryconfig(1, label=label)
+        except Exception:
+            pass
+
     def _show_settings(self) -> None:
         """Show settings dialog"""
         try:
@@ -564,9 +583,16 @@ class ScreenAlertMainWindow:
             region_name = region.get('name', 'Unknown')
             
             try:
+                self.engine.monitoring_engine.remove_region(region_id)
                 self.config.remove_region(thumbnail_id, region_id)
+                self.config.save()
                 if thumbnail_id in self.region_statuses:
                     self.region_statuses[thumbnail_id].pop(region_id, None)
+                self.region_to_thumbnail.pop(region_id, None)
+                self.pending_status_changes.pop(region_id, None)
+                self.dirty_regions.pop(region_id, None)
+                if self.selected_region_id == region_id:
+                    self.selected_region_id = None
                 self.status_var.set(f"Removed region '{region_name}' from {title}")
                 self._update_thumbnail_list()
                 dialog.destroy()
@@ -673,7 +699,8 @@ class ScreenAlertMainWindow:
         menu = tk.Menu(self.root, tearoff=0)
         if kind == "all":
             menu.add_command(label="Add Window", command=self._add_window)
-            menu.add_command(label="Pause All", command=self._toggle_pause)
+            menu.add_command(label=("Resume All" if self.engine.paused else "Pause All"), command=self._toggle_pause)
+            menu.add_command(label="Reconnect All Windows", command=self._reconnect_all_windows)
             menu.add_separator()
             can_remove = bool(self.selected_thumbnail_id and self.config.get_thumbnail(self.selected_thumbnail_id))
             menu.add_command(
@@ -683,6 +710,7 @@ class ScreenAlertMainWindow:
             )
         elif kind == "window":
             menu.add_command(label="Add Region", command=self._add_region)
+            menu.add_command(label="Reconnect Window", command=self._reconnect_selected_window)
             menu.add_command(label="Remove All Regions", command=self._remove_all_regions)
             menu.add_separator()
             menu.add_command(label="Remove Window", command=self._remove_thumbnail)
@@ -719,11 +747,16 @@ class ScreenAlertMainWindow:
         if not msgbox.askyesno("Confirm", f"Remove region '{region_name}'?"):
             return
 
+        self.engine.monitoring_engine.remove_region(region_id)
         self.config.remove_region(thumbnail_id, region_id)
         self.config.save()
         if thumbnail_id in self.region_statuses:
             self.region_statuses[thumbnail_id].pop(region_id, None)
         self.region_to_thumbnail.pop(region_id, None)
+        self.pending_status_changes.pop(region_id, None)
+        self.dirty_regions.pop(region_id, None)
+        if self.selected_region_id == region_id:
+            self.selected_region_id = None
         self._update_thumbnail_list()
         self.status_var.set(f"Removed region '{region_name}'")
 
@@ -756,6 +789,53 @@ class ScreenAlertMainWindow:
         self.config.save()
         self._update_thumbnail_list()
         self.status_var.set(f"Removed all regions from {title}")
+
+    def _reconnect_all_windows(self) -> None:
+        """Manually trigger strict reconnect attempts for all windows."""
+        try:
+            result = self.engine.reconnect_all_windows()
+            self.engine.cache_manager.invalidate_all()
+            self._update_thumbnail_list()
+
+            self.status_var.set(
+                "Reconnect complete: "
+                f"{result.get('reconnected', 0)} reconnected, "
+                f"{result.get('failed', 0)} failed, "
+                f"{result.get('already_valid', 0)} already valid"
+            )
+        except Exception as error:
+            logger.error(f"Error reconnecting windows: {error}", exc_info=True)
+            msgbox.showerror("Reconnect", f"Reconnect failed: {error}")
+
+    def _reconnect_selected_window(self) -> None:
+        """Manually trigger strict reconnect for currently selected window."""
+        thumbnail_id = self.selected_thumbnail_id
+        if not thumbnail_id:
+            self.status_var.set("Select a window first")
+            return
+
+        thumbnail = self.config.get_thumbnail(thumbnail_id)
+        if not thumbnail:
+            self.status_var.set("Selected window not found")
+            return
+
+        title = thumbnail.get("window_title", "Unknown")
+        try:
+            state = self.engine.reconnect_window(thumbnail_id)
+            self.engine.cache_manager.invalidate_all()
+            self._update_thumbnail_list()
+
+            if state == "reconnected":
+                self.status_var.set(f"Reconnected: {title}")
+            elif state == "already_valid":
+                self.status_var.set(f"Already connected: {title}")
+            elif state == "failed":
+                self.status_var.set(f"Reconnect failed: {title}")
+            else:
+                self.status_var.set(f"Window not found: {title}")
+        except Exception as error:
+            logger.error(f"Error reconnecting window '{title}': {error}", exc_info=True)
+            msgbox.showerror("Reconnect", f"Reconnect failed: {error}")
     
     def _update_thumbnail_list(self) -> None:
         """Update window tree display"""
@@ -821,9 +901,14 @@ class ScreenAlertMainWindow:
         self.show_all_regions = False
         if selected_id in self.region_to_thumbnail:
             thumbnail_id = self.region_to_thumbnail[selected_id]
+            self.selected_region_id = selected_id
         else:
             thumbnail_id = selected_id
+            self.selected_region_id = None
         if thumbnail_id == self.selected_thumbnail_id and not self.show_all_regions:
+            thumbnail = self.config.get_thumbnail(thumbnail_id)
+            if thumbnail:
+                self._render_window_detail(thumbnail)
             return
         self._select_thumbnail(thumbnail_id)
 
@@ -848,14 +933,32 @@ class ScreenAlertMainWindow:
         if thumbnail:
             title = thumbnail.get("window_title", "Unknown")
             regions = thumbnail.get("monitored_regions", [])
-            self.status_var.set(f"Selected: {title} ({len(regions)} regions)")
+            if self.selected_region_id and self.config.get_region(thumbnail_id, self.selected_region_id):
+                region_name = self.config.get_region(thumbnail_id, self.selected_region_id).get("name", "Region")
+                self.status_var.set(f"Selected: {title} -> {region_name}")
+            else:
+                self.status_var.set(f"Selected: {title} ({len(regions)} regions)")
             self._render_window_detail(thumbnail)
             logger.debug(f"Selected thumbnail: {title}")
 
-    def _get_window_image_for_ui(self, hwnd: Optional[int]):
-        """Get image for UI previews with cache-first, capture fallback."""
+    def _get_window_image_for_ui(self, hwnd: Optional[int], thumbnail: Optional[Dict] = None):
+        """Get image for UI previews with strict identity validation."""
         if not hwnd:
             return None
+
+        if thumbnail:
+            expected_title = thumbnail.get("window_title")
+            expected_class = thumbnail.get("window_class") or None
+            expected_size = tuple(thumbnail.get("window_size")) if thumbnail.get("window_size") else None
+            expected_monitor = thumbnail.get("monitor_id")
+            if not self.window_manager.validate_window_identity(
+                hwnd,
+                expected_title=expected_title,
+                expected_class=expected_class,
+                expected_monitor_id=expected_monitor,
+                expected_size=expected_size,
+            ):
+                return None
 
         window_image = self.engine.cache_manager.get(hwnd)
         if window_image is not None:
@@ -992,19 +1095,25 @@ class ScreenAlertMainWindow:
         self.region_photos.clear()
         
         if self.show_all_regions or not thumbnail:
+            self.info_frame.grid_remove()
+            self.regions_frame.grid(row=0, column=0, sticky="nsew")
+            self.detail_frame.rowconfigure(0, weight=1)
+            self.detail_frame.rowconfigure(1, weight=0)
             thumbnails = self.config.get_all_thumbnails()
             total_regions = sum(len(t.get("monitored_regions", [])) for t in thumbnails)
             self.window_title_var.set("All windows")
             self.window_hwnd_var.set("")
             self.window_region_count_var.set(str(total_regions))
+            self.window_size_var.set("")
 
             preview_image = None
             if len(thumbnails) == 1:
-                preview_hwnd = thumbnails[0].get("window_hwnd")
-                preview_image = self._get_window_image_for_ui(preview_hwnd)
+                selected_thumb = thumbnails[0]
+                preview_hwnd = selected_thumb.get("window_hwnd")
+                preview_image = self._get_window_image_for_ui(preview_hwnd, selected_thumb)
             if preview_image:
                 preview = preview_image.copy()
-                preview.thumbnail((240, 135), Image.Resampling.LANCZOS)
+                preview.thumbnail((180, 100), Image.Resampling.LANCZOS)
                 self.window_preview_photo = ImageTk.PhotoImage(preview)
                 self.window_preview_label.config(image=self.window_preview_photo, text="")
             else:
@@ -1016,7 +1125,7 @@ class ScreenAlertMainWindow:
                 if not thumb_id:
                     continue
                 hwnd = thumb.get("window_hwnd")
-                window_image = self._get_window_image_for_ui(hwnd)
+                window_image = self._get_window_image_for_ui(hwnd, thumb)
                 for region in thumb.get("monitored_regions", []):
                     region_id = region.get("id")
                     if not region_id:
@@ -1025,6 +1134,10 @@ class ScreenAlertMainWindow:
                                              window_title=thumb.get("window_title", "Unknown"))
                     row += 1
         else:
+            self.info_frame.grid()
+            self.regions_frame.grid(row=1, column=0, sticky="nsew")
+            self.detail_frame.rowconfigure(0, weight=0)
+            self.detail_frame.rowconfigure(1, weight=1)
             thumbnail_id = thumbnail.get("id")
             title = thumbnail.get("window_title", "Unknown")
             hwnd = thumbnail.get("window_hwnd")
@@ -1033,18 +1146,29 @@ class ScreenAlertMainWindow:
             self.window_title_var.set(title)
             self.window_hwnd_var.set(str(hwnd) if hwnd else "")
             self.window_region_count_var.set(str(len(regions)))
+            size = thumbnail.get("window_size")
+            if isinstance(size, (list, tuple)) and len(size) == 2:
+                self.window_size_var.set(f"{size[0]}x{size[1]}")
+            else:
+                self.window_size_var.set("")
             
-            window_image = self._get_window_image_for_ui(hwnd)
+            window_image = self._get_window_image_for_ui(hwnd, thumbnail)
             
             if window_image:
                 preview = window_image.copy()
-                preview.thumbnail((240, 135), Image.Resampling.LANCZOS)
+                preview.thumbnail((180, 100), Image.Resampling.LANCZOS)
                 self.window_preview_photo = ImageTk.PhotoImage(preview)
                 self.window_preview_label.config(image=self.window_preview_photo, text="")
             else:
                 self.window_preview_label.config(image=self._preview_placeholder, text="No preview", fg="white", compound="center")
             
-            for idx, region in enumerate(regions):
+            regions_to_render = regions
+            if self.selected_region_id:
+                selected = [r for r in regions if r.get("id") == self.selected_region_id]
+                if selected:
+                    regions_to_render = selected
+
+            for idx, region in enumerate(regions_to_render):
                 region_id = region.get("id")
                 if not region_id:
                     continue
@@ -1068,6 +1192,7 @@ class ScreenAlertMainWindow:
                 self.region_canvas.configure(scrollregion=bbox)
             else:
                 self.region_canvas.configure(scrollregion=(0, 0, 0, 0))
+            self.region_scroll.set(*self.region_canvas.yview())
         except Exception as error:
             logger.debug(f"Unable to refresh detail scrollregion: {error}")
 
@@ -1076,6 +1201,7 @@ class ScreenAlertMainWindow:
         self.window_title_var.set("")
         self.window_hwnd_var.set("")
         self.window_region_count_var.set("0")
+        self.window_size_var.set("")
         self.window_preview_label.config(image=self._preview_placeholder, text="No window selected", fg="white", compound="center")
         for widget in self.regions_inner_frame.winfo_children():
             widget.destroy()
@@ -1086,30 +1212,25 @@ class ScreenAlertMainWindow:
     def _create_region_card(self, thumbnail_id: str, region_id: str, region: Dict,
                              window_image, row: int, window_title: Optional[str] = None) -> None:
         """Create a region card row"""
-        card = tk.Frame(self.regions_inner_frame, bg="#202020", bd=1, relief=tk.SOLID)
-        card.grid(row=row, column=0, sticky="ew", pady=6, padx=4)
-        card.columnconfigure(3, weight=1)
+        card = tk.Frame(self.regions_inner_frame, bg="#202020", bd=1, relief=tk.RIDGE)
+        card.grid(row=row, column=0, sticky="ew", pady=2, padx=4)
+        card.columnconfigure(2, weight=1)
         
-        if window_title and self.show_all_regions:
-            header = tk.Label(card, text=window_title, bg="#202020", fg="#bdbdbd")
-            header.grid(row=0, column=0, columnspan=5, sticky="w", padx=10, pady=(6, 0))
-            content_row = 1
-        else:
-            content_row = 0
+        content_row = 0
         
         # Left status pill
         status_pill = tk.Label(card, text="OK", bg="#2ecc71", fg="black",
-                               width=10, height=4)
-        status_pill.grid(row=content_row, column=0, rowspan=2, sticky="ns", padx=(6, 0), pady=6)
+                               width=7, height=2)
+        status_pill.grid(row=content_row, column=0, rowspan=2, sticky="ns", padx=(4, 0), pady=3)
         
         # Region image
         image_label = tk.Label(card, bg="#1a1a1a")
-        image_label.grid(row=content_row, column=1, rowspan=2, sticky="w", padx=8, pady=6)
+        image_label.grid(row=content_row, column=1, rowspan=2, sticky="w", padx=6, pady=3)
         
         if window_image:
             try:
                 region_image = ImageProcessor.crop_region(window_image, region.get("rect", (0, 0, 0, 0)))
-                region_image.thumbnail((360, 180), Image.Resampling.LANCZOS)
+                region_image.thumbnail((220, 96), Image.Resampling.LANCZOS)
                 photo = ImageTk.PhotoImage(region_image)
                 self.region_photos[region_id] = photo
                 image_label.config(image=photo)
@@ -1117,44 +1238,47 @@ class ScreenAlertMainWindow:
                 logger.error(f"Error creating region image {region_id}: {e}", exc_info=True)
                 image_label.config(text="No image", fg="white")
         else:
-            image_label.config(text="No image", fg="white")
+            image_label.config(text="Not Available", fg="white", bg="#0078D7")
         
         # Region form fields (name + alert text)
         form_frame = tk.Frame(card, bg="#202020")
-        form_frame.grid(row=content_row, column=2, rowspan=2, sticky="nw", padx=(0, 10), pady=(10, 4))
+        form_frame.grid(row=content_row, column=2, rowspan=2, sticky="nsew", padx=(0, 8), pady=(3, 2))
 
-        tk.Label(form_frame, text="Name:", bg="#202020", fg="#bdbdbd").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        row_offset = 0
+        if window_title:
+            tk.Label(form_frame, text="Window:", bg="#202020", fg="#bdbdbd").grid(row=0, column=0, sticky="w", padx=(0, 6))
+            tk.Label(form_frame, text=window_title, bg="#202020", fg="#bdbdbd").grid(row=0, column=1, sticky="w")
+            row_offset = 1
+
+        tk.Label(form_frame, text="Name:", bg="#202020", fg="#bdbdbd").grid(row=row_offset, column=0, sticky="w", padx=(0, 6), pady=(2 if row_offset else 0, 0))
         name_var = tk.StringVar(value=region.get("name", "Region"))
-        name_entry = ttk.Entry(form_frame, textvariable=name_var, width=30)
-        name_entry.grid(row=0, column=1, sticky="w")
+        name_entry = ttk.Entry(form_frame, textvariable=name_var, width=24)
+        name_entry.grid(row=row_offset, column=1, sticky="w", pady=(2 if row_offset else 0, 0))
         name_entry.bind("<Return>", lambda e: self._save_region_name(thumbnail_id, region_id, name_var))
         name_entry.bind("<FocusOut>", lambda e: self._save_region_name(thumbnail_id, region_id, name_var))
 
-        tk.Label(form_frame, text="Alert Text:", bg="#202020", fg="#bdbdbd").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=(6, 0))
+        tk.Label(form_frame, text="Alert Text:", bg="#202020", fg="#bdbdbd").grid(row=row_offset + 1, column=0, sticky="w", padx=(0, 6), pady=(3, 0))
         alert_text_var = tk.StringVar(value=region.get("tts_message", self.config.get_default_tts_message()))
-        alert_text_entry = ttk.Entry(form_frame, textvariable=alert_text_var, width=30)
-        alert_text_entry.grid(row=1, column=1, sticky="w", pady=(6, 0))
+        alert_text_entry = ttk.Entry(form_frame, textvariable=alert_text_var, width=24)
+        alert_text_entry.grid(row=row_offset + 1, column=1, sticky="w", pady=(3, 0))
         alert_text_entry.bind("<Return>", lambda e: self._save_region_alert_text(thumbnail_id, region_id, alert_text_var))
         alert_text_entry.bind("<FocusOut>", lambda e: self._save_region_alert_text(thumbnail_id, region_id, alert_text_var))
         
-        # Spacer
-        spacer = tk.Frame(card, bg="#202020")
-        spacer.grid(row=content_row, column=3, rowspan=2, sticky="nsew")
-        
         # Right control panel
         controls_panel = tk.Frame(card, bg="#1a1a1a", bd=1, relief=tk.RIDGE)
-        controls_panel.grid(row=content_row, column=4, rowspan=2, sticky="e", padx=(0, 8), pady=6)
+        controls_panel.grid(row=content_row, column=3, rowspan=2, sticky="e", padx=(0, 6), pady=3)
         
-        pause_btn = ttk.Button(controls_panel, text="Pause", command=lambda: self._toggle_region_pause(region_id))
-        pause_btn.pack(padx=8, pady=(8, 4))
+        pause_btn = ttk.Button(controls_panel, text="Pause", width=9, command=lambda: self._toggle_region_pause(region_id))
+        pause_btn.pack(padx=6, pady=(4, 2))
 
         enabled_now = bool(region.get("enabled", True))
         disable_btn = ttk.Button(
             controls_panel,
             text=("Disable" if enabled_now else "Enable"),
+            width=9,
             command=lambda: self._toggle_region_enabled(thumbnail_id, region_id)
         )
-        disable_btn.pack(padx=8, pady=(0, 4))
+        disable_btn.pack(padx=6, pady=(0, 3))
         
         self.region_widgets[region_id] = {
             "status_pill": status_pill,
@@ -1167,8 +1291,10 @@ class ScreenAlertMainWindow:
         
         if not window_image:
             self._set_region_status(thumbnail_id, region_id, "unavailable")
+            self._apply_region_status(thumbnail_id, region_id)
         elif not enabled_now:
             self._set_region_status(thumbnail_id, region_id, "disabled")
+            self._apply_region_status(thumbnail_id, region_id)
         else:
             self._apply_region_status(thumbnail_id, region_id)
 
@@ -1252,7 +1378,7 @@ class ScreenAlertMainWindow:
         elif status == "paused":
             pill.config(text=status_text, bg="#3498db", fg="white")
         elif status == "unavailable":
-            pill.config(text=status_text, bg="#2c3e50", fg="white")
+            pill.config(text=status_text, bg="#3498db", fg="white")
         elif status == "disabled":
             pill.config(text=status_text, bg="#7f8c8d", fg="white")
         else:
@@ -1297,12 +1423,30 @@ class ScreenAlertMainWindow:
         states: List[str] = []
         for thumbnail in self.config.get_all_thumbnails():
             thumb_enabled = bool(thumbnail.get("enabled", True))
+            hwnd = thumbnail.get("window_hwnd")
+            title = thumbnail.get("window_title")
+            expected_class = thumbnail.get("window_class") or None
+            expected_size = tuple(thumbnail["window_size"]) if thumbnail.get("window_size") else None
+            expected_monitor = thumbnail.get("monitor_id")
+            window_available = (
+                bool(hwnd)
+                and self.window_manager.validate_window_identity(
+                    hwnd,
+                    expected_title=title,
+                    expected_class=expected_class,
+                    expected_monitor_id=expected_monitor,
+                    expected_size=expected_size,
+                )
+            )
             for region in thumbnail.get("monitored_regions", []):
                 region_id = region.get("id")
                 if not region_id:
                     continue
                 if not thumb_enabled or not bool(region.get("enabled", True)):
                     states.append("disabled")
+                    continue
+                if not window_available:
+                    states.append("unavailable")
                     continue
                 monitor = self.engine.monitoring_engine.get_monitor(region_id)
                 if monitor:
@@ -1312,7 +1456,7 @@ class ScreenAlertMainWindow:
         return states
 
     def _refresh_aggregate_status(self) -> None:
-        """Refresh top aggregate status badge with priority ordering."""
+        """Refresh aggregate status text with priority ordering."""
         states = self._collect_all_region_states()
         if not states:
             aggregate = "unavailable"
@@ -1328,15 +1472,20 @@ class ScreenAlertMainWindow:
             aggregate = "unavailable"
 
         if aggregate == "alert":
-            self.aggregate_status_label.config(text="Overall: ALERT", bg="#e74c3c", fg="white")
+            self.aggregate_status_var.set("Overall: ALERT")
+            self.aggregate_status_badge.config(bg="#e74c3c", fg="white")
         elif aggregate == "warning":
-            self.aggregate_status_label.config(text="Overall: WARNING", bg="#f39c12", fg="black")
+            self.aggregate_status_var.set("Overall: WARNING")
+            self.aggregate_status_badge.config(bg="#f39c12", fg="black")
         elif aggregate == "ok":
-            self.aggregate_status_label.config(text="Overall: OK", bg="#2ecc71", fg="black")
+            self.aggregate_status_var.set("Overall: OK")
+            self.aggregate_status_badge.config(bg="#2ecc71", fg="black")
         elif aggregate == "paused":
-            self.aggregate_status_label.config(text="Overall: PAUSED", bg="#3498db", fg="white")
+            self.aggregate_status_var.set("Overall: PAUSED")
+            self.aggregate_status_badge.config(bg="#3498db", fg="white")
         else:
-            self.aggregate_status_label.config(text="Overall: N/A", bg="#2c3e50", fg="white")
+            self.aggregate_status_var.set("Overall: N/A")
+            self.aggregate_status_badge.config(bg="#3498db", fg="white")
 
     def _update_region_thumbnail(self, thumbnail_id: str, region_id: str) -> None:
         """Update a single region thumbnail image"""
@@ -1357,16 +1506,31 @@ class ScreenAlertMainWindow:
         if not hwnd:
             logger.warning(f"[THUMBNAIL UPDATE] HWND not found for thumbnail {thumbnail_id}")
             return
-        window_image = self._get_window_image_for_ui(hwnd)
+        window_image = self._get_window_image_for_ui(hwnd, thumbnail)
         if not window_image:
             logger.warning(f"[THUMBNAIL UPDATE] No image available for hwnd {hwnd}")
+            image_label.config(image="", text="Not Available", fg="white", bg="#0078D7")
+            self.region_photos.pop(region_id, None)
+            self._set_region_status(thumbnail_id, region_id, "unavailable")
+            self._apply_region_status(thumbnail_id, region_id)
             return
         try:
             region_image = ImageProcessor.crop_region(window_image, region.get("rect", (0, 0, 0, 0)))
-            region_image.thumbnail((360, 180), Image.Resampling.LANCZOS)
+            region_image.thumbnail((220, 96), Image.Resampling.LANCZOS)
             photo = ImageTk.PhotoImage(region_image)
             self.region_photos[region_id] = photo
-            image_label.config(image=photo, text="")
+            image_label.config(image=photo, text="", bg="#1a1a1a")
+            current_status = self.region_statuses.get(thumbnail_id, {}).get(region_id)
+            if current_status == "unavailable":
+                monitor = self.engine.monitoring_engine.get_monitor(region_id)
+                region_cfg = self.config.get_region(thumbnail_id, region_id) or {}
+                if not bool(region_cfg.get("enabled", True)):
+                    self._set_region_status(thumbnail_id, region_id, "disabled")
+                elif monitor:
+                    self._set_region_status(thumbnail_id, region_id, monitor.state)
+                else:
+                    self._set_region_status(thumbnail_id, region_id, "ok")
+                self._apply_region_status(thumbnail_id, region_id)
             logger.debug(f"[THUMBNAIL UPDATE] Successfully updated image for region {region_id}")
         except Exception as e:
             logger.error(f"Error updating region image {region_id}: {e}", exc_info=True)
@@ -1401,28 +1565,38 @@ class ScreenAlertMainWindow:
             if self.show_all_regions:
                 thumbnails = self.config.get_all_thumbnails()
                 if len(thumbnails) == 1:
-                    hwnd = thumbnails[0].get("window_hwnd")
-                    window_image = self._get_window_image_for_ui(hwnd)
+                    thumbnail = thumbnails[0]
+                    hwnd = thumbnail.get("window_hwnd")
+                    window_image = self._get_window_image_for_ui(hwnd, thumbnail)
                 else:
                     window_image = None
             elif self.selected_thumbnail_id:
                 thumbnail = self.config.get_thumbnail(self.selected_thumbnail_id)
                 hwnd = thumbnail.get("window_hwnd") if thumbnail else None
-                window_image = self._get_window_image_for_ui(hwnd)
+                window_image = self._get_window_image_for_ui(hwnd, thumbnail)
             else:
                 window_image = None
 
             if window_image:
                 preview = window_image.copy()
-                preview.thumbnail((240, 135), Image.Resampling.LANCZOS)
+                preview.thumbnail((180, 100), Image.Resampling.LANCZOS)
                 self.window_preview_photo = ImageTk.PhotoImage(preview)
                 self.window_preview_label.config(image=self.window_preview_photo, text="")
+            else:
+                self.window_preview_photo = None
+                self.window_preview_label.config(
+                    image=self._preview_placeholder,
+                    text="Not Available",
+                    fg="white",
+                    compound="center",
+                )
         except Exception as e:
             logger.debug(f"Error refreshing window preview: {e}")
 
     def _show_all_regions(self) -> None:
         """Clear selection filter and show all regions"""
         self.show_all_regions = True
+        self.selected_region_id = None
         if self.window_tree.exists("__all__"):
             self._set_tree_selection("__all__")
         self.selected_thumbnail_id = None

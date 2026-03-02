@@ -450,20 +450,18 @@ class WindowManager:
         Returns False if the window is gone or its metadata doesn't match
         (indicating HWND reuse or monitor migration).
         
-        Title matching uses substring containment rather than strict equality
-        because many apps change their title dynamically (e.g. adding page names
-        or unsaved indicators).
+        Title and size matching are strict:
+        - title must match exactly (case-insensitive, trimmed)
+        - size must match exactly (width and height)
         """
         metadata = self.get_window_metadata(hwnd)
         if metadata is None:
             return False
         
-        # Use loose title matching: either must be a substring of the other,
-        # so we catch dynamic title changes while still detecting HWND reuse.
         if expected_title:
-            live_title = metadata['title'].lower()
-            saved_title = expected_title.lower()
-            if saved_title not in live_title and live_title not in saved_title:
+            live_title = metadata['title'].strip().lower()
+            saved_title = expected_title.strip().lower()
+            if saved_title != live_title:
                 logger.debug(f"Window {hwnd} title mismatch: "
                              f"'{metadata['title']}' vs '{expected_title}'")
                 return False
@@ -478,11 +476,13 @@ class WindowManager:
                          f"{metadata['monitor_id']} != {expected_monitor_id}")
             return False
         
-        if self.is_window_size_significantly_different(
-                metadata['size'], expected_size):
-            logger.debug(f"Window {hwnd} size mismatch: "
-                         f"{metadata['size']} vs expected {expected_size}")
-            return False
+        if expected_size:
+            live_size = tuple(metadata['size'])
+            wanted_size = tuple(expected_size)
+            if live_size != wanted_size:
+                logger.debug(f"Window {hwnd} size mismatch: "
+                             f"{metadata['size']} vs expected {expected_size}")
+                return False
         
         return True
 

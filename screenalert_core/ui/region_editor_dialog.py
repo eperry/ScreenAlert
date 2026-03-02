@@ -34,6 +34,7 @@ class RegionEditorDialog:
         self.drag_mode: Optional[str] = None  # 'move', 'resize', or None
         self.resize_handle: Optional[str] = None  # e.g. 'nw', 'n', 'ne', etc.
         self.drag_offset = (0, 0)
+        self._h_scrollbar_visible = True
         
         # Create dialog (start with small size, will resize after loading image)
         self.dialog = tk.Toplevel(parent)
@@ -72,19 +73,20 @@ class RegionEditorDialog:
         self.dimension_label.place_forget()  # Hidden initially
         
         # Create canvas with scrollbars
-        h_scrollbar = ttk.Scrollbar(canvas_frame, orient=tk.HORIZONTAL)
+        self.h_scrollbar = ttk.Scrollbar(canvas_frame, orient=tk.HORIZONTAL)
         v_scrollbar = ttk.Scrollbar(canvas_frame, orient=tk.VERTICAL)
         
         self.canvas = tk.Canvas(canvas_frame, bg="gray20", highlightthickness=0,
-                               xscrollcommand=h_scrollbar.set,
+                       xscrollcommand=self.h_scrollbar.set,
                                yscrollcommand=v_scrollbar.set)
         
-        h_scrollbar.config(command=self.canvas.xview)
+        self.h_scrollbar.config(command=self.canvas.xview)
         v_scrollbar.config(command=self.canvas.yview)
         
-        h_scrollbar.pack(side=tk.BOTTOM, fill=tk.X)
+        self.h_scrollbar.pack(side=tk.BOTTOM, fill=tk.X)
         v_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
         
         # Bind mouse events
         self.canvas.bind("<Button-1>", self._on_canvas_press)
@@ -132,6 +134,7 @@ class RegionEditorDialog:
             
             # Configure canvas scroll region
             self.canvas.config(scrollregion=self.canvas.bbox("all"))
+            self.dialog.after_idle(self._update_horizontal_scrollbar_visibility)
             
             # Store dimensions
             self.display_width = img.width
@@ -146,6 +149,31 @@ class RegionEditorDialog:
         
         except Exception as e:
             logger.error(f"Error loading image: {e}")
+
+    def _on_canvas_configure(self, event) -> None:
+        """Update horizontal scrollbar visibility when canvas viewport changes."""
+        self._update_horizontal_scrollbar_visibility()
+
+    def _update_horizontal_scrollbar_visibility(self) -> None:
+        """Show horizontal scrollbar only when content is wider than viewport."""
+        try:
+            bbox = self.canvas.bbox("all")
+            if not bbox:
+                needs_scroll = False
+            else:
+                content_width = bbox[2] - bbox[0]
+                viewport_width = max(1, self.canvas.winfo_width())
+                needs_scroll = content_width > (viewport_width + 1)
+
+            if needs_scroll and not self._h_scrollbar_visible:
+                self.h_scrollbar.pack(side=tk.BOTTOM, fill=tk.X, before=self.canvas)
+                self._h_scrollbar_visible = True
+            elif not needs_scroll and self._h_scrollbar_visible:
+                self.h_scrollbar.pack_forget()
+                self.canvas.xview_moveto(0)
+                self._h_scrollbar_visible = False
+        except Exception as error:
+            logger.debug(f"Unable to update horizontal scrollbar visibility: {error}")
     
     def _on_canvas_press(self, event) -> None:
         """Handle mouse press on canvas (select, move, or resize region)"""

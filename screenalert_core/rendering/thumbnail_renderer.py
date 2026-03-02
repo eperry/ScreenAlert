@@ -119,6 +119,18 @@ class ThumbnailRenderer:
     def get_thumbnail(self, thumbnail_id: str) -> Optional['ThumbnailWindow']:
         """Get thumbnail window object"""
         return self.thumbnails.get(thumbnail_id)
+
+    def set_thumbnail_availability(self, thumbnail_id: str, available: bool,
+                                   show_when_unavailable: bool = False) -> bool:
+        """Set thumbnail availability state for unavailable-window handling."""
+        with self.lock:
+            if thumbnail_id not in self.thumbnails:
+                return False
+            self.thumbnails[thumbnail_id].set_availability(
+                available=available,
+                show_when_unavailable=show_when_unavailable,
+            )
+            return True
     
     def start(self) -> None:
         """Start render loop"""
@@ -200,6 +212,8 @@ class ThumbnailWindow:
         # State
         self.current_image: Optional[Image.Image] = None
         self.photo_image: Optional[ImageTk.PhotoImage] = None
+        self._is_available = True
+        self._show_when_unavailable = False
         self.is_dragging = False
         self.is_resizing = False
         self.drag_start = (0, 0)
@@ -333,6 +347,7 @@ class ThumbnailWindow:
     def set_image(self, pil_image: Image.Image) -> None:
         """Update displayed image (thread-safe)"""
         try:
+            self.current_image = pil_image
             logger.info(f"[{self.thumbnail_id}] SET_IMAGE: received image size {pil_image.size}")
             
             # Resize to fit thumbnail
@@ -359,6 +374,49 @@ class ThumbnailWindow:
         
         except Exception as e:
             logger.error(f"[{self.thumbnail_id}] SET_IMAGE ERROR: {e}", exc_info=True)
+
+    def set_availability(self, available: bool, show_when_unavailable: bool = False) -> None:
+        """Set availability state and update overlay presentation."""
+        self._is_available = bool(available)
+        self._show_when_unavailable = bool(show_when_unavailable)
+        self._apply_availability_state()
+
+    def _clear_image_queue(self) -> None:
+        """Clear pending image queue to prevent stale frames."""
+        while True:
+            try:
+                self.image_queue.get_nowait()
+            except queue.Empty:
+                break
+
+    def _apply_availability_state(self) -> None:
+        """Apply unavailable/available visual state to overlay window."""
+        if not self.window or not hasattr(self, 'label') or not self.label:
+            return
+        try:
+            if self._is_available:
+                self.window.deiconify()
+                self.label.config(bg='black', fg='white', text='')
+                if self.photo_image is not None:
+                    self.label.config(image=self.photo_image)
+                    self.label.image = self.photo_image
+            else:
+                self._clear_image_queue()
+                if self._show_when_unavailable:
+                    self.window.deiconify()
+                    self.photo_image = None
+                    self.label.image = None
+                    self.label.config(
+                        image='',
+                        text='Not Available',
+                        fg='white',
+                        bg='#0078D7',
+                        compound='center',
+                    )
+                else:
+                    self.window.withdraw()
+        except Exception as error:
+            logger.debug(f"[{self.thumbnail_id}] availability state apply failed: {error}")
     
     def update_display(self) -> None:
         """Placeholder - image updates now done via queue processing"""

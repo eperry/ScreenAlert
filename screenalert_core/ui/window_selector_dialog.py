@@ -7,6 +7,7 @@ from typing import Optional, List, Dict
 
 from screenalert_core.core.window_manager import WindowManager
 from screenalert_core.core.config_manager import ConfigManager
+from screenalert_core.ui.auto_hide_scrollbar import AutoHideScrollbar
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,7 @@ class WindowSelectorDialog:
         filter_frame.pack(fill=tk.X, pady=(0, 5))
         ttk.Label(filter_frame, text="Filter:").pack(side=tk.LEFT)
         initial_filter = self.config.get_last_window_filter() if self.config else ""
-        initial_size_op = self.config.get_last_window_size_filter_op() if self.config else "=="
+        initial_size_op = "=="
         initial_size_value = self.config.get_last_window_size_filter_value() if self.config else ""
         self.filter_var = tk.StringVar(value=initial_filter)
         filter_entry = ttk.Entry(filter_frame, textvariable=self.filter_var)
@@ -68,35 +69,36 @@ class WindowSelectorDialog:
         size_filter_frame.pack(fill=tk.X, pady=(0, 8))
         ttk.Label(size_filter_frame, text="Size:").pack(side=tk.LEFT)
         self.size_op_var = tk.StringVar(value=initial_size_op if initial_size_op in ("==", "<=", ">=") else "==")
-        self.size_op_combo = ttk.Combobox(
+        self.size_op_menu = tk.OptionMenu(
             size_filter_frame,
-            textvariable=self.size_op_var,
-            values=["==", "<=", ">="],
-            width=4,
-            state="readonly"
+            self.size_op_var,
+            "==",
+            "<=",
+            ">=",
+            command=self._on_size_op_change,
         )
-        self.size_op_combo.pack(side=tk.LEFT, padx=(5, 4))
-        self.size_op_combo.bind("<<ComboboxSelected>>", self._on_filter_change)
+        self.size_op_menu.pack(side=tk.LEFT, padx=(5, 4))
         self.size_value_var = tk.StringVar(value=initial_size_value)
         size_entry = ttk.Entry(size_filter_frame, textvariable=self.size_value_var, width=14)
         size_entry.pack(side=tk.LEFT)
         size_entry.bind('<KeyRelease>', self._on_filter_change)
-        ttk.Label(size_filter_frame, text="(e.g., 1920x1080; compares width and height)").pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Label(size_filter_frame, text="(e.g., 1920x1080 or 1920; width-only is supported)").pack(side=tk.LEFT, padx=(6, 0))
 
         # Window list frame
         list_frame = ttk.Frame(main_frame)
         list_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
 
         # Scrollbar
-        scrollbar = ttk.Scrollbar(list_frame)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.list_scrollbar = AutoHideScrollbar(list_frame, orient=tk.VERTICAL)
+        self.list_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         # Listbox
-        self.listbox = tk.Listbox(list_frame, yscrollcommand=scrollbar.set, 
+        self.listbox = tk.Listbox(list_frame, yscrollcommand=self.list_scrollbar.set,
                      font=("Segoe UI", 10), height=15)
         self.listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.listbox.bind("<Double-Button-1>", lambda e: self._on_select())
-        scrollbar.config(command=self.listbox.yview)
+        self.list_scrollbar.config(command=self.listbox.yview)
+        self.dialog.after_idle(lambda: self.list_scrollbar.set(*self.listbox.yview()))
         
         # Button frame
         btn_frame = ttk.Frame(main_frame)
@@ -150,6 +152,7 @@ class WindowSelectorDialog:
             self._filtered_rows.append(("title", window))
             self.listbox.insert(tk.END, f"    Size: {window['size'][0]}x{window['size'][1]}")
             self._filtered_rows.append(("size", window))
+        self.list_scrollbar.set(*self.listbox.yview())
         if self._filtered_rows:
             self.listbox.selection_set(0)
             self._on_selection_changed(None)
@@ -159,6 +162,9 @@ class WindowSelectorDialog:
     def _on_filter_change(self, event):
         self._save_filter_state()
         self._update_listbox()
+
+    def _on_size_op_change(self, _selected: str) -> None:
+        self._on_filter_change(None)
 
     def _save_filter_state(self) -> None:
         """Persist filter state to config."""
@@ -175,13 +181,25 @@ class WindowSelectorDialog:
         self.dialog.destroy()
 
     def _parse_size_filter(self) -> Optional[tuple]:
-        """Parse size filter text like 1920x1080 into (width, height)."""
+        """Parse size filter text into (width, height|None).
+
+        Supported formats:
+        - WIDTHxHEIGHT (e.g. 1920x1080)
+        - WIDTH only (e.g. 1920)
+        """
         raw = self.size_value_var.get().strip() if hasattr(self, 'size_value_var') else ""
         if not raw:
             return None
         normalized = raw.lower().replace(" ", "").replace("*", "x")
         if "x" not in normalized:
-            return None
+            try:
+                width_only = int(normalized)
+                if width_only <= 0:
+                    return None
+                return (width_only, None)
+            except (TypeError, ValueError):
+                return None
+
         parts = normalized.split("x", 1)
         try:
             width = int(parts[0])
@@ -200,6 +218,15 @@ class WindowSelectorDialog:
             return False
         w, h = size
         tw, th = target
+
+        # Width-only filtering (input like "1920")
+        if th is None:
+            if op == "<=":
+                return w <= tw
+            if op == ">=":
+                return w >= tw
+            return w == tw
+
         if op == "<=":
             return w <= tw and h <= th
         if op == ">=":

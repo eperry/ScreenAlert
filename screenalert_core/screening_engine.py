@@ -64,6 +64,8 @@ class ScreenAlertEngine:
         self._diag_monitor_ms = 0.0
         self._diag_alert_count = 0
         self._diag_change_count = 0
+        self._reconnect_attempted_once: set[str] = set()
+        self._window_lost_notified: set[str] = set()
         logger.info("ScreenAlert engine initialized")
         logger.debug(f"Config path: {config_path}")
         logger.debug("WindowManager, CacheManager, MonitoringEngine, AlertSystem, ThumbnailRenderer initialized")
@@ -119,10 +121,34 @@ class ScreenAlertEngine:
                 # Immediately capture and display (same as add_thumbnail)
                 window_hwnd = config.get("window_hwnd")
                 if window_hwnd:
-                    window_image = self.window_manager.capture_window(window_hwnd)
-                    if window_image:
-                        logger.info(f"[{thumbnail_id}] Initial capture from config: {window_image.size}")
-                        self.renderer.update_thumbnail_image(thumbnail_id, window_image)
+                    expected_title = config.get("window_title")
+                    expected_class = config.get("window_class") or None
+                    expected_size = tuple(config.get("window_size")) if config.get("window_size") else None
+                    expected_monitor = config.get("monitor_id")
+                    if self.window_manager.validate_window_identity(
+                        window_hwnd,
+                        expected_title=expected_title,
+                        expected_class=expected_class,
+                        expected_monitor_id=expected_monitor,
+                        expected_size=expected_size,
+                    ):
+                        window_image = self.window_manager.capture_window(window_hwnd)
+                        if window_image:
+                            logger.info(f"[{thumbnail_id}] Initial capture from config: {window_image.size}")
+                            self.renderer.update_thumbnail_image(thumbnail_id, window_image)
+                            self.renderer.set_thumbnail_availability(thumbnail_id, True)
+                        else:
+                            self.renderer.set_thumbnail_availability(
+                                thumbnail_id,
+                                False,
+                                self.config.get_show_overlay_when_unavailable(),
+                            )
+                    else:
+                        self.renderer.set_thumbnail_availability(
+                            thumbnail_id,
+                            False,
+                            self.config.get_show_overlay_when_unavailable(),
+                        )
             
             # Load regions  
             for region_config in config.get("monitored_regions", []):
@@ -182,8 +208,14 @@ class ScreenAlertEngine:
             if window_image:
                 logger.info(f"[{thumbnail_id}] Initial capture: {window_image.size}")
                 self.renderer.update_thumbnail_image(thumbnail_id, window_image)
+                self.renderer.set_thumbnail_availability(thumbnail_id, True)
             else:
                 logger.warning(f"[{thumbnail_id}] Failed to capture initial image")
+                self.renderer.set_thumbnail_availability(
+                    thumbnail_id,
+                    False,
+                    self.config.get_show_overlay_when_unavailable(),
+                )
             
             self.config.save()
             logger.info(f"Added thumbnail: {thumbnail_id}")
@@ -345,6 +377,124 @@ class ScreenAlertEngine:
         """Pause/resume monitoring"""
         self.paused = paused
         logger.info(f"Monitoring paused: {paused}")
+
+    def reconnect_all_windows(self) -> Dict[str, int]:
+        """Manually attempt strict reconnect for all configured thumbnails.
+
+        Returns:
+            Dict with counters: total, attempted, reconnected, failed, already_valid.
+        """
+        with self.lock:
+            thumbnails = list(self.config.get_all_thumbnails())
+
+        result = {
+            "total": len(thumbnails),
+            "attempted": 0,
+            "reconnected": 0,
+            "failed": 0,
+            "already_valid": 0,
+        }
+
+        for thumbnail_config in thumbnails:
+            thumbnail_id = thumbnail_config.get("id")
+            if not thumbnail_id:
+                continue
+
+            window_hwnd = thumbnail_config.get("window_hwnd")
+            window_title = thumbnail_config.get("window_title", "")
+            expected_class = thumbnail_config.get("window_class") or None
+            expected_size = tuple(thumbnail_config["window_size"]) if thumbnail_config.get("window_size") else None
+            expected_monitor = thumbnail_config.get("monitor_id")
+
+            # Manual reconnect should always permit a fresh attempt.
+            self._reconnect_attempted_once.discard(thumbnail_id)
+            self._window_lost_notified.discard(thumbnail_id)
+
+            is_valid = self.window_manager.validate_window_identity(
+                window_hwnd,
+                expected_title=window_title,
+                expected_class=expected_class,
+                expected_monitor_id=expected_monitor,
+                expected_size=expected_size,
+            )
+
+            if is_valid:
+                self.renderer.set_thumbnail_availability(thumbnail_id, True)
+                result["already_valid"] += 1
+                continue
+
+            result["attempted"] += 1
+            new_window = self._try_reconnect(
+                thumbnail_id,
+                window_title,
+                expected_class,
+                expected_size,
+                expected_monitor,
+            )
+
+            if new_window:
+                self.renderer.set_thumbnail_availability(thumbnail_id, True)
+                result["reconnected"] += 1
+            else:
+                self._reconnect_attempted_once.add(thumbnail_id)
+                self._window_lost_notified.add(thumbnail_id)
+                self.renderer.set_thumbnail_availability(
+                    thumbnail_id,
+                    False,
+                    self.config.get_show_overlay_when_unavailable(),
+                )
+                result["failed"] += 1
+
+        return result
+
+    def reconnect_window(self, thumbnail_id: str) -> str:
+        """Manually attempt strict reconnect for a single thumbnail.
+
+        Returns one of: "missing", "already_valid", "reconnected", "failed".
+        """
+        thumbnail_config = self.config.get_thumbnail(thumbnail_id)
+        if not thumbnail_config:
+            return "missing"
+
+        window_hwnd = thumbnail_config.get("window_hwnd")
+        window_title = thumbnail_config.get("window_title", "")
+        expected_class = thumbnail_config.get("window_class") or None
+        expected_size = tuple(thumbnail_config["window_size"]) if thumbnail_config.get("window_size") else None
+        expected_monitor = thumbnail_config.get("monitor_id")
+
+        self._reconnect_attempted_once.discard(thumbnail_id)
+        self._window_lost_notified.discard(thumbnail_id)
+
+        is_valid = self.window_manager.validate_window_identity(
+            window_hwnd,
+            expected_title=window_title,
+            expected_class=expected_class,
+            expected_monitor_id=expected_monitor,
+            expected_size=expected_size,
+        )
+        if is_valid:
+            self.renderer.set_thumbnail_availability(thumbnail_id, True)
+            return "already_valid"
+
+        new_window = self._try_reconnect(
+            thumbnail_id,
+            window_title,
+            expected_class,
+            expected_size,
+            expected_monitor,
+        )
+        if new_window:
+            self.renderer.set_thumbnail_availability(thumbnail_id, True)
+            return "reconnected"
+
+        self._reconnect_attempted_once.add(thumbnail_id)
+        self._window_lost_notified.add(thumbnail_id)
+        self.renderer.set_thumbnail_availability(
+            thumbnail_id,
+            False,
+            self.config.get_show_overlay_when_unavailable(),
+        )
+        return "failed"
     
     def _try_reconnect(self, thumbnail_id: str, window_title: str,
                        expected_class: str = None,
@@ -357,27 +507,20 @@ class ScreenAlertEngine:
         """
         logger.info(f"[{thumbnail_id}] Attempting reconnection for '{window_title}'")
         
-        # Try exact title + metadata match first
+        # Strict reconnect: exact title + exact size (+ optional class/monitor).
+        # No fallback matching is allowed.
+        if not expected_size:
+            logger.warning(
+                f"[{thumbnail_id}] Reconnection aborted: missing expected size for strict matching"
+            )
+            return None
+
         new_window = self.window_manager.find_window_by_title(
             window_title, exact=True,
-            expected_size=expected_size, size_tolerance=20,
+            expected_size=expected_size, size_tolerance=0,
             expected_monitor_id=expected_monitor_id,
             expected_class_name=expected_class,
         )
-        
-        if not new_window:
-            # Fall back to largest matching window
-            new_window = self.window_manager.find_largest_window_by_title(
-                window_title,
-                expected_monitor_id=expected_monitor_id,
-                expected_class_name=expected_class,
-            )
-        
-        if not new_window:
-            # Last resort: any title match without metadata (partial matching)
-            new_window = self.window_manager.find_window_by_title(
-                window_title, exact=False
-            )
         
         if new_window:
             new_hwnd = new_window['hwnd']
@@ -436,8 +579,24 @@ class ScreenAlertEngine:
                         expected_monitor_id=expected_monitor,
                         expected_size=expected_size
                     )
+
+                    if window_ok:
+                        self._reconnect_attempted_once.discard(thumbnail_id)
+                        self._window_lost_notified.discard(thumbnail_id)
                     
                     if not window_ok:
+                        if thumbnail_id in self._reconnect_attempted_once:
+                            self.renderer.set_thumbnail_availability(
+                                thumbnail_id,
+                                False,
+                                self.config.get_show_overlay_when_unavailable(),
+                            )
+                            if thumbnail_id not in self._window_lost_notified:
+                                self.plugin_hooks.emit("window.lost", thumbnail_id=thumbnail_id, title=window_title)
+                                self.on_window_lost(thumbnail_id, window_title)
+                                self._window_lost_notified.add(thumbnail_id)
+                            continue
+
                         # Try to reconnect to the correct window
                         new_window = self._try_reconnect(
                             thumbnail_id, window_title,
@@ -445,9 +604,19 @@ class ScreenAlertEngine:
                         )
                         if new_window:
                             window_hwnd = new_window['hwnd']
+                            self._reconnect_attempted_once.discard(thumbnail_id)
+                            self._window_lost_notified.discard(thumbnail_id)
                         else:
-                            self.plugin_hooks.emit("window.lost", thumbnail_id=thumbnail_id, title=window_title)
-                            self.on_window_lost(thumbnail_id, window_title)
+                            self._reconnect_attempted_once.add(thumbnail_id)
+                            self.renderer.set_thumbnail_availability(
+                                thumbnail_id,
+                                False,
+                                self.config.get_show_overlay_when_unavailable(),
+                            )
+                            if thumbnail_id not in self._window_lost_notified:
+                                self.plugin_hooks.emit("window.lost", thumbnail_id=thumbnail_id, title=window_title)
+                                self.on_window_lost(thumbnail_id, window_title)
+                                self._window_lost_notified.add(thumbnail_id)
                             continue
                     
                     # UNIFIED CAPTURE
@@ -457,12 +626,19 @@ class ScreenAlertEngine:
                         window_image = self.window_manager.capture_window(window_hwnd)
                         if window_image:
                             self.cache_manager.set(window_hwnd, window_image)
+                            self.renderer.set_thumbnail_availability(thumbnail_id, True)
                             logger.debug(f"[{thumbnail_id}] CAPTURED: size {window_image.size}")
                         else:
+                            self.renderer.set_thumbnail_availability(
+                                thumbnail_id,
+                                False,
+                                self.config.get_show_overlay_when_unavailable(),
+                            )
                             logger.error(f"[{thumbnail_id}] CAPTURE FAILED: hwnd={window_hwnd}")
                             continue
                     else:
                         window_image = cached_image
+                        self.renderer.set_thumbnail_availability(thumbnail_id, True)
                         logger.debug(f"[{thumbnail_id}] Using cached image: {window_image.size}")
                     self._diag_capture_ms += (time.perf_counter() - capture_start) * 1000.0
                     
