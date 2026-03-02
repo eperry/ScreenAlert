@@ -171,14 +171,6 @@ class AlertSystem:
         
         if sound_file:
             played = self.play_sound(sound_file) or played
-        else:
-            # Default system beep when no sound file configured
-            try:
-                import winsound
-                winsound.PlaySound("SystemHand", winsound.SND_ALIAS | winsound.SND_ASYNC)
-                played = True
-            except Exception as e:
-                logger.debug(f"Fallback system sound failed: {e}")
         
         if tts_message:
             played = self.speak_tts(tts_message) or played

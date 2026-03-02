@@ -22,6 +22,19 @@ Implemented beyond the initial draft:
 - Size filtering operators `==`, `<=`, `>=` are supported using `WIDTHxHEIGHT` input.
 - Selected window metadata (`window_class`, `window_size`, `monitor_id`) is passed from selection UI into thumbnail creation and persisted for reconnect matching.
 - TTS dispatch logging was added for runtime diagnostics.
+- Edit menu pause command is dynamic (`Pause All` / `Resume All`) based on live engine state.
+- Main bottom status line is split into two objects: left status message and right aggregate badge with state color coding.
+- `Windows -> All` now hides Window Info and expands Regions to full available right-panel height.
+- Selecting a region node renders only that single region card for focused editing.
+- Window Info was compacted and now includes `Size: WIDTHxHEIGHT`.
+- Region cards were visually tightened (spacing, control widths, preview sizing) for denser layout.
+- Scrollbars now auto-hide when content fully fits (main tree, main region list, Add Window list, Region Editor canvas/list).
+- Unavailable-window overlay behavior is configurable: hide overlay when unattached, or show blue placeholder with `Not Available`.
+- Region and aggregate `N/A` states are now blue for consistency.
+- Reconnect behavior is strict and deterministic: exact title + exact size matching only, no fallback matching.
+- Automatic reconnect is one-shot per loss event (no repeated auto-retry loops after failure).
+- UI preview and region-card image paths enforce strict window identity validation to prevent stale/wrong HWND imagery.
+- Reconnect actions were added: Edit menu + `Windows -> All` context reconnect all, while window-node context reconnects only the selected window.
 
 ---
 
@@ -154,6 +167,30 @@ Notes:
 - Filter text and size filter inputs persist across dialog opens and app restarts.
 - Size filter compares width and height directly based on selected operator.
 
+### Selection and layout behavior
+- Bottom aggregate status appears on the right of the same status line and keeps color-coded state.
+- `All` selection uses full right-panel height for region content.
+- Region-node selection shows only the selected region card.
+- Window Info displays attached window size (`WIDTHxHEIGHT`).
+
+### Scrollbar behavior
+- Any visible scrollbar in active UI surfaces auto-hides when there is nothing to scroll.
+- Scrollbar reappears automatically when content exceeds the viewport.
+
+### Unavailable overlay behavior
+- When monitored source window is unavailable, stale imagery is never displayed.
+- If `Show Overlay if Unavailable` is disabled, overlay windows are hidden until source becomes available.
+- If enabled, overlays remain visible and render a blue `Not Available` placeholder.
+
+### Reconnect behavior
+- Auto reconnect uses exact title + exact size matching and never falls back to loose/partial matching.
+- After one failed auto reconnect attempt for a loss event, no additional automatic attempts are made.
+- Manual reconnect commands are available for both all windows and a single selected window.
+
+### Status behavior
+- Region `N/A` uses blue styling.
+- Aggregate status becomes blue `Overall: N/A` when no active monitored region has a valid attached source window.
+
 ---
 
 ## 6) Non-goals / Out of Scope
@@ -191,6 +228,26 @@ Notes:
 ### 8.3 Window identity persistence
 - **Decision:** Persist selected metadata (`window_class`, `window_size`, `monitor_id`) at add-window time, with live metadata fallback in engine.
 - **Rationale:** Improves reconnection precision when multiple windows share similar titles.
+
+### 8.4 Auto-hide scrollbar standardization
+- **Decision:** Introduced reusable `AutoHideScrollbar` for Tk/ttk views and switched active UI scrollbars to it.
+- **Rationale:** Removes unnecessary visual noise while preserving expected scroll behavior when content overflows.
+- **Consequence:** All major list/canvas views now adapt scrollbar visibility dynamically without custom per-view hacks.
+
+### 8.5 Strict window identity policy
+- **Decision:** Window identity validation and reconnect matching are strict: exact title and exact size are required (with optional class/monitor checks when available).
+- **Rationale:** Prevents accidental attachment to wrong process windows that share similar titles.
+- **Consequence:** No partial/heuristic fallback reconnect path is permitted.
+
+### 8.6 Reconnect retry policy
+- **Decision:** Auto reconnect is attempted once per loss event; failed attempts are not retried automatically.
+- **Rationale:** Avoids repeated churn/noise and makes recovery operator-driven when strict identity cannot be satisfied.
+- **Consequence:** Manual reconnect commands are the intended recovery action after failure.
+
+### 8.7 Unavailable overlay presentation
+- **Decision:** Added `show_overlay_when_unavailable` setting controlling whether overlays are hidden or display a blue `Not Available` placeholder.
+- **Rationale:** Supports two operator preferences without allowing stale image persistence.
+- **Consequence:** Renderer tracks thumbnail availability state separately from image queue content and clears queued stale frames on unavailable transition.
 
 ---
 

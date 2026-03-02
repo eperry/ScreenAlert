@@ -113,6 +113,11 @@ class SettingsDialog:
         self.show_borders_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(appearance_frame, variable=self.show_borders_var).grid(
             row=2, column=1, sticky="w", padx=10)
+
+        ttk.Label(appearance_frame, text="Show Overlay if Unavailable:").grid(row=4, column=0, sticky="w")
+        self.show_overlay_unavailable_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(appearance_frame, variable=self.show_overlay_unavailable_var).grid(
+            row=4, column=1, sticky="w", padx=10)
         
         appearance_frame.columnconfigure(1, weight=1)
         
@@ -121,7 +126,7 @@ class SettingsDialog:
         alert_frame.pack(fill=tk.X, pady=(0, 10))
 
         ttk.Label(alert_frame, text="Enable Sound:").grid(row=0, column=0, sticky="w")
-        self.enable_sound_var = tk.BooleanVar(value=True)
+        self.enable_sound_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(alert_frame, variable=self.enable_sound_var).grid(row=0, column=1, sticky="w", padx=10)
 
         ttk.Label(alert_frame, text="Enable TTS:").grid(row=1, column=0, sticky="w")
@@ -211,6 +216,7 @@ class SettingsDialog:
         self.refresh_var.set(self.config.get_refresh_rate())
         self.opacity_var.set(self.config.get_opacity())
         self.always_on_top_var.set(self.config.get_always_on_top())
+        self.show_overlay_unavailable_var.set(self.config.get_show_overlay_when_unavailable())
         self.verbose_var.set(self.config.get_verbose_logging())
         self.high_contrast_var.set(self.config.get_high_contrast())
         self.alert_threshold_var.set(self.config.get_default_alert_threshold())
@@ -247,6 +253,7 @@ class SettingsDialog:
             self.config.set_refresh_rate(self.refresh_var.get())
             self.config.set_opacity(self.opacity_var.get())
             self.config.set_always_on_top(self.always_on_top_var.get())
+            self.config.set_show_overlay_when_unavailable(self.show_overlay_unavailable_var.get())
             self.config.set_verbose_logging(self.verbose_var.get())
             self.config.set_high_contrast(self.high_contrast_var.get())
             self.config.set_default_alert_threshold(self.alert_threshold_var.get())
@@ -276,6 +283,7 @@ class SettingsDialog:
             "refresh_rate": self.refresh_var.get(),
             "opacity": self.opacity_var.get(),
             "always_on_top": self.always_on_top_var.get(),
+            "show_overlay_when_unavailable": self.show_overlay_unavailable_var.get(),
             "verbose_logging": self.verbose_var.get(),
             "high_contrast": self.high_contrast_var.get(),
             "alert_threshold": self.alert_threshold_var.get(),

@@ -36,6 +36,7 @@ class ConfigManager:
                 "refresh_rate_ms": DEFAULT_REFRESH_RATE_MS,
                 "opacity": DEFAULT_OPACITY,
                 "always_on_top": True,
+                "show_overlay_when_unavailable": False,
                 "log_verbose": False,
                 "high_contrast": False,
                 "last_window_filter": "",
@@ -44,7 +45,7 @@ class ConfigManager:
                 "default_alert_threshold": DEFAULT_ALERT_THRESHOLD,
                 "change_detection_method": "ssim",
                 "alert_hold_seconds": 10,
-                "enable_sound": True,
+                "enable_sound": False,
                 "enable_tts": True,
                 "default_sound_file": "",
                 "default_tts_message": "Alert {window} {region_name}",
@@ -167,6 +168,14 @@ class ConfigManager:
     def set_always_on_top(self, on_top: bool) -> None:
         """Set whether thumbnails should stay on top"""
         self._config["app"]["always_on_top"] = on_top
+
+    def get_show_overlay_when_unavailable(self) -> bool:
+        """Get whether overlays should remain visible when source window is unavailable."""
+        return bool(self._config.get("app", {}).get("show_overlay_when_unavailable", False))
+
+    def set_show_overlay_when_unavailable(self, enabled: bool) -> None:
+        """Set whether overlays remain visible with a Not Available placeholder."""
+        self._config["app"]["show_overlay_when_unavailable"] = bool(enabled)
     
     def get_verbose_logging(self) -> bool:
         """Get verbose logging setting"""
@@ -204,7 +213,7 @@ class ConfigManager:
         self._config["app"]["alert_hold_seconds"] = max(1, min(int(seconds), 120))
 
     def get_enable_sound(self) -> bool:
-        return bool(self._config.get("app", {}).get("enable_sound", True))
+        return bool(self._config.get("app", {}).get("enable_sound", False))
 
     def set_enable_sound(self, enabled: bool) -> None:
         self._config["app"]["enable_sound"] = bool(enabled)
