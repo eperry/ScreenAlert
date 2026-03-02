@@ -135,7 +135,7 @@ class SettingsDialog:
         ttk.Button(alert_frame, text="Browse", command=self._browse_sound).grid(row=2, column=2)
         
         ttk.Label(alert_frame, text="Default TTS Message:").grid(row=3, column=0, sticky="w")
-        self.tts_var = tk.StringVar(value="Alert {name}")
+        self.tts_var = tk.StringVar(value="Alert {window} {region_name}")
         tts_entry = ttk.Entry(alert_frame, textvariable=self.tts_var)
         tts_entry.grid(row=3, column=1, columnspan=2, sticky="ew", padx=10)
 

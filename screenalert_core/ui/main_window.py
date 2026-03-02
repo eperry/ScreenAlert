@@ -3,8 +3,10 @@
 import logging
 import threading
 import time
+import os
+import subprocess
 import tkinter as tk
-from tkinter import ttk, messagebox as msgbox
+from tkinter import ttk, messagebox as msgbox, filedialog
 from typing import Optional, List, Dict
 import win32gui
 from PIL import Image, ImageTk
@@ -16,6 +18,7 @@ from screenalert_core.ui.settings_dialog import SettingsDialog
 from screenalert_core.ui.tooltip import ToolTip
 from screenalert_core.core.image_processor import ImageProcessor
 from screenalert_core.utils.update_checker import check_for_updates
+from screenalert_core.utils.constants import LOGS_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -104,16 +107,6 @@ class ScreenAlertMainWindow:
     def _add_tooltips(self) -> None:
         # Add tooltips to main window controls
         try:
-            # Add tooltips to buttons if they exist
-            for btn, tip in [
-                (getattr(self, 'btn_add', None), 'Add a new window to monitor'),
-                (getattr(self, 'btn_remove', None), 'Remove the selected window'),
-                (getattr(self, 'btn_pause', None), 'Toggle pause/resume monitoring'),
-                (getattr(self, 'btn_settings', None), 'Open settings dialog'),
-                (getattr(self, 'btn_about', None), 'About ScreenAlert'),
-            ]:
-                if btn:
-                    ToolTip(btn, tip)
             # Add tooltips to treeview
             if hasattr(self, 'window_tree'):
                 ToolTip(self.window_tree, 'List of monitored windows and regions')
@@ -125,6 +118,8 @@ class ScreenAlertMainWindow:
                     ToolTip(widgets['status_pill'], 'Current status of this region')
                 if 'name_entry' in widgets:
                     ToolTip(widgets['name_entry'], 'Edit the name of this region')
+                if 'alert_text_entry' in widgets:
+                    ToolTip(widgets['alert_text_entry'], 'Edit spoken alert text for this region')
                 if 'image_label' in widgets:
                     ToolTip(widgets['image_label'], 'Preview of this region')
         except Exception as e:
@@ -199,7 +194,8 @@ class ScreenAlertMainWindow:
         self.root.bind('<Control-r>', lambda e: self._add_region())
         self.root.bind('<Control-Shift-R>', lambda e: self._remove_region())
         self.root.bind('<Control-Delete>', lambda e: self._remove_thumbnail())
-        self.root.bind('<Control-s>', lambda e: self._show_settings())
+        self.root.bind('<Control-s>', lambda e: self._save_config())
+        self.root.bind('<Control-Shift-S>', lambda e: self._save_config_as())
         self.root.bind('<F6>', lambda e: self._toggle_pause())
         self.root.bind('<Control-q>', lambda e: self._on_exit())
 
@@ -211,12 +207,22 @@ class ScreenAlertMainWindow:
         
         file_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="File", menu=file_menu)
-        file_menu.add_command(label="Settings...", command=self._show_settings)
+        file_menu.add_command(label="Save", command=self._save_config)
+        file_menu.add_command(label="Save As...", command=self._save_config_as)
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self._on_exit)
+
+        edit_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Edit", menu=edit_menu)
+        edit_menu.add_command(label="Add Window", command=self._add_window)
+        edit_menu.add_command(label="Pause All", command=self._toggle_pause)
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Settings...", command=self._show_settings)
         
         help_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Help", menu=help_menu)
+        help_menu.add_command(label="Logs", command=self._open_logs_folder)
+        help_menu.add_separator()
         help_menu.add_command(label="Keyboard Shortcuts", command=self._show_shortcuts)
         help_menu.add_command(label="About", command=self._show_about)
         
@@ -226,23 +232,9 @@ class ScreenAlertMainWindow:
         main_frame.columnconfigure(0, weight=1)
         main_frame.rowconfigure(0, weight=1)
         
-        # Control panel - top
+        # Top status panel
         control_frame = ttk.Frame(main_frame)
         control_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        
-        self.btn_add = ttk.Button(control_frame, text="➕ Add Window", command=self._add_window)
-        self.btn_add.pack(side=tk.LEFT, padx=5)
-        
-        self.btn_pause = ttk.Button(control_frame, text="⏸ Pause All",
-                                   command=self._toggle_pause)
-        self.btn_pause.pack(side=tk.LEFT, padx=5)
-
-        self.btn_add_region = ttk.Button(control_frame, text="🔧 Add Region", command=self._add_region)
-        self.btn_add_region.pack(side=tk.LEFT, padx=5)
-        self.btn_remove_region = ttk.Button(control_frame, text="❌ Remove Region", command=self._remove_region)
-        self.btn_remove_region.pack(side=tk.LEFT, padx=5)
-        self.btn_remove = ttk.Button(control_frame, text="❌ Remove Window", command=self._remove_thumbnail)
-        self.btn_remove.pack(side=tk.LEFT, padx=5)
         self.aggregate_status_label = tk.Label(
             control_frame,
             text="Overall: N/A",
@@ -254,8 +246,6 @@ class ScreenAlertMainWindow:
             bd=1,
         )
         self.aggregate_status_label.pack(side=tk.RIGHT, padx=(5, 10))
-        self.btn_settings = ttk.Button(control_frame, text="⚙ Settings", command=self._show_settings)
-        self.btn_settings.pack(side=tk.RIGHT, padx=5)
         
         # Content area
         content_frame = ttk.Frame(main_frame)
@@ -277,6 +267,7 @@ class ScreenAlertMainWindow:
         tree_scroll.grid(row=0, column=1, sticky="ns")
         self.window_tree.configure(yscrollcommand=tree_scroll.set)
         self.window_tree.bind("<<TreeviewSelect>>", self._on_tree_select)
+        self.window_tree.bind("<Button-3>", self._on_tree_right_click)
         
         # Right: window info + region cards
         detail_frame = ttk.Frame(content_frame)
@@ -344,7 +335,7 @@ class ScreenAlertMainWindow:
     
     def _add_window(self) -> None:
         """Add a new window to monitor"""
-        dialog = WindowSelectorDialog(self.root, self.window_manager)
+        dialog = WindowSelectorDialog(self.root, self.window_manager, self.config)
         window_info = dialog.show()
         
         if window_info:
@@ -358,7 +349,13 @@ class ScreenAlertMainWindow:
             
             try:
                 # engine.add_thumbnail() handles everything: config + renderer
-                thumbnail_id = self.engine.add_thumbnail(window_title=title, window_hwnd=hwnd)
+                thumbnail_id = self.engine.add_thumbnail(
+                    window_title=title,
+                    window_hwnd=hwnd,
+                    window_class=window_info.get('class', ''),
+                    window_size=window_info.get('size'),
+                    monitor_id=window_info.get('monitor_id')
+                )
                 if thumbnail_id:
                     self.thumbnail_map[hwnd] = thumbnail_id
                     self._update_thumbnail_list()
@@ -392,7 +389,6 @@ class ScreenAlertMainWindow:
         """Automatically start monitoring if thumbnails exist (like main branch)."""
         if self._ensure_engine_running():
             self.engine.set_paused(False)
-            self.btn_pause.config(text="⏸ Pause All")
             self.status_var.set("Monitoring auto-started")
             logger.info("Monitoring auto-started")
         else:
@@ -405,12 +401,10 @@ class ScreenAlertMainWindow:
                 # Resume
                 self._ensure_engine_running()
                 self.engine.set_paused(False)
-                self.btn_pause.config(text="⏸ Pause All")
                 self.status_var.set("Monitoring resumed")
             else:
                 # Pause
                 self.engine.set_paused(True)
-                self.btn_pause.config(text="▶ Resume")
                 self.status_var.set("Monitoring paused")
         except Exception as e:
             logger.error(f"Error toggling pause: {e}", exc_info=True)
@@ -435,7 +429,8 @@ class ScreenAlertMainWindow:
             "Ctrl+R: Add Region\n"
             "Ctrl+Shift+R: Remove Region\n"
             "Ctrl+Delete: Remove Window\n"
-            "Ctrl+S: Settings\n"
+            "Ctrl+S: Save Config\n"
+            "Ctrl+Shift+S: Save Config As\n"
             "F6: Pause / Resume\n"
             "Ctrl+Q: Exit"
         )
@@ -623,6 +618,144 @@ class ScreenAlertMainWindow:
                            "with Pygame-based overlays")
         except Exception as e:
             logger.error(f"Error showing about dialog: {str(e)}", exc_info=True)
+
+    def _save_config(self) -> None:
+        """Save current configuration to active config file."""
+        if self.config.save():
+            self.status_var.set("Configuration saved")
+        else:
+            msgbox.showerror("Save Failed", "Failed to save configuration")
+
+    def _save_config_as(self) -> None:
+        """Save current configuration snapshot to a user-selected file."""
+        path = filedialog.asksaveasfilename(
+            title="Save configuration as",
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        if self.config.export_config(path):
+            self.status_var.set(f"Configuration exported: {path}")
+        else:
+            msgbox.showerror("Save As Failed", "Failed to export configuration")
+
+    def _open_logs_folder(self) -> None:
+        """Open application logs directory in Windows File Explorer."""
+        try:
+            os.makedirs(LOGS_DIR, exist_ok=True)
+            os.startfile(LOGS_DIR)
+        except Exception:
+            try:
+                subprocess.Popen(["explorer", LOGS_DIR])
+            except Exception as error:
+                logger.error(f"Failed to open logs folder: {error}")
+                msgbox.showerror("Logs", f"Unable to open logs folder:\n{LOGS_DIR}")
+
+    def _on_tree_right_click(self, event) -> None:
+        """Show context menu based on tree node type (all/window/region)."""
+        item_id = self.window_tree.identify_row(event.y)
+        if not item_id:
+            return
+
+        self._set_tree_selection(item_id)
+        kind = self._tree_item_kind(item_id)
+
+        if kind == "window":
+            self.show_all_regions = False
+            self.selected_thumbnail_id = item_id
+        elif kind == "region":
+            self.show_all_regions = False
+            self.selected_thumbnail_id = self.region_to_thumbnail.get(item_id)
+        else:
+            self.show_all_regions = True
+
+        menu = tk.Menu(self.root, tearoff=0)
+        if kind == "all":
+            menu.add_command(label="Add Window", command=self._add_window)
+            menu.add_command(label="Pause All", command=self._toggle_pause)
+            menu.add_separator()
+            can_remove = bool(self.selected_thumbnail_id and self.config.get_thumbnail(self.selected_thumbnail_id))
+            menu.add_command(
+                label="Remove Window",
+                command=self._remove_thumbnail,
+                state=(tk.NORMAL if can_remove else tk.DISABLED),
+            )
+        elif kind == "window":
+            menu.add_command(label="Add Region", command=self._add_region)
+            menu.add_command(label="Remove All Regions", command=self._remove_all_regions)
+            menu.add_separator()
+            menu.add_command(label="Remove Window", command=self._remove_thumbnail)
+        elif kind == "region":
+            menu.add_command(label="Remove Region", command=self._remove_region_direct)
+
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _tree_item_kind(self, item_id: str) -> str:
+        """Return kind for tree item id: all/window/region."""
+        if item_id == "__all__":
+            return "all"
+        if item_id in self.region_to_thumbnail:
+            return "region"
+        return "window"
+
+    def _remove_region_direct(self) -> None:
+        """Remove currently selected region item directly from tree selection."""
+        selection = self.window_tree.selection()
+        if not selection:
+            return
+        region_id = selection[0]
+        if region_id not in self.region_to_thumbnail:
+            return
+        thumbnail_id = self.region_to_thumbnail[region_id]
+        region = self.config.get_region(thumbnail_id, region_id)
+        if not region:
+            return
+
+        region_name = region.get("name", "Region")
+        if not msgbox.askyesno("Confirm", f"Remove region '{region_name}'?"):
+            return
+
+        self.config.remove_region(thumbnail_id, region_id)
+        self.config.save()
+        if thumbnail_id in self.region_statuses:
+            self.region_statuses[thumbnail_id].pop(region_id, None)
+        self.region_to_thumbnail.pop(region_id, None)
+        self._update_thumbnail_list()
+        self.status_var.set(f"Removed region '{region_name}'")
+
+    def _remove_all_regions(self) -> None:
+        """Remove all regions from the selected window."""
+        if not self.selected_thumbnail_id:
+            return
+        thumbnail = self.config.get_thumbnail(self.selected_thumbnail_id)
+        if not thumbnail:
+            return
+
+        regions = list(thumbnail.get("monitored_regions", []))
+        if not regions:
+            self.status_var.set("No regions to remove")
+            return
+
+        title = thumbnail.get("window_title", "Unknown")
+        if not msgbox.askyesno("Confirm", f"Remove all regions from '{title}'?"):
+            return
+
+        for region in regions:
+            region_id = region.get("id")
+            if region_id:
+                self.engine.monitoring_engine.remove_region(region_id)
+                self.config.remove_region(self.selected_thumbnail_id, region_id)
+                self.region_to_thumbnail.pop(region_id, None)
+                if self.selected_thumbnail_id in self.region_statuses:
+                    self.region_statuses[self.selected_thumbnail_id].pop(region_id, None)
+
+        self.config.save()
+        self._update_thumbnail_list()
+        self.status_var.set(f"Removed all regions from {title}")
     
     def _update_thumbnail_list(self) -> None:
         """Update window tree display"""
@@ -986,12 +1119,23 @@ class ScreenAlertMainWindow:
         else:
             image_label.config(text="No image", fg="white")
         
-        # Title text
+        # Region form fields (name + alert text)
+        form_frame = tk.Frame(card, bg="#202020")
+        form_frame.grid(row=content_row, column=2, rowspan=2, sticky="nw", padx=(0, 10), pady=(10, 4))
+
+        tk.Label(form_frame, text="Name:", bg="#202020", fg="#bdbdbd").grid(row=0, column=0, sticky="w", padx=(0, 6))
         name_var = tk.StringVar(value=region.get("name", "Region"))
-        name_entry = ttk.Entry(card, textvariable=name_var)
-        name_entry.grid(row=content_row, column=2, sticky="w", padx=(0, 10), pady=(10, 4))
+        name_entry = ttk.Entry(form_frame, textvariable=name_var, width=30)
+        name_entry.grid(row=0, column=1, sticky="w")
         name_entry.bind("<Return>", lambda e: self._save_region_name(thumbnail_id, region_id, name_var))
         name_entry.bind("<FocusOut>", lambda e: self._save_region_name(thumbnail_id, region_id, name_var))
+
+        tk.Label(form_frame, text="Alert Text:", bg="#202020", fg="#bdbdbd").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=(6, 0))
+        alert_text_var = tk.StringVar(value=region.get("tts_message", self.config.get_default_tts_message()))
+        alert_text_entry = ttk.Entry(form_frame, textvariable=alert_text_var, width=30)
+        alert_text_entry.grid(row=1, column=1, sticky="w", pady=(6, 0))
+        alert_text_entry.bind("<Return>", lambda e: self._save_region_alert_text(thumbnail_id, region_id, alert_text_var))
+        alert_text_entry.bind("<FocusOut>", lambda e: self._save_region_alert_text(thumbnail_id, region_id, alert_text_var))
         
         # Spacer
         spacer = tk.Frame(card, bg="#202020")
@@ -1017,6 +1161,7 @@ class ScreenAlertMainWindow:
             "pause_btn": pause_btn,
             "disable_btn": disable_btn,
             "name_entry": name_entry,
+            "alert_text_entry": alert_text_entry,
             "image_label": image_label,
         }
         
@@ -1062,6 +1207,12 @@ class ScreenAlertMainWindow:
             self.config.save()
             if self.window_tree.exists(region_id):
                 self.window_tree.item(region_id, text=new_name)
+
+    def _save_region_alert_text(self, thumbnail_id: str, region_id: str, alert_text_var: tk.StringVar) -> None:
+        """Persist region alert TTS template text."""
+        value = alert_text_var.get().strip() or self.config.get_default_tts_message()
+        if self.config.update_region(thumbnail_id, region_id, {"tts_message": value}):
+            self.config.save()
 
     def _toggle_region_pause(self, region_id: str) -> None:
         """Toggle pause state for a region monitor"""
