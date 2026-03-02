@@ -46,17 +46,27 @@ class WindowSelectorDialog:
         ttk.Label(main_frame, text="Available Windows:", 
                  font=("Segoe UI", 12, "bold")).pack(anchor="w", pady=(0, 10))
         
+
+        # Filter/search entry
+        filter_frame = ttk.Frame(main_frame)
+        filter_frame.pack(fill=tk.X, pady=(0, 5))
+        ttk.Label(filter_frame, text="Filter:").pack(side=tk.LEFT)
+        self.filter_var = tk.StringVar()
+        filter_entry = ttk.Entry(filter_frame, textvariable=self.filter_var)
+        filter_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        filter_entry.bind('<KeyRelease>', self._on_filter_change)
+
         # Window list frame
         list_frame = ttk.Frame(main_frame)
         list_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
-        
+
         # Scrollbar
         scrollbar = ttk.Scrollbar(list_frame)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
+
         # Listbox
         self.listbox = tk.Listbox(list_frame, yscrollcommand=scrollbar.set, 
-                                 font=("Segoe UI", 10), height=15)
+                     font=("Segoe UI", 10), height=15)
         self.listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.listbox.bind("<Double-Button-1>", lambda e: self._on_select())
         scrollbar.config(command=self.listbox.yview)
@@ -97,33 +107,43 @@ class WindowSelectorDialog:
         """Load and display available windows"""
         try:
             windows = self.window_manager.get_window_list(use_cache=False)
-            
-            self.listbox.delete(0, tk.END)
             self.windows = windows
-            
-            for window in windows:
-                title = window["title"]
-                if len(title) > 80:
-                    title = title[:77] + "..."
-                self.listbox.insert(tk.END, title)
-            
-            if windows:
-                self.listbox.selection_set(0)
-                self._on_selection_changed(None)
-            
+            self._update_listbox()
             logger.info(f"Loaded {len(windows)} windows")
-        
         except Exception as e:
             logger.error(f"Error loading windows: {e}")
             messagebox.showerror("Error", f"Failed to load windows: {e}")
+
+    def _update_listbox(self):
+        """Update listbox based on filter"""
+        filter_text = self.filter_var.get().lower() if hasattr(self, 'filter_var') else ''
+        self.listbox.delete(0, tk.END)
+        self._filtered_windows = []
+        for window in self.windows:
+            title = window["title"]
+            wclass = window.get("class", "")
+            if filter_text in title.lower() or filter_text in wclass.lower():
+                display_title = title if len(title) <= 80 else title[:77] + "..."
+                self.listbox.insert(tk.END, display_title)
+                self._filtered_windows.append(window)
+        if self._filtered_windows:
+            self.listbox.selection_set(0)
+            self._on_selection_changed(None)
+        else:
+            self.selected_window = None
+            self.title_var.set("")
+            self.class_var.set("")
+            self.size_var.set("")
+
+    def _on_filter_change(self, event):
+        self._update_listbox()
     
     def _on_selection_changed(self, event) -> None:
         """Handle window selection change"""
         selection = self.listbox.curselection()
-        if not selection:
+        if not selection or not hasattr(self, '_filtered_windows') or not self._filtered_windows:
             return
-        
-        window = self.windows[selection[0]]
+        window = self._filtered_windows[selection[0]]
         self.title_var.set(window["title"])
         self.class_var.set(window["class"])
         self.size_var.set(f"{window['size'][0]}x{window['size'][1]}")

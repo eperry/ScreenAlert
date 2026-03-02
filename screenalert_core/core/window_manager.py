@@ -314,32 +314,44 @@ class WindowManager:
             return False
     
     def get_monitor_info(self) -> List[Dict]:
-        """Get information about all monitors"""
+        """Get information about all monitors (DPI/scaling robust)"""
         monitors = []
-        
         try:
             import win32api
-            
-            def monitor_enum_proc(hMonitor, hdcMonitor, lprcMonitor, dwData):
+            import win32gui
+            import ctypes
+            user32 = ctypes.windll.user32
+            user32.SetProcessDPIAware()
+
+            monitor_items = win32api.EnumDisplayMonitors(None, None)
+            for hmonitor, _hdc, rect in monitor_items:
+                if isinstance(rect, (tuple, list)) and len(rect) == 4:
+                    left, top, right, bottom = rect
+                else:
+                    monitor_info = win32gui.GetMonitorInfo(hmonitor)
+                    left, top, right, bottom = monitor_info.get('Monitor', (0, 0, 0, 0))
+
                 monitors.append({
-                    'handle': hMonitor,
-                    'rect': lprcMonitor,
-                    'width': lprcMonitor[2] - lprcMonitor[0],
-                    'height': lprcMonitor[3] - lprcMonitor[1],
+                    'handle': hmonitor,
+                    'left': left,
+                    'top': top,
+                    'right': right,
+                    'bottom': bottom,
+                    'width': right - left,
+                    'height': bottom - top
                 })
-                return True
-            
-            win32api.EnumDisplayMonitors(None, None, monitor_enum_proc, 0)
         except Exception as e:
             logger.warning(f"Error getting monitor info: {e}, using primary monitor")
             # Fallback to primary monitor
             monitors = [{
                 'handle': 0,
-                'rect': (0, 0, 1920, 1080),
+                'left': 0,
+                'top': 0,
+                'right': 1920,
+                'bottom': 1080,
                 'width': 1920,
-                'height': 1080,
+                'height': 1080
             }]
-        
         return monitors
     
     def get_monitor_id_for_rect(self, rect, monitors=None) -> int:
@@ -364,9 +376,12 @@ class WindowManager:
         center_y = (rect[1] + rect[3]) // 2
         
         for i, monitor in enumerate(monitors):
-            m_rect = monitor['rect']
-            if (m_rect[0] <= center_x < m_rect[2] and
-                    m_rect[1] <= center_y < m_rect[3]):
+            left = monitor.get('left', 0)
+            top = monitor.get('top', 0)
+            right = monitor.get('right', left)
+            bottom = monitor.get('bottom', top)
+            if (left <= center_x < right and
+                    top <= center_y < bottom):
                 return i
         
         return 0
@@ -470,6 +485,30 @@ class WindowManager:
             return False
         
         return True
+
+    def is_foreground_fullscreen(self) -> bool:
+        """Return True if the foreground window appears fullscreen on its monitor."""
+        try:
+            hwnd = win32gui.GetForegroundWindow()
+            if not hwnd:
+                return False
+            rect = win32gui.GetWindowRect(hwnd)
+            if not rect:
+                return False
+            monitors = self.get_monitor_info()
+            monitor_id = self.get_monitor_id_for_rect(rect, monitors=monitors)
+            if monitor_id < 0 or monitor_id >= len(monitors):
+                return False
+            mon = monitors[monitor_id]
+            window_w = rect[2] - rect[0]
+            window_h = rect[3] - rect[1]
+            mon_w = mon.get('width', 0)
+            mon_h = mon.get('height', 0)
+            if mon_w <= 0 or mon_h <= 0:
+                return False
+            return window_w >= int(mon_w * 0.98) and window_h >= int(mon_h * 0.98)
+        except Exception:
+            return False
     
     def capture_window(self, hwnd: int) -> Optional['Image']:
         """Capture window screenshot

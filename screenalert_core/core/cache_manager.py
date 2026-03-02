@@ -2,6 +2,7 @@
 
 import time
 import logging
+import os
 from typing import Dict, Optional, Tuple
 from PIL import Image
 
@@ -69,3 +70,32 @@ class CacheManager:
         
         if expired:
             logger.debug(f"Cache cleanup: removed {len(expired)} expired entries")
+
+    def cleanup_temp_files(self, temp_dir: str, max_age_seconds: int = 86400) -> int:
+        """Remove stale temporary files from runtime temp directory.
+
+        Returns:
+            Number of files removed.
+        """
+        removed = 0
+        if not temp_dir or not os.path.isdir(temp_dir):
+            return removed
+
+        cutoff = time.time() - max_age_seconds
+        try:
+            for name in os.listdir(temp_dir):
+                path = os.path.join(temp_dir, name)
+                if not os.path.isfile(path):
+                    continue
+                try:
+                    if os.path.getmtime(path) <= cutoff:
+                        os.remove(path)
+                        removed += 1
+                except Exception as file_error:
+                    logger.debug(f"Skipping temp cleanup for {path}: {file_error}")
+        except Exception as error:
+            logger.warning(f"Error cleaning temp directory '{temp_dir}': {error}")
+
+        if removed:
+            logger.info(f"Removed {removed} stale runtime temp file(s)")
+        return removed

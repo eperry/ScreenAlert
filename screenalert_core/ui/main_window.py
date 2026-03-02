@@ -1,18 +1,21 @@
 """Main window UI for ScreenAlert v2"""
 
 import logging
+import threading
+import time
 import tkinter as tk
 from tkinter import ttk, messagebox as msgbox
 from typing import Optional, List, Dict
 import win32gui
-import pyttsx3
 from PIL import Image, ImageTk
 
 from screenalert_core.screening_engine import ScreenAlertEngine
 from screenalert_core.ui.window_selector_dialog import WindowSelectorDialog
 from screenalert_core.ui.region_selection_overlay import RegionSelectionOverlay
 from screenalert_core.ui.settings_dialog import SettingsDialog
+from screenalert_core.ui.tooltip import ToolTip
 from screenalert_core.core.image_processor import ImageProcessor
+from screenalert_core.utils.update_checker import check_for_updates
 
 logger = logging.getLogger(__name__)
 
@@ -21,11 +24,7 @@ class ScreenAlertMainWindow:
     """Main control window for ScreenAlert"""
     
     def __init__(self, engine: ScreenAlertEngine):
-        """Initialize main window
-        
-        Args:
-            engine: ScreenAlertEngine instance
-        """
+        logger.debug("ScreenAlertMainWindow __init__ starting")
         self.engine = engine
         self.config = engine.config
         self.window_manager = engine.window_manager
@@ -37,52 +36,173 @@ class ScreenAlertMainWindow:
         self.window_preview_photo: Optional[ImageTk.PhotoImage] = None
         self.region_to_thumbnail: Dict[str, str] = {}
         self.show_all_regions = True
-        
         # Dirty flag system - track what needs updating
         self.dirty_regions: Dict[str, Dict[str, bool]] = {}  # region_id -> {'status': bool, 'thumbnail': bool}
         self.pending_status_changes: Dict[str, str] = {}  # region_id -> new_status
         self.update_timer_id = None  # Track scheduled update timer
-        
-        # Initialize text-to-speech
-        try:
-            self.tts_engine = pyttsx3.init()
-            self.tts_engine.setProperty('rate', 150)  # Slow down for clarity
-        except Exception as e:
-            logger.warning(f"Could not initialize TTS: {e}")
-            self.tts_engine = None
-        
-        # Create root window
+        self._event_lock = threading.Lock()
+        self._ui_event_flush_scheduled = False
+        self._pending_alert_events: Dict[tuple, str] = {}
+        self._pending_region_change_events: dict[tuple, str] = {}
+        self._pending_window_lost_events: Dict[str, str] = {}
+        self._ui_cycle_count = 0
+        self._ui_cycle_total_ms = 0.0
+        self._ui_last_diag_ts = time.time()
+        self._suppress_tree_select_event = False
+        self._detail_scroll_update_scheduled = False
+        self._force_refresh_counter = 0  # counts periodic-update ticks for forced refresh
+        logger.debug("Creating Tk root window")
         self.root = tk.Tk()
         self.root.title("ScreenAlert v2.0 - Multibox Monitor")
+        logger.debug("Tk root window created and titled")
         self.root.geometry("1200x800")
-        
         # Pass tkinter root to engine for overlay windows
+        logger.debug("Passing Tk root to engine")
         self.engine.set_tkinter_root(self.root)
-        
+        logger.debug("Tk root passed to engine")
         # Rebuild thumbnail_map from config (for duplicate checking)
         for thumbnail in self.config.get_all_thumbnails():
             hwnd = thumbnail.get('window_hwnd')
             thumbnail_id = thumbnail.get('id')
             if hwnd and thumbnail_id:
                 self.thumbnail_map[hwnd] = thumbnail_id
-                logger.debug(f"Restored thumbnail_map: hwnd={hwnd} -> {thumbnail_id}")
+
         logger.info(f"Restored {len(self.thumbnail_map)} thumbnails in map from config")
-        
-        # Configure style
+
+        # Configure style/theme
         self.style = ttk.Style()
         self.style.theme_use('clam')
-        
+        self._current_theme = 'dark'
+        self._apply_theme(self._current_theme)
+
         # Build UI
+        logger.debug("Building UI")
         self._build_ui()
-        
+        logger.debug("UI built")
+
         # Update thumbnail list with any saved thumbnails from config
+        logger.debug("Updating thumbnail list from config")
         self._update_thumbnail_list()
-        
+        logger.debug("Thumbnail list updated")
+
         # Setup callbacks
+        logger.debug("Setting up engine callbacks")
         self.engine.on_alert = self._on_alert
         self.engine.on_region_change = self._on_region_change
         self.engine.on_window_lost = self._on_window_lost
-    
+
+        # Setup keyboard shortcuts
+        self._setup_shortcuts()
+
+        # Add tooltips to main controls after UI is built
+        self.root.after(100, self._add_tooltips)
+        self.root.after(500, self._check_for_updates_async)
+
+        # Auto-start monitoring after a short delay (matches main branch behaviour)
+        self.root.after(3000, self._auto_start_monitoring)
+
+    def _add_tooltips(self) -> None:
+        # Add tooltips to main window controls
+        try:
+            # Add tooltips to buttons if they exist
+            for btn, tip in [
+                (getattr(self, 'btn_add', None), 'Add a new window to monitor'),
+                (getattr(self, 'btn_remove', None), 'Remove the selected window'),
+                (getattr(self, 'btn_pause', None), 'Toggle pause/resume monitoring'),
+                (getattr(self, 'btn_settings', None), 'Open settings dialog'),
+                (getattr(self, 'btn_about', None), 'About ScreenAlert'),
+            ]:
+                if btn:
+                    ToolTip(btn, tip)
+            # Add tooltips to treeview
+            if hasattr(self, 'window_tree'):
+                ToolTip(self.window_tree, 'List of monitored windows and regions')
+            # Add tooltips to region cards
+            for region_id, widgets in getattr(self, 'region_widgets', {}).items():
+                if 'pause_btn' in widgets:
+                    ToolTip(widgets['pause_btn'], 'Pause/resume monitoring for this region')
+                if 'status_pill' in widgets:
+                    ToolTip(widgets['status_pill'], 'Current status of this region')
+                if 'name_entry' in widgets:
+                    ToolTip(widgets['name_entry'], 'Edit the name of this region')
+                if 'image_label' in widgets:
+                    ToolTip(widgets['image_label'], 'Preview of this region')
+        except Exception as e:
+            logger.warning(f"Error adding tooltips: {e}")
+
+    def _apply_theme(self, theme: str) -> None:
+        """Apply the selected theme (dark or high-contrast)"""
+        if theme == 'high-contrast':
+            self.style.theme_use('clam')
+            # High-contrast colors
+            self.style.configure('.', background='#000000', foreground='#FFFFFF', font=('Segoe UI', 10, 'bold'))
+            self.style.configure('TLabel', background='#000000', foreground='#FFFFFF', font=('Segoe UI', 10, 'bold'))
+            self.style.configure('TFrame', background='#000000')
+            self.style.configure('TButton', background='#000000', foreground='#FFFF00', font=('Segoe UI', 10, 'bold'))
+            self.style.configure('Treeview', background='#000000', foreground='#FFFFFF', fieldbackground='#000000', font=('Segoe UI', 10, 'bold'))
+            self.style.configure('TEntry', fieldbackground='#000000', foreground='#FFFFFF', font=('Segoe UI', 10, 'bold'))
+        else:
+            self.style.theme_use('clam')
+            # Modern dark theme colors (gaming style)
+            accent = '#00bfff'
+            bg = '#181a20'
+            fg = '#e0e0e0'
+            panel = '#23272e'
+            highlight = '#222b3a'
+            self.style.configure('.', background=bg, foreground=fg, font=('Segoe UI', 10))
+            self.style.configure('TLabel', background=bg, foreground=fg, font=('Segoe UI', 10, 'bold'))
+            self.style.configure('TFrame', background=panel)
+            self.style.configure('TButton', background=highlight, foreground=accent, font=('Segoe UI', 10, 'bold'))
+            self.style.map('TButton', background=[('active', accent)], foreground=[('active', '#181a20')])
+            self.style.configure('Treeview', background=panel, foreground=fg, fieldbackground=panel, font=('Segoe UI', 10))
+            self.style.configure('TEntry', fieldbackground=highlight, foreground=fg, font=('Segoe UI', 10))
+
+    def set_high_contrast(self, enabled: bool) -> None:
+        """Public method to toggle high-contrast mode at runtime"""
+        self._current_theme = 'high-contrast' if enabled else 'dark'
+        self._apply_theme(self._current_theme)
+        self.root.update_idletasks()
+
+    def _check_for_updates_async(self) -> None:
+        """Check for updates on a background thread and notify when available."""
+        if not self.config.get_update_check_enabled():
+            return
+
+        def worker() -> None:
+            info = check_for_updates()
+            if not info or not info.is_update_available:
+                return
+
+            def show_prompt() -> None:
+                try:
+                    self.status_var.set(f"Update available: {info.latest_version}")
+                    msgbox.showinfo(
+                        "Update Available",
+                        f"A newer version is available.\n\n"
+                        f"Current: {info.current_version}\n"
+                        f"Latest: {info.latest_version}\n\n"
+                        f"Download: {info.release_url}"
+                    )
+                except Exception as error:
+                    logger.warning(f"Unable to show update prompt: {error}")
+
+            try:
+                self.root.after(0, show_prompt)
+            except Exception as error:
+                logger.warning(f"Unable to schedule update prompt: {error}")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _setup_shortcuts(self) -> None:
+        """Bind keyboard shortcuts for major actions"""
+        self.root.bind('<Control-n>', lambda e: self._add_window())
+        self.root.bind('<Control-r>', lambda e: self._add_region())
+        self.root.bind('<Control-Shift-R>', lambda e: self._remove_region())
+        self.root.bind('<Control-Delete>', lambda e: self._remove_thumbnail())
+        self.root.bind('<Control-s>', lambda e: self._show_settings())
+        self.root.bind('<F6>', lambda e: self._toggle_pause())
+        self.root.bind('<Control-q>', lambda e: self._on_exit())
+
     def _build_ui(self) -> None:
         """Build main UI with tree + region detail layout"""
         # Menu
@@ -97,46 +217,59 @@ class ScreenAlertMainWindow:
         
         help_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Help", menu=help_menu)
+        help_menu.add_command(label="Keyboard Shortcuts", command=self._show_shortcuts)
         help_menu.add_command(label="About", command=self._show_about)
         
         # Main content
         main_frame = ttk.Frame(self.root)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        main_frame.columnconfigure(0, weight=1)
+        main_frame.rowconfigure(0, weight=1)
         
         # Control panel - top
         control_frame = ttk.Frame(main_frame)
-        control_frame.pack(fill=tk.X, pady=(0, 10))
+        control_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         
-        ttk.Button(control_frame, text="➕ Add Window", command=self._add_window).pack(side=tk.LEFT, padx=5)
+        self.btn_add = ttk.Button(control_frame, text="➕ Add Window", command=self._add_window)
+        self.btn_add.pack(side=tk.LEFT, padx=5)
         
-        self.btn_start = ttk.Button(control_frame, text="▶ Start Monitoring", 
-                                   command=self._start_monitoring)
-        self.btn_start.pack(side=tk.LEFT, padx=5)
-        
-        self.btn_pause = ttk.Button(control_frame, text="⏸ Pause All", 
-                                   command=self._pause_monitoring, state=tk.DISABLED)
+        self.btn_pause = ttk.Button(control_frame, text="⏸ Pause All",
+                                   command=self._toggle_pause)
         self.btn_pause.pack(side=tk.LEFT, padx=5)
-        
-        ttk.Button(control_frame, text="🔧 Add Region", 
-                  command=self._add_region).pack(side=tk.LEFT, padx=5)
-        ttk.Button(control_frame, text="❌ Remove Region", 
-                  command=self._remove_region).pack(side=tk.LEFT, padx=5)
-        ttk.Button(control_frame, text="❌ Remove Window", 
-              command=self._remove_thumbnail).pack(side=tk.LEFT, padx=5)
-        ttk.Button(control_frame, text="⚙ Settings", 
-                  command=self._show_settings).pack(side=tk.RIGHT, padx=5)
+
+        self.btn_add_region = ttk.Button(control_frame, text="🔧 Add Region", command=self._add_region)
+        self.btn_add_region.pack(side=tk.LEFT, padx=5)
+        self.btn_remove_region = ttk.Button(control_frame, text="❌ Remove Region", command=self._remove_region)
+        self.btn_remove_region.pack(side=tk.LEFT, padx=5)
+        self.btn_remove = ttk.Button(control_frame, text="❌ Remove Window", command=self._remove_thumbnail)
+        self.btn_remove.pack(side=tk.LEFT, padx=5)
+        self.aggregate_status_label = tk.Label(
+            control_frame,
+            text="Overall: N/A",
+            bg="#2c3e50",
+            fg="white",
+            padx=10,
+            pady=4,
+            relief=tk.RIDGE,
+            bd=1,
+        )
+        self.aggregate_status_label.pack(side=tk.RIGHT, padx=(5, 10))
+        self.btn_settings = ttk.Button(control_frame, text="⚙ Settings", command=self._show_settings)
+        self.btn_settings.pack(side=tk.RIGHT, padx=5)
         
         # Content area
         content_frame = ttk.Frame(main_frame)
-        content_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        content_frame.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
         content_frame.columnconfigure(1, weight=1)
         content_frame.rowconfigure(0, weight=1)
+        main_frame.rowconfigure(1, weight=1)
         
         # Left: tree of windows/regions
         tree_frame = ttk.LabelFrame(content_frame, text="Windows", padding=8)
         tree_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         tree_frame.rowconfigure(0, weight=1)
         tree_frame.columnconfigure(0, weight=1)
+        content_frame.columnconfigure(0, weight=0)
         
         self.window_tree = ttk.Treeview(tree_frame, show="tree")
         self.window_tree.grid(row=0, column=0, sticky="nsew")
@@ -167,7 +300,9 @@ class ScreenAlertMainWindow:
         self.window_region_count_var = tk.StringVar(value="0")
         ttk.Label(info_frame, textvariable=self.window_region_count_var).grid(row=2, column=1, sticky="w")
         
-        self.window_preview_label = tk.Label(info_frame, bg="#1a1a1a", width=30, height=6)
+        self._preview_placeholder = ImageTk.PhotoImage(Image.new("RGB", (240, 135), "#1a1a1a"))
+        self.window_preview_label = tk.Label(info_frame, bg="#1a1a1a",
+                                             image=self._preview_placeholder)
         self.window_preview_label.grid(row=0, column=2, rowspan=3, sticky="e", padx=(10, 0))
         
         regions_frame = ttk.LabelFrame(detail_frame, text="Regions", padding=8)
@@ -190,6 +325,13 @@ class ScreenAlertMainWindow:
         status_bar = ttk.Label(self.root, textvariable=self.status_var, 
                              relief=tk.SUNKEN, anchor="w")
         status_bar.pack(fill=tk.X, side=tk.BOTTOM, padx=5, pady=5)
+
+        # DPI awareness (Windows only)
+        try:
+            import ctypes
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)  # Per-monitor DPI aware
+        except Exception:
+            pass
         
         # Bind window close
         self.root.protocol("WM_DELETE_WINDOW", self._on_exit)
@@ -221,52 +363,82 @@ class ScreenAlertMainWindow:
                     self.thumbnail_map[hwnd] = thumbnail_id
                     self._update_thumbnail_list()
                     self.status_var.set(f"Added: {title}")
+                    # Auto-start engine if not already running
+                    self._ensure_engine_running()
                 else:
                     msgbox.showerror("Error", f"Failed to add window {title}")
             except Exception as e:
                 logger.error(f"Error adding window '{title}': {str(e)}", exc_info=True)
                 msgbox.showerror("Error", f"Failed to add window: {str(e)}")
     
-    def _start_monitoring(self) -> None:
-        """Start monitoring"""
+    def _ensure_engine_running(self) -> bool:
+        """Ensure the engine is started. Returns True if engine is running."""
+        if self.engine.is_running():
+            return True
         thumbnails = self.config.get_all_thumbnails()
         if not thumbnails:
-            msgbox.showwarning("Warning", "Add at least one window first")
-            return
-        
+            return False
         try:
             self.engine.start()
-            self.btn_start.config(state=tk.DISABLED)
-            self.btn_pause.config(state=tk.NORMAL)
-            self.status_var.set("Monitoring started")
-            
-            # Start periodic UI update loop
+            logger.info("Engine started with %d thumbnails", len(thumbnails))
             if self.update_timer_id is None:
                 self._periodic_ui_update()
+            return True
         except Exception as e:
-            logger.error(f"Error starting monitoring: {str(e)}", exc_info=True)
-            msgbox.showerror("Error", f"Failed to start monitoring: {str(e)}")
-    
-    def _pause_monitoring(self) -> None:
-        """Pause monitoring"""
+            logger.error(f"Failed to start engine: {e}", exc_info=True)
+            return False
+
+    def _auto_start_monitoring(self) -> None:
+        """Automatically start monitoring if thumbnails exist (like main branch)."""
+        if self._ensure_engine_running():
+            self.engine.set_paused(False)
+            self.btn_pause.config(text="⏸ Pause All")
+            self.status_var.set("Monitoring auto-started")
+            logger.info("Monitoring auto-started")
+        else:
+            logger.info("Auto-start skipped: no thumbnails configured")
+
+    def _toggle_pause(self) -> None:
+        """Toggle between paused and monitoring states."""
         try:
-            self.engine.set_paused(True)
-            self.btn_start.config(state=tk.NORMAL)
-            self.btn_pause.config(state=tk.DISABLED)
-            self.status_var.set("Monitoring paused")
+            if self.engine.paused:
+                # Resume
+                self._ensure_engine_running()
+                self.engine.set_paused(False)
+                self.btn_pause.config(text="⏸ Pause All")
+                self.status_var.set("Monitoring resumed")
+            else:
+                # Pause
+                self.engine.set_paused(True)
+                self.btn_pause.config(text="▶ Resume")
+                self.status_var.set("Monitoring paused")
         except Exception as e:
-            logger.error(f"Error pausing monitoring: {str(e)}", exc_info=True)
-            msgbox.showerror("Error", f"Failed to pause monitoring: {str(e)}")
+            logger.error(f"Error toggling pause: {e}", exc_info=True)
     
     def _show_settings(self) -> None:
         """Show settings dialog"""
         try:
             dialog = SettingsDialog(self.root, self.config)
-            if dialog.show():
+            result = dialog.show()
+            if result:
+                self.set_high_contrast(bool(result.get("high_contrast", False)))
                 self.status_var.set("Settings updated")
         except Exception as e:
             logger.error(f"Error opening settings dialog: {str(e)}", exc_info=True)
             msgbox.showerror("Error", f"Failed to open settings: {str(e)}")
+
+    def _show_shortcuts(self) -> None:
+        """Display keyboard shortcuts help popup."""
+        msgbox.showinfo(
+            "Keyboard Shortcuts",
+            "Ctrl+N: Add Window\n"
+            "Ctrl+R: Add Region\n"
+            "Ctrl+Shift+R: Remove Region\n"
+            "Ctrl+Delete: Remove Window\n"
+            "Ctrl+S: Settings\n"
+            "F6: Pause / Resume\n"
+            "Ctrl+Q: Exit"
+        )
     
     def _add_region(self) -> None:
         """Add region to selected thumbnail using screen overlay"""
@@ -296,10 +468,12 @@ class ScreenAlertMainWindow:
             logger.info(f"Window position: ({window_x}, {window_y}), size: {window_width}x{window_height}")
             
             # Activate the window (bring to front)
-            win32gui.SetForegroundWindow(hwnd)
-            
-            # Hide the ScreenAlert window
-            self.root.withdraw()
+            self.window_manager.activate_window(hwnd)
+
+            # Minimize ScreenAlert window so target app remains visible for selection
+            self.root.iconify()
+            self.root.update_idletasks()
+            time.sleep(0.15)
             
             # Show region selection overlay
             overlay = RegionSelectionOverlay(hwnd, self.root)
@@ -307,6 +481,8 @@ class ScreenAlertMainWindow:
             
             # Show the ScreenAlert window again
             self.root.deiconify()
+            self.root.lift()
+            self.root.focus_force()
             
             if regions_screen:
                 # Convert screen coordinates to window-relative coordinates
@@ -331,6 +507,7 @@ class ScreenAlertMainWindow:
                 
         except Exception as e:
             self.root.deiconify()  # Ensure window is visible even on error
+            self.root.lift()
             logger.error(f"Error adding region to '{title}': {str(e)}", exc_info=True)
             msgbox.showerror("Error", f"Failed to add region: {str(e)}")
 
@@ -480,14 +657,14 @@ class ScreenAlertMainWindow:
                     self.region_statuses[thumbnail_id][region_id] = "ok"
         
         if thumbnails and self.show_all_regions:
-            self.window_tree.selection_set("__all__")
+            self._set_tree_selection("__all__")
             self._show_all_regions()
         elif thumbnails:
             selected_exists = self.selected_thumbnail_id and self.config.get_thumbnail(self.selected_thumbnail_id)
             if not selected_exists:
                 first_id = thumbnails[0].get("id")
                 if first_id:
-                    self.window_tree.selection_set(first_id)
+                    self._set_tree_selection(first_id)
                     self._select_thumbnail(first_id)
         elif not thumbnails:
             self.selected_thumbnail_id = None
@@ -497,11 +674,15 @@ class ScreenAlertMainWindow:
     
     def _on_tree_select(self, event) -> None:
         """Handle tree selection"""
+        if self._suppress_tree_select_event:
+            return
         selection = self.window_tree.selection()
         if not selection:
             return
         selected_id = selection[0]
         if selected_id == "__all__":
+            if self.show_all_regions:
+                return
             self._show_all_regions()
             return
         self.show_all_regions = False
@@ -509,7 +690,23 @@ class ScreenAlertMainWindow:
             thumbnail_id = self.region_to_thumbnail[selected_id]
         else:
             thumbnail_id = selected_id
+        if thumbnail_id == self.selected_thumbnail_id and not self.show_all_regions:
+            return
         self._select_thumbnail(thumbnail_id)
+
+    def _set_tree_selection(self, item_id: str) -> None:
+        """Set tree selection without re-entrant select handling."""
+        if not self.window_tree.exists(item_id):
+            return
+        self._suppress_tree_select_event = True
+        try:
+            self.window_tree.selection_set(item_id)
+        finally:
+            self.root.after_idle(self._clear_tree_select_suppression)
+
+    def _clear_tree_select_suppression(self) -> None:
+        """Release tree selection suppression after UI settles."""
+        self._suppress_tree_select_event = False
 
     def _select_thumbnail(self, thumbnail_id: str) -> None:
         """Set selection and refresh detail view"""
@@ -521,9 +718,94 @@ class ScreenAlertMainWindow:
             self.status_var.set(f"Selected: {title} ({len(regions)} regions)")
             self._render_window_detail(thumbnail)
             logger.debug(f"Selected thumbnail: {title}")
+
+    def _get_window_image_for_ui(self, hwnd: Optional[int]):
+        """Get image for UI previews with cache-first, capture fallback."""
+        if not hwnd:
+            return None
+
+        window_image = self.engine.cache_manager.get(hwnd)
+        if window_image is not None:
+            return window_image
+
+        try:
+            window_image = self.window_manager.capture_window(hwnd)
+            if window_image is not None:
+                self.engine.cache_manager.set(hwnd, window_image)
+            return window_image
+        except Exception as error:
+            logger.debug(f"UI preview capture failed for hwnd={hwnd}: {error}")
+            return None
+
+    def _run_on_ui_thread(self, callback, *args) -> bool:
+        """Schedule callback on Tk UI thread when called from worker threads.
+
+        Returns:
+            True if callback was scheduled (caller should return early),
+            False if already on UI thread and caller can continue immediately.
+        """
+        if threading.current_thread() is threading.main_thread():
+            return False
+        try:
+            self.root.after(0, lambda: callback(*args))
+            return True
+        except Exception as error:
+            logger.warning(f"Failed to marshal callback to UI thread: {error}")
+            return False
+
+    def _enqueue_engine_event(self, event_type: str, *args) -> None:
+        """Coalesce high-frequency engine events and flush once on UI thread."""
+        with self._event_lock:
+            if event_type == "alert":
+                thumbnail_id, region_id, region_name = args
+                self._pending_alert_events[(thumbnail_id, region_id)] = region_name
+            elif event_type == "change":
+                thumbnail_id, region_id, state = args
+                self._pending_region_change_events[(thumbnail_id, region_id)] = state
+            elif event_type == "window_lost":
+                thumbnail_id, window_title = args
+                self._pending_window_lost_events[thumbnail_id] = window_title
+
+            if self._ui_event_flush_scheduled:
+                return
+            self._ui_event_flush_scheduled = True
+
+        try:
+            self.root.after(0, self._flush_engine_events)
+        except Exception as error:
+            logger.warning(f"Failed scheduling engine event flush: {error}")
+            with self._event_lock:
+                self._ui_event_flush_scheduled = False
+
+    def _flush_engine_events(self) -> None:
+        """Apply coalesced engine events on the Tk UI thread."""
+        with self._event_lock:
+            alerts = list(self._pending_alert_events.items())
+            changes = list(self._pending_region_change_events.items())
+            lost_windows = list(self._pending_window_lost_events.items())
+            self._pending_alert_events.clear()
+            self._pending_region_change_events.clear()
+            self._pending_window_lost_events.clear()
+            self._ui_event_flush_scheduled = False
+
+        if self.config.get_diagnostics_enabled():
+            logger.debug(
+                f"[UI EVENT FLUSH] alerts={len(alerts)} changes={len(changes)} window_lost={len(lost_windows)}"
+            )
+
+        for (thumbnail_id, region_id), region_name in alerts:
+            self._on_alert(thumbnail_id, region_id, region_name)
+        for (thumbnail_id, region_id), state in changes:
+            self._on_region_change(thumbnail_id, region_id, state)
+        for thumbnail_id, window_title in lost_windows:
+            self._on_window_lost(thumbnail_id, window_title)
     
     def _on_alert(self, thumbnail_id: str, region_id: str, region_name: str) -> None:
         """Handle alert event with status update and TTS"""
+        if threading.current_thread() is not threading.main_thread():
+            self._enqueue_engine_event("alert", thumbnail_id, region_id, region_name)
+            return
+
         thumbnail = self.config.get_thumbnail(thumbnail_id)
         if thumbnail:
             title = thumbnail.get('window_title', 'Unknown')
@@ -536,20 +818,15 @@ class ScreenAlertMainWindow:
             # Update status bar
             self.status_var.set(f"🚨 ALERT: {title} - {region_name} changed!")
             
-            # Speak alert via TTS
-            if self.tts_engine:
-                try:
-                    message = f"Alert! {title}, {region_name}"
-                    self.tts_engine.say(message)
-                    self.tts_engine.runAndWait()
-                except Exception as e:
-                    logger.warning(f"TTS error: {e}")
-            
-            logger.info(f"Alert in {title}: {region_name} (region_idx={region_idx})")
+            logger.info(f"Alert in {title}: {region_name}")
 
     
-    def _on_region_change(self, thumbnail_id: str, region_id: str) -> None:
-        """Handle region change - update status to WARNING"""
+    def _on_region_change(self, thumbnail_id: str, region_id: str, state: str = "ok") -> None:
+        """Handle region state change from the monitoring engine."""
+        if threading.current_thread() is not threading.main_thread():
+            self._enqueue_engine_event("change", thumbnail_id, region_id, state)
+            return
+
         thumbnail = self.config.get_thumbnail(thumbnail_id)
         if thumbnail:
             regions = thumbnail.get('monitored_regions', [])
@@ -558,15 +835,19 @@ class ScreenAlertMainWindow:
                 if region.get('id') == region_id:
                     region_name = region.get('name', 'Unknown')
                     break
-            
-            logger.info(f"[CHANGE EVENT] {thumbnail.get('window_title', 'Unknown')} - {region_name} (region_id={region_id})")
-            
+
+            logger.debug(f"[STATE EVENT] {thumbnail.get('window_title', 'Unknown')} - {region_name} -> {state}")
+
             # Mark region as dirty for BOTH status and thumbnail updates
-            self._mark_dirty(thumbnail_id, region_id, status="warning", thumbnail=True)
+            self._mark_dirty(thumbnail_id, region_id, status=state, thumbnail=True)
 
     
     def _on_window_lost(self, thumbnail_id: str, window_title: str) -> None:
         """Handle lost window"""
+        if threading.current_thread() is not threading.main_thread():
+            self._enqueue_engine_event("window_lost", thumbnail_id, window_title)
+            return
+
         logger.warning(f"Window lost: {window_title}")
         self.status_var.set(f"Window lost: {window_title}")
 
@@ -583,18 +864,26 @@ class ScreenAlertMainWindow:
             self.window_title_var.set("All windows")
             self.window_hwnd_var.set("")
             self.window_region_count_var.set(str(total_regions))
-            self.window_preview_label.config(image="", text="", fg="white")
+
+            preview_image = None
+            if len(thumbnails) == 1:
+                preview_hwnd = thumbnails[0].get("window_hwnd")
+                preview_image = self._get_window_image_for_ui(preview_hwnd)
+            if preview_image:
+                preview = preview_image.copy()
+                preview.thumbnail((240, 135), Image.Resampling.LANCZOS)
+                self.window_preview_photo = ImageTk.PhotoImage(preview)
+                self.window_preview_label.config(image=self.window_preview_photo, text="")
+            else:
+                self.window_preview_label.config(image=self._preview_placeholder, text="No preview", fg="white", compound="center")
             
             row = 0
             for thumb in thumbnails:
                 thumb_id = thumb.get("id")
                 if not thumb_id:
                     continue
-                window_image = None
                 hwnd = thumb.get("window_hwnd")
-                if hwnd:
-                    # Use cached image to avoid blocking UI
-                    window_image = self.engine.cache_manager.get(hwnd)
+                window_image = self._get_window_image_for_ui(hwnd)
                 for region in thumb.get("monitored_regions", []):
                     region_id = region.get("id")
                     if not region_id:
@@ -612,38 +901,54 @@ class ScreenAlertMainWindow:
             self.window_hwnd_var.set(str(hwnd) if hwnd else "")
             self.window_region_count_var.set(str(len(regions)))
             
-            window_image = None
-            if hwnd:
-                # Use cached image to avoid blocking UI
-                window_image = self.engine.cache_manager.get(hwnd)
+            window_image = self._get_window_image_for_ui(hwnd)
             
             if window_image:
                 preview = window_image.copy()
-                preview.thumbnail((240, 120), Image.Resampling.LANCZOS)
+                preview.thumbnail((240, 135), Image.Resampling.LANCZOS)
                 self.window_preview_photo = ImageTk.PhotoImage(preview)
                 self.window_preview_label.config(image=self.window_preview_photo, text="")
             else:
-                self.window_preview_label.config(image="", text="No preview", fg="white")
+                self.window_preview_label.config(image=self._preview_placeholder, text="No preview", fg="white", compound="center")
             
             for idx, region in enumerate(regions):
                 region_id = region.get("id")
                 if not region_id:
                     continue
                 self._create_region_card(thumbnail_id, region_id, region, window_image, idx)
-        
-        self.regions_inner_frame.update_idletasks()
-        self.region_canvas.configure(scrollregion=self.region_canvas.bbox("all"))
+
+        self._schedule_detail_scroll_refresh()
+
+    def _schedule_detail_scroll_refresh(self) -> None:
+        """Coalesce detail panel scrollregion updates to idle time."""
+        if self._detail_scroll_update_scheduled:
+            return
+        self._detail_scroll_update_scheduled = True
+        self.root.after_idle(self._refresh_detail_scrollregion)
+
+    def _refresh_detail_scrollregion(self) -> None:
+        """Refresh scrollregion once UI geometry has settled."""
+        self._detail_scroll_update_scheduled = False
+        try:
+            bbox = self.region_canvas.bbox("all")
+            if bbox:
+                self.region_canvas.configure(scrollregion=bbox)
+            else:
+                self.region_canvas.configure(scrollregion=(0, 0, 0, 0))
+        except Exception as error:
+            logger.debug(f"Unable to refresh detail scrollregion: {error}")
 
     def _clear_detail_view(self) -> None:
         """Clear window detail panel"""
         self.window_title_var.set("")
         self.window_hwnd_var.set("")
         self.window_region_count_var.set("0")
-        self.window_preview_label.config(image="", text="No window selected", fg="white")
+        self.window_preview_label.config(image=self._preview_placeholder, text="No window selected", fg="white", compound="center")
         for widget in self.regions_inner_frame.winfo_children():
             widget.destroy()
         self.region_widgets.clear()
         self.region_photos.clear()
+        self._schedule_detail_scroll_refresh()
 
     def _create_region_card(self, thumbnail_id: str, region_id: str, region: Dict,
                              window_image, row: int, window_title: Optional[str] = None) -> None:
@@ -698,22 +1003,55 @@ class ScreenAlertMainWindow:
         
         pause_btn = ttk.Button(controls_panel, text="Pause", command=lambda: self._toggle_region_pause(region_id))
         pause_btn.pack(padx=8, pady=(8, 4))
-        
-        status_label = tk.Label(controls_panel, text="OK", width=10, bg="#2ecc71", fg="black")
-        status_label.pack(padx=8, pady=(0, 8))
+
+        enabled_now = bool(region.get("enabled", True))
+        disable_btn = ttk.Button(
+            controls_panel,
+            text=("Disable" if enabled_now else "Enable"),
+            command=lambda: self._toggle_region_enabled(thumbnail_id, region_id)
+        )
+        disable_btn.pack(padx=8, pady=(0, 4))
         
         self.region_widgets[region_id] = {
-            "status_label": status_label,
             "status_pill": status_pill,
             "pause_btn": pause_btn,
+            "disable_btn": disable_btn,
             "name_entry": name_entry,
             "image_label": image_label,
         }
         
         if not window_image:
             self._set_region_status(thumbnail_id, region_id, "unavailable")
+        elif not enabled_now:
+            self._set_region_status(thumbnail_id, region_id, "disabled")
         else:
             self._apply_region_status(thumbnail_id, region_id)
+
+    def _toggle_region_enabled(self, thumbnail_id: str, region_id: str) -> None:
+        """Enable/disable monitoring for a specific region."""
+        region = self.config.get_region(thumbnail_id, region_id)
+        if not region:
+            return
+        enabled = bool(region.get("enabled", True))
+        new_enabled = not enabled
+
+        if self.config.update_region(thumbnail_id, region_id, {"enabled": new_enabled}):
+            monitor = self.engine.monitoring_engine.get_monitor(region_id)
+            if monitor:
+                monitor.set_enabled(new_enabled)
+            self.config.save()
+
+            widgets = self.region_widgets.get(region_id, {})
+            disable_btn = widgets.get("disable_btn")
+            if disable_btn:
+                disable_btn.config(text=("Disable" if new_enabled else "Enable"))
+
+            if new_enabled:
+                self._mark_dirty(thumbnail_id, region_id, status="ok")
+                self.status_var.set("Region enabled")
+            else:
+                self._mark_dirty(thumbnail_id, region_id, status="disabled")
+                self.status_var.set("Region disabled")
 
     def _save_region_name(self, thumbnail_id: str, region_id: str, name_var: tk.StringVar) -> None:
         """Persist region name changes"""
@@ -752,25 +1090,102 @@ class ScreenAlertMainWindow:
         """Apply status to region UI"""
         status = self.region_statuses.get(thumbnail_id, {}).get(region_id, "ok")
         widgets = self.region_widgets.get(region_id, {})
-        label = widgets.get("status_label")
         pill = widgets.get("status_pill")
-        if not label or not pill:
+        if not pill:
             return
+        status_text = self._format_region_status_text(region_id, status)
         if status == "alert":
-            label.config(text="ALERT", bg="#e74c3c", fg="white")
-            pill.config(text="ALERT", bg="#e74c3c", fg="white")
+            pill.config(text=status_text, bg="#e74c3c", fg="white")
         elif status == "warning":
-            label.config(text="WARNING", bg="#f39c12", fg="black")
-            pill.config(text="WARNING", bg="#f39c12", fg="black")
+            pill.config(text=status_text, bg="#f39c12", fg="black")
         elif status == "paused":
-            label.config(text="PAUSED", bg="#3498db", fg="white")
-            pill.config(text="PAUSED", bg="#3498db", fg="white")
+            pill.config(text=status_text, bg="#3498db", fg="white")
         elif status == "unavailable":
-            label.config(text="UNAVAILABLE", bg="#2c3e50", fg="white")
-            pill.config(text="UNAVAILABLE", bg="#2c3e50", fg="white")
+            pill.config(text=status_text, bg="#2c3e50", fg="white")
+        elif status == "disabled":
+            pill.config(text=status_text, bg="#7f8c8d", fg="white")
         else:
-            label.config(text="OK", bg="#2ecc71", fg="black")
-            pill.config(text="OK", bg="#2ecc71", fg="black")
+            pill.config(text=status_text, bg="#2ecc71", fg="black")
+
+    def _format_region_status_text(self, region_id: str, status: str) -> str:
+        """Build region status text, including countdown for timed states."""
+        base_map = {
+            "alert": "ALERT",
+            "warning": "WARNING",
+            "paused": "PAUSED",
+            "disabled": "N/A",
+            "unavailable": "N/A",
+            "ok": "OK",
+        }
+        base = base_map.get(status, "OK")
+
+        if status not in ("alert", "warning"):
+            return base
+
+        monitor = self.engine.monitoring_engine.get_monitor(region_id)
+        if not monitor:
+            return base
+
+        remaining = monitor.get_state_remaining_seconds(self.config.get_alert_hold_seconds())
+        if remaining is None:
+            return base
+        return f"{base}\n{remaining:02d}s"
+
+    def _refresh_dynamic_status_texts(self) -> None:
+        """Refresh dynamic text portions (countdown) without changing colors."""
+        for region_id, widgets in self.region_widgets.items():
+            pill = widgets.get("status_pill")
+            if not pill:
+                continue
+            thumbnail_id = self.region_to_thumbnail.get(region_id)
+            status = self.region_statuses.get(thumbnail_id, {}).get(region_id, "ok")
+            pill.config(text=self._format_region_status_text(region_id, status))
+
+    def _collect_all_region_states(self) -> List[str]:
+        """Collect current states across all configured regions."""
+        states: List[str] = []
+        for thumbnail in self.config.get_all_thumbnails():
+            thumb_enabled = bool(thumbnail.get("enabled", True))
+            for region in thumbnail.get("monitored_regions", []):
+                region_id = region.get("id")
+                if not region_id:
+                    continue
+                if not thumb_enabled or not bool(region.get("enabled", True)):
+                    states.append("disabled")
+                    continue
+                monitor = self.engine.monitoring_engine.get_monitor(region_id)
+                if monitor:
+                    states.append(monitor.state)
+                else:
+                    states.append("unavailable")
+        return states
+
+    def _refresh_aggregate_status(self) -> None:
+        """Refresh top aggregate status badge with priority ordering."""
+        states = self._collect_all_region_states()
+        if not states:
+            aggregate = "unavailable"
+        elif any(state == "alert" for state in states):
+            aggregate = "alert"
+        elif any(state == "warning" for state in states):
+            aggregate = "warning"
+        elif any(state == "ok" for state in states):
+            aggregate = "ok"
+        elif any(state == "paused" for state in states):
+            aggregate = "paused"
+        else:
+            aggregate = "unavailable"
+
+        if aggregate == "alert":
+            self.aggregate_status_label.config(text="Overall: ALERT", bg="#e74c3c", fg="white")
+        elif aggregate == "warning":
+            self.aggregate_status_label.config(text="Overall: WARNING", bg="#f39c12", fg="black")
+        elif aggregate == "ok":
+            self.aggregate_status_label.config(text="Overall: OK", bg="#2ecc71", fg="black")
+        elif aggregate == "paused":
+            self.aggregate_status_label.config(text="Overall: PAUSED", bg="#3498db", fg="white")
+        else:
+            self.aggregate_status_label.config(text="Overall: N/A", bg="#2c3e50", fg="white")
 
     def _update_region_thumbnail(self, thumbnail_id: str, region_id: str) -> None:
         """Update a single region thumbnail image"""
@@ -791,9 +1206,9 @@ class ScreenAlertMainWindow:
         if not hwnd:
             logger.warning(f"[THUMBNAIL UPDATE] HWND not found for thumbnail {thumbnail_id}")
             return
-        window_image = self.engine.cache_manager.get(hwnd)
+        window_image = self._get_window_image_for_ui(hwnd)
         if not window_image:
-            logger.warning(f"[THUMBNAIL UPDATE] No cached image for hwnd {hwnd}")
+            logger.warning(f"[THUMBNAIL UPDATE] No image available for hwnd {hwnd}")
             return
         try:
             region_image = ImageProcessor.crop_region(window_image, region.get("rect", (0, 0, 0, 0)))
@@ -805,11 +1220,61 @@ class ScreenAlertMainWindow:
         except Exception as e:
             logger.error(f"Error updating region image {region_id}: {e}", exc_info=True)
 
+    def _force_refresh_all_thumbnails(self) -> None:
+        """Force refresh all visible region cards and window preview (every ~5s).
+
+        Invalidates the image cache so the next capture is fresh, then updates
+        every region card that currently has widgets on screen plus the window
+        preview image.
+        """
+        try:
+            # Invalidate cache so we get a fresh capture
+            self.engine.cache_manager.invalidate_all()
+
+            # Refresh each region card that is currently displayed
+            for region_id, widgets in list(self.region_widgets.items()):
+                thumbnail_id = self.region_to_thumbnail.get(region_id)
+                if thumbnail_id:
+                    self._update_region_thumbnail(thumbnail_id, region_id)
+
+            # Refresh window preview image
+            self._refresh_window_preview()
+
+            logger.debug("[FORCE REFRESH] All thumbnails and preview refreshed")
+        except Exception as e:
+            logger.error(f"Error in force refresh: {e}", exc_info=True)
+
+    def _refresh_window_preview(self) -> None:
+        """Refresh the window info preview image with a fresh capture."""
+        try:
+            if self.show_all_regions:
+                thumbnails = self.config.get_all_thumbnails()
+                if len(thumbnails) == 1:
+                    hwnd = thumbnails[0].get("window_hwnd")
+                    window_image = self._get_window_image_for_ui(hwnd)
+                else:
+                    window_image = None
+            elif self.selected_thumbnail_id:
+                thumbnail = self.config.get_thumbnail(self.selected_thumbnail_id)
+                hwnd = thumbnail.get("window_hwnd") if thumbnail else None
+                window_image = self._get_window_image_for_ui(hwnd)
+            else:
+                window_image = None
+
+            if window_image:
+                preview = window_image.copy()
+                preview.thumbnail((240, 135), Image.Resampling.LANCZOS)
+                self.window_preview_photo = ImageTk.PhotoImage(preview)
+                self.window_preview_label.config(image=self.window_preview_photo, text="")
+        except Exception as e:
+            logger.debug(f"Error refreshing window preview: {e}")
+
     def _show_all_regions(self) -> None:
         """Clear selection filter and show all regions"""
         self.show_all_regions = True
         if self.window_tree.exists("__all__"):
-            self.window_tree.selection_set("__all__")
+            self._set_tree_selection("__all__")
+        self.selected_thumbnail_id = None
         self._render_window_detail(None)
 
     def _mark_dirty(self, thumbnail_id: str, region_id: str, status: str = None, thumbnail: bool = False) -> None:
@@ -827,20 +1292,21 @@ class ScreenAlertMainWindow:
                 if thumbnail_id not in self.region_statuses:
                     self.region_statuses[thumbnail_id] = {}
                 self.region_statuses[thumbnail_id][region_id] = status
-                logger.info(f"[MARK DIRTY] Region {region_id}: status {current_status} -> {status}")
+                logger.debug(f"[MARK DIRTY] Region {region_id}: status {current_status} -> {status}")
         
         if thumbnail:
             self.dirty_regions[region_id]['thumbnail'] = True
-            logger.info(f"[MARK DIRTY] Region {region_id}: thumbnail needs update")
+            logger.debug(f"[MARK DIRTY] Region {region_id}: thumbnail needs update")
 
     def _periodic_ui_update(self) -> None:
         """Periodic update loop - SINGLE point where UI updates happen every 1000ms"""
         try:
+            cycle_start = time.perf_counter()
             # Collect all dirty regions
             dirty_count = sum(1 for flags in self.dirty_regions.values() if flags['status'] or flags['thumbnail'])
             
             if dirty_count > 0:
-                logger.info(f"[PERIODIC UPDATE] Processing {dirty_count} dirty regions")
+                logger.debug(f"[PERIODIC UPDATE] Processing {dirty_count} dirty regions")
                 
                 # Process all dirty regions in ONE batch
                 for region_id, flags in list(self.dirty_regions.items()):
@@ -867,9 +1333,44 @@ class ScreenAlertMainWindow:
                 
                 # Clear pending changes
                 self.pending_status_changes.clear()
-                logger.info(f"[PERIODIC UPDATE] Batch complete")
+                logger.debug(f"[PERIODIC UPDATE] Batch complete")
             else:
                 logger.debug(f"[PERIODIC UPDATE] No dirty regions")
+
+            self._refresh_dynamic_status_texts()
+            self._refresh_aggregate_status()
+
+            # Force full thumbnail + preview refresh every 5 seconds (5 ticks)
+            self._force_refresh_counter += 1
+            if self._force_refresh_counter >= 5:
+                self._force_refresh_counter = 0
+                self._force_refresh_all_thumbnails()
+
+            cycle_ms = (time.perf_counter() - cycle_start) * 1000.0
+            self._ui_cycle_count += 1
+            self._ui_cycle_total_ms += cycle_ms
+
+            if self.config.get_diagnostics_enabled():
+                now = time.time()
+                if (now - self._ui_last_diag_ts) >= 10.0:
+                    avg_ms = self._ui_cycle_total_ms / max(1, self._ui_cycle_count)
+                    with self._event_lock:
+                        pending_alerts = len(self._pending_alert_events)
+                        pending_changes = len(self._pending_region_change_events)
+                        pending_lost = len(self._pending_window_lost_events)
+                    logger.info(
+                        "[UI DIAG] cycles=%s avg_ms=%.2f last_ms=%.2f dirty_regions=%s pending_events(alert=%s,change=%s,lost=%s)",
+                        self._ui_cycle_count,
+                        avg_ms,
+                        cycle_ms,
+                        dirty_count,
+                        pending_alerts,
+                        pending_changes,
+                        pending_lost,
+                    )
+                    self._ui_cycle_count = 0
+                    self._ui_cycle_total_ms = 0.0
+                    self._ui_last_diag_ts = now
                 
         except Exception as e:
             logger.error(f"Error in periodic UI update: {e}", exc_info=True)
@@ -902,4 +1403,7 @@ class ScreenAlertMainWindow:
     
     def run(self) -> None:
         """Run main window"""
+        logger.info("Entering Tk mainloop")
+        self.root.after(1000, lambda: logger.debug("Tk mainloop heartbeat: still running..."))
         self.root.mainloop()
+        logger.info("Exited Tk mainloop")
