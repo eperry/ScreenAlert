@@ -3,7 +3,10 @@
 import logging
 import threading
 import time
+import os
+import re
 import tkinter as tk
+from datetime import datetime
 from typing import Dict, Optional, List, Callable
 from PIL import Image
 
@@ -14,7 +17,8 @@ from screenalert_core.core.image_processor import ImageProcessor
 from screenalert_core.monitoring.region_monitor import MonitoringEngine
 from screenalert_core.monitoring.alert_system import AlertSystem
 from screenalert_core.rendering.thumbnail_renderer import ThumbnailRenderer
-from screenalert_core.utils.constants import DEFAULT_REFRESH_RATE_MS
+from screenalert_core.utils.plugin_hooks import PluginHooks
+from screenalert_core.utils.constants import DEFAULT_REFRESH_RATE_MS, TEMP_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +38,7 @@ class ScreenAlertEngine:
         self.cache_manager = CacheManager(lifetime_seconds=1.0)
         self.monitoring_engine = MonitoringEngine()
         self.alert_system = AlertSystem()
+        self.plugin_hooks = PluginHooks()
         self.tkinter_root: Optional[tk.Tk] = None  # Will be set by main_window
         self.renderer = ThumbnailRenderer(manager_callback=self._on_thumbnail_interaction, parent_root=None)
         
@@ -50,8 +55,29 @@ class ScreenAlertEngine:
         
         # Config will be initialized after tkinter root is set
         self._config_initialized = False
-        
+        self.last_pause_reminder_ts = 0
+        self._diag_last_report_ts = time.time()
+        self._diag_loop_count = 0
+        self._diag_capture_ms = 0.0
+        self._diag_render_ms = 0.0
+        self._diag_monitor_ms = 0.0
+        self._diag_alert_count = 0
+        self._diag_change_count = 0
         logger.info("ScreenAlert engine initialized")
+        logger.debug(f"Config path: {config_path}")
+        logger.debug("WindowManager, CacheManager, MonitoringEngine, AlertSystem, ThumbnailRenderer initialized")
+
+    def register_plugin_hook(self, event_name: str, callback: Callable[..., None]) -> None:
+        """Register callback for plugin extension events."""
+        self.plugin_hooks.register(event_name, callback)
+
+    def unregister_plugin_hook(self, event_name: str, callback: Callable[..., None]) -> bool:
+        """Unregister callback for plugin extension events."""
+        return self.plugin_hooks.unregister(event_name, callback)
+
+    def list_plugin_events(self) -> List[str]:
+        """Return currently registered plugin event names."""
+        return self.plugin_hooks.list_events()
     
     def set_tkinter_root(self, root: 'tk.Tk') -> None:
         """Set the main tkinter root for overlay windows
@@ -62,12 +88,12 @@ class ScreenAlertEngine:
         self.tkinter_root = root
         self.renderer.parent_root = root
         logger.debug("Set tkinter root for renderer")
-        
         # Now that we have a tkinter root, initialize from config
         if not self._config_initialized:
             self._initialize_from_config()
             self._config_initialized = True
             logger.debug("Initialized thumbnails from config")
+        logger.info("tkinter root set, config initialized")
     
     def _initialize_from_config(self) -> None:
         """Load thumbnails and regions from config"""
@@ -154,6 +180,7 @@ class ScreenAlertEngine:
             
             self.config.save()
             logger.info(f"Added thumbnail: {thumbnail_id}")
+            self.plugin_hooks.emit("thumbnail.added", thumbnail_id=thumbnail_id, hwnd=window_hwnd, title=window_title)
             return thumbnail_id
         
         except Exception as e:
@@ -177,6 +204,7 @@ class ScreenAlertEngine:
             self.config.save()
             
             logger.info(f"Removed thumbnail: {thumbnail_id}")
+            self.plugin_hooks.emit("thumbnail.removed", thumbnail_id=thumbnail_id)
             return True
         
         except Exception as e:
@@ -184,7 +212,7 @@ class ScreenAlertEngine:
             return False
     
     def add_region(self, thumbnail_id: str, name: str, rect: tuple,
-                  alert_threshold: float = 0.99) -> Optional[str]:
+                  alert_threshold: float = None) -> Optional[str]:
         """Add monitoring region to thumbnail
         
         Args:
@@ -200,10 +228,11 @@ class ScreenAlertEngine:
             region_config = {
                 "name": name,
                 "rect": rect,
-                "alert_threshold": alert_threshold,
+                "alert_threshold": alert_threshold if alert_threshold is not None else self.config.get_default_alert_threshold(),
+                "change_detection_method": self.config.get_change_detection_method(),
                 "enabled": True,
-                "sound_file": "",
-                "tts_message": ""
+                "sound_file": self.config.get_default_sound_file(),
+                "tts_message": self.config.get_default_tts_message()
             }
             
             region_id = self.config.add_region_to_thumbnail(thumbnail_id, region_config)
@@ -211,6 +240,7 @@ class ScreenAlertEngine:
                 self.monitoring_engine.add_region(region_id, thumbnail_id, region_config)
                 self.config.save()
                 logger.info(f"Added region: {region_id}")
+                self.plugin_hooks.emit("region.added", thumbnail_id=thumbnail_id, region_id=region_id, name=name)
             
             return region_id
         
@@ -233,6 +263,7 @@ class ScreenAlertEngine:
             self.loop_thread.start()
             
             logger.info("ScreenAlert engine started")
+            self.plugin_hooks.emit("engine.started")
             return True
         
         except Exception as e:
@@ -243,13 +274,37 @@ class ScreenAlertEngine:
     def stop(self) -> None:
         """Stop the engine"""
         self.running = False
-        self.renderer.stop()
-        
+        try:
+            self.renderer.stop()
+        except Exception as error:
+            logger.error(f"Error stopping renderer: {error}")
+
         if self.loop_thread:
-            self.loop_thread.join(timeout=5.0)
-        
-        self.config.save()
-        self.alert_system.cleanup()
+            try:
+                self.loop_thread.join(timeout=5.0)
+            except Exception as error:
+                logger.error(f"Error joining loop thread: {error}")
+
+        try:
+            self.config.save()
+        except Exception as error:
+            logger.error(f"Error saving config during stop: {error}")
+
+        try:
+            self.alert_system.cleanup()
+        except Exception as error:
+            logger.error(f"Error cleaning alert system: {error}")
+
+        try:
+            self.cache_manager.invalidate_all()
+            self.cache_manager.cleanup_temp_files(TEMP_DIR, max_age_seconds=0)
+        except Exception as error:
+            logger.error(f"Error cleaning cache/temp files: {error}")
+
+        try:
+            self.plugin_hooks.emit("engine.stopped")
+        except Exception as error:
+            logger.error(f"Error emitting engine.stopped hook: {error}")
         
         logger.info("ScreenAlert engine stopped")
     
@@ -315,12 +370,13 @@ class ScreenAlertEngine:
     
     def _main_loop(self) -> None:
         """Main unified capture and processing loop"""
-        refresh_rate_ms = self.config.get_refresh_rate()
-        highlight_time_sec = 5  # TODO: make configurable
-        
+        # Track previous state per region to fire callbacks only on transitions
+        _prev_region_state: dict[str, str] = {}
+
         while self.running:
             try:
                 start_time = time.time()
+                refresh_rate_ms = self.config.get_refresh_rate()
                 
                 # Get snapshot of all thumbnails (copy to avoid mutation during iteration)
                 with self.lock:
@@ -357,10 +413,12 @@ class ScreenAlertEngine:
                         if new_window:
                             window_hwnd = new_window['hwnd']
                         else:
+                            self.plugin_hooks.emit("window.lost", thumbnail_id=thumbnail_id, title=window_title)
                             self.on_window_lost(thumbnail_id, window_title)
                             continue
                     
                     # UNIFIED CAPTURE
+                    capture_start = time.perf_counter()
                     cached_image = self.cache_manager.get(window_hwnd)
                     if cached_image is None:
                         window_image = self.window_manager.capture_window(window_hwnd)
@@ -373,44 +431,151 @@ class ScreenAlertEngine:
                     else:
                         window_image = cached_image
                         logger.debug(f"[{thumbnail_id}] Using cached image: {window_image.size}")
+                    self._diag_capture_ms += (time.perf_counter() - capture_start) * 1000.0
                     
                     # Update renderer with full window image
+                    render_start = time.perf_counter()
                     logger.debug(f"[{thumbnail_id}] Sending to renderer: {window_image.size}")
                     result = self.renderer.update_thumbnail_image(thumbnail_id, window_image)
                     if not result:
                         logger.error(f"[{thumbnail_id}] RENDERER REJECTED (thumbnail not found?)")
                     else:
                         logger.debug(f"[{thumbnail_id}] Renderer accepted image")
+                    self._diag_render_ms += (time.perf_counter() - render_start) * 1000.0
                     
                     # Process monitoring regions (uses same captured image)
                     if not self.paused:
+                        monitor_start = time.perf_counter()
+                        alert_hold_seconds = self.config.get_alert_hold_seconds()
                         region_results = self.monitoring_engine.update_regions(
-                            thumbnail_id, window_image, highlight_time_sec
+                            thumbnail_id, window_image, alert_hold_seconds
                         )
+                        self._diag_monitor_ms += (time.perf_counter() - monitor_start) * 1000.0
                         
-                        for region_id, changed, should_alert in region_results:
-                            if changed:
-                                self.on_region_change(thumbnail_id, region_id)
+                        for region_id, state, should_play_sound in region_results:
+                            # Fire state-change callback when state transitions
+                            prev = _prev_region_state.get(region_id)
+                            if state != prev:
+                                _prev_region_state[region_id] = state
+                                self._diag_change_count += 1
+                                self.plugin_hooks.emit("region.changed", thumbnail_id=thumbnail_id, region_id=region_id)
+                                self.on_region_change(thumbnail_id, region_id, state)
                             
-                            if should_alert:
-                                # Play alert
+                            if should_play_sound:
+                                # Play alert sound
                                 region = self.monitoring_engine.get_monitor(region_id)
                                 if region:
                                     config = region.config
                                     sound_file = config.get("sound_file", "")
                                     tts_message = config.get("tts_message", "")
-                                    
-                                    self.alert_system.play_alert(sound_file, tts_message)
+
+                                    # Optional: suppress alerts during fullscreen apps
+                                    if self.config.get_suppress_fullscreen() and self.window_manager.is_foreground_fullscreen():
+                                        logger.info("Suppressing alert due to fullscreen foreground application")
+                                        continue
+
+                                    # Optional: global mute timer
+                                    mute_until = self.config.get_mute_until_ts()
+                                    if mute_until > int(time.time()):
+                                        logger.info("Alert muted by countdown timer")
+                                    else:
+                                        play_sound = sound_file if self.config.get_enable_sound() else ""
+                                        play_tts = tts_message if self.config.get_enable_tts() else ""
+                                        self.alert_system.play_alert(play_sound, play_tts)
+
+                                    # Optional: capture screenshot on alert
+                                    if self.config.get_capture_on_alert():
+                                        self._capture_region_snapshot(thumbnail_config, config, window_image, status="alert")
+
+                                    # Alert history
+                                    self.config.add_alert_history({
+                                        "timestamp": datetime.now().isoformat(),
+                                        "thumbnail_id": thumbnail_id,
+                                        "region_id": region_id,
+                                        "window_title": thumbnail_config.get("window_title", "Unknown"),
+                                        "region_name": config.get("name", "Region"),
+                                        "status": "alert"
+                                    })
+                                    self.plugin_hooks.emit(
+                                        "alert",
+                                        thumbnail_id=thumbnail_id,
+                                        region_id=region_id,
+                                        region_name=config.get("name", "")
+                                    )
+                                    self._diag_alert_count += 1
                                     self.on_alert(thumbnail_id, region_id, config.get("name", ""))
                 
                 # Sleep to maintain refresh rate
                 elapsed = (time.time() - start_time) * 1000  # Convert to ms
                 sleep_time = max(1, refresh_rate_ms - elapsed) / 1000  # Convert to seconds
+
+                if self.config.get_diagnostics_enabled():
+                    self._diag_loop_count += 1
+                    now = time.time()
+                    if (now - self._diag_last_report_ts) >= 10.0:
+                        logger.info(
+                            "[ENGINE DIAG] loops=%s elapsed_ms=%.2f capture_ms=%.2f render_ms=%.2f monitor_ms=%.2f changes=%s alerts=%s thumbnails=%s",
+                            self._diag_loop_count,
+                            elapsed,
+                            self._diag_capture_ms,
+                            self._diag_render_ms,
+                            self._diag_monitor_ms,
+                            self._diag_change_count,
+                            self._diag_alert_count,
+                            len(thumbnails),
+                        )
+                        if elapsed > (refresh_rate_ms * 1.5):
+                            logger.warning(
+                                "[ENGINE DIAG] loop overrun: elapsed_ms=%.2f refresh_rate_ms=%s",
+                                elapsed,
+                                refresh_rate_ms,
+                            )
+                        self._diag_last_report_ts = now
+                        self._diag_loop_count = 0
+                        self._diag_capture_ms = 0.0
+                        self._diag_render_ms = 0.0
+                        self._diag_monitor_ms = 0.0
+                        self._diag_alert_count = 0
+                        self._diag_change_count = 0
+
                 time.sleep(sleep_time)
             
             except Exception as e:
                 logger.error(f"Error in main loop: {e}")
                 time.sleep(0.1)
+
+    def _capture_region_snapshot(self, thumbnail_config: Dict, region_config: Dict,
+                                 window_image: Image.Image, status: str = "alert") -> None:
+        """Capture and persist region snapshot image."""
+        try:
+            capture_dir = self.config.get_capture_dir()
+            os.makedirs(capture_dir, exist_ok=True)
+
+            window_title = thumbnail_config.get("window_title", "window")
+            region_name = region_config.get("name", "region")
+
+            def safe(text: str) -> str:
+                text = re.sub(r'[^a-zA-Z0-9._-]+', '_', text or "")
+                return text[:64] or "item"
+
+            pattern = self.config.get_capture_filename_format()
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = pattern.format(
+                timestamp=timestamp,
+                window=safe(window_title),
+                region=safe(region_name),
+                status=safe(status),
+            )
+            if not filename.lower().endswith(".png"):
+                filename += ".png"
+            output_path = os.path.join(capture_dir, filename)
+
+            rect = region_config.get("rect", (0, 0, 0, 0))
+            region_img = ImageProcessor.crop_region(window_image, tuple(rect))
+            region_img.save(output_path, format="PNG")
+            logger.info(f"Saved snapshot: {output_path}")
+        except Exception as e:
+            logger.warning(f"Failed to save snapshot: {e}")
     
     def _on_thumbnail_interaction(self, thumbnail_id: str, action: str) -> None:
         """Handle thumbnail user interactions"""

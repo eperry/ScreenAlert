@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import shutil
 from typing import Dict, Any, Optional, List
 from pathlib import Path
 
@@ -36,18 +37,68 @@ class ConfigManager:
                 "opacity": DEFAULT_OPACITY,
                 "always_on_top": True,
                 "log_verbose": False,
+                "high_contrast": False,
                 "last_window_filter": "",
+                "default_alert_threshold": DEFAULT_ALERT_THRESHOLD,
+                "change_detection_method": "ssim",
+                "alert_hold_seconds": 10,
+                "enable_sound": True,
+                "enable_tts": True,
+                "default_sound_file": "",
+                "default_tts_message": "Alert {name}",
+                "mute_until_ts": 0,
+                "pause_reminder_interval_sec": 60,
+                "capture_on_alert": False,
+                "capture_on_green": False,
+                "capture_dir": os.path.join(CONFIG_DIR, "captures"),
+                "capture_filename_format": "{timestamp}_{window}_{region}_{status}.png",
+                "anonymize_logs": False,
+                "suppress_fullscreen": False,
+                "update_check_enabled": False,
+                "headless": False,
+                "diagnostics_enabled": False,
             },
             "thumbnails": [],
             "ui": {
                 "main_window_geometry": "1200x800+100+100",
                 "settings_expanded": False,
+            },
+            "plugins": {
+                "hooks": {}
+            },
+            "history": {
+                "alerts": []
             }
         }
+
+    def _get_legacy_paths(self) -> List[str]:
+        """Known legacy locations for config migration."""
+        home = str(Path.home())
+        return [
+            os.path.join(home, "screenalert_config.json"),
+            os.path.join(os.getcwd(), "screenalert_config.json"),
+            os.path.join(home, ".screenalert", "screenalert_config.json"),
+        ]
+
+    def _try_migrate_legacy_config(self) -> bool:
+        """Attempt to migrate config from legacy locations into current config path."""
+        try:
+            if os.path.exists(self.config_path):
+                return True
+            for legacy in self._get_legacy_paths():
+                if os.path.exists(legacy):
+                    os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
+                    shutil.copy2(legacy, self.config_path)
+                    logger.info(f"Migrated legacy config from {legacy} to {self.config_path}")
+                    return True
+        except Exception as e:
+            logger.warning(f"Legacy config migration failed: {e}")
+        return False
     
     def _load_or_create_config(self) -> Dict[str, Any]:
         """Load config from file or create default"""
         try:
+            self._try_migrate_legacy_config()
             if os.path.exists(self.config_path):
                 logger.info(f"Loading config from {self.config_path}")
                 with open(self.config_path, 'r') as f:
@@ -127,6 +178,123 @@ class ConfigManager:
     def set_verbose_logging(self, verbose: bool) -> None:
         """Set verbose logging"""
         self._config["app"]["log_verbose"] = verbose
+
+    def get_high_contrast(self) -> bool:
+        """Get high contrast mode setting."""
+        return bool(self._config.get("app", {}).get("high_contrast", False))
+
+    def set_high_contrast(self, enabled: bool) -> None:
+        """Set high contrast mode setting."""
+        self._config["app"]["high_contrast"] = bool(enabled)
+
+    def get_default_alert_threshold(self) -> float:
+        return float(self._config.get("app", {}).get("default_alert_threshold", DEFAULT_ALERT_THRESHOLD))
+
+    def set_default_alert_threshold(self, threshold: float) -> None:
+        self._config["app"]["default_alert_threshold"] = max(0.1, min(float(threshold), 1.0))
+
+    def get_change_detection_method(self) -> str:
+        method = self._config.get("app", {}).get("change_detection_method", "ssim")
+        return method if method in ("ssim", "phash") else "ssim"
+
+    def set_change_detection_method(self, method: str) -> None:
+        self._config["app"]["change_detection_method"] = method if method in ("ssim", "phash") else "ssim"
+
+    def get_alert_hold_seconds(self) -> int:
+        return int(self._config.get("app", {}).get("alert_hold_seconds", 10))
+
+    def set_alert_hold_seconds(self, seconds: int) -> None:
+        self._config["app"]["alert_hold_seconds"] = max(1, min(int(seconds), 120))
+
+    def get_enable_sound(self) -> bool:
+        return bool(self._config.get("app", {}).get("enable_sound", True))
+
+    def set_enable_sound(self, enabled: bool) -> None:
+        self._config["app"]["enable_sound"] = bool(enabled)
+
+    def get_enable_tts(self) -> bool:
+        return bool(self._config.get("app", {}).get("enable_tts", True))
+
+    def set_enable_tts(self, enabled: bool) -> None:
+        self._config["app"]["enable_tts"] = bool(enabled)
+
+    def get_default_sound_file(self) -> str:
+        return self._config.get("app", {}).get("default_sound_file", "")
+
+    def set_default_sound_file(self, path: str) -> None:
+        self._config["app"]["default_sound_file"] = path or ""
+
+    def get_default_tts_message(self) -> str:
+        return self._config.get("app", {}).get("default_tts_message", "Alert {name}")
+
+    def set_default_tts_message(self, message: str) -> None:
+        self._config["app"]["default_tts_message"] = message or "Alert {name}"
+
+    def get_mute_until_ts(self) -> int:
+        return int(self._config.get("app", {}).get("mute_until_ts", 0))
+
+    def set_mute_until_ts(self, timestamp: int) -> None:
+        self._config["app"]["mute_until_ts"] = max(0, int(timestamp))
+
+    def get_pause_reminder_interval_sec(self) -> int:
+        return int(self._config.get("app", {}).get("pause_reminder_interval_sec", 60))
+
+    def set_pause_reminder_interval_sec(self, seconds: int) -> None:
+        self._config["app"]["pause_reminder_interval_sec"] = max(10, min(int(seconds), 3600))
+
+    def get_capture_on_alert(self) -> bool:
+        return bool(self._config.get("app", {}).get("capture_on_alert", False))
+
+    def set_capture_on_alert(self, enabled: bool) -> None:
+        self._config["app"]["capture_on_alert"] = bool(enabled)
+
+    def get_capture_on_green(self) -> bool:
+        return bool(self._config.get("app", {}).get("capture_on_green", False))
+
+    def set_capture_on_green(self, enabled: bool) -> None:
+        self._config["app"]["capture_on_green"] = bool(enabled)
+
+    def get_capture_dir(self) -> str:
+        return self._config.get("app", {}).get("capture_dir", os.path.join(CONFIG_DIR, "captures"))
+
+    def set_capture_dir(self, path: str) -> None:
+        self._config["app"]["capture_dir"] = path or os.path.join(CONFIG_DIR, "captures")
+
+    def get_capture_filename_format(self) -> str:
+        return self._config.get("app", {}).get("capture_filename_format", "{timestamp}_{window}_{region}_{status}.png")
+
+    def set_capture_filename_format(self, pattern: str) -> None:
+        self._config["app"]["capture_filename_format"] = pattern or "{timestamp}_{window}_{region}_{status}.png"
+
+    def get_anonymize_logs(self) -> bool:
+        return bool(self._config.get("app", {}).get("anonymize_logs", False))
+
+    def set_anonymize_logs(self, enabled: bool) -> None:
+        self._config["app"]["anonymize_logs"] = bool(enabled)
+
+    def get_suppress_fullscreen(self) -> bool:
+        return bool(self._config.get("app", {}).get("suppress_fullscreen", False))
+
+    def set_suppress_fullscreen(self, enabled: bool) -> None:
+        self._config["app"]["suppress_fullscreen"] = bool(enabled)
+
+    def get_update_check_enabled(self) -> bool:
+        return bool(self._config.get("app", {}).get("update_check_enabled", False))
+
+    def set_update_check_enabled(self, enabled: bool) -> None:
+        self._config["app"]["update_check_enabled"] = bool(enabled)
+
+    def get_diagnostics_enabled(self) -> bool:
+        return bool(self._config.get("app", {}).get("diagnostics_enabled", False))
+
+    def set_diagnostics_enabled(self, enabled: bool) -> None:
+        self._config["app"]["diagnostics_enabled"] = bool(enabled)
+
+    def get_headless(self) -> bool:
+        return bool(self._config.get("app", {}).get("headless", False))
+
+    def set_headless(self, enabled: bool) -> None:
+        self._config["app"]["headless"] = bool(enabled)
     
     def get_last_window_filter(self) -> str:
         """Get last used window filter"""
@@ -292,3 +460,41 @@ class ConfigManager:
     def set_main_window_geometry(self, geometry: str) -> None:
         """Save main window geometry"""
         self._config["ui"]["main_window_geometry"] = geometry
+
+    def export_config(self, export_path: str) -> bool:
+        """Export current config to a specified path."""
+        try:
+            with open(export_path, 'w') as f:
+                json.dump(self._config, f, indent=2)
+            return True
+        except Exception as e:
+            logger.error(f"Error exporting config to {export_path}: {e}")
+            return False
+
+    def import_config(self, import_path: str) -> bool:
+        """Import config from a file path and merge with defaults."""
+        try:
+            with open(import_path, 'r') as f:
+                imported = json.load(f)
+            defaults = self._get_default_config()
+            self._config = self._merge_configs(defaults, imported)
+            return self.save()
+        except Exception as e:
+            logger.error(f"Error importing config from {import_path}: {e}")
+            return False
+
+    def reset_to_defaults(self) -> bool:
+        """Reset all configuration to defaults and persist."""
+        self._config = self._get_default_config()
+        return self.save()
+
+    def add_alert_history(self, item: Dict[str, Any], max_items: int = 200) -> None:
+        """Append alert event history and keep bounded size."""
+        history = self._config.setdefault("history", {}).setdefault("alerts", [])
+        history.append(item)
+        if len(history) > max_items:
+            self._config["history"]["alerts"] = history[-max_items:]
+
+    def get_alert_history(self) -> List[Dict[str, Any]]:
+        """Get alert history list."""
+        return list(self._config.get("history", {}).get("alerts", []))

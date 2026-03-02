@@ -59,19 +59,77 @@ class ImageProcessor:
     
     @staticmethod
     def detect_change(img1: Image.Image, img2: Image.Image, 
-                     threshold: float = 0.99) -> bool:
-        """Detect if there's significant change between images
-        
+                     threshold: float = 0.99,
+                     method: str = "ssim") -> bool:
+        """Detect if there's significant change between images.
+
+        A supplementary raw-pixel check runs first to catch tiny changes
+        (e.g. a few characters changing in a large region) that SSIM or
+        pHash would miss because their global scores barely move.
+
         Args:
             img1: First PIL Image
             img2: Second PIL Image
-            threshold: SSIM threshold (lower = more sensitive)
-        
+            threshold: Similarity threshold (higher = more sensitive)
+
         Returns:
-            True if change detected (SSIM < threshold)
+            True if change detected
         """
-        similarity = ImageProcessor.calculate_ssim(img1, img2)
-        return similarity < threshold
+        # ── Fast pixel-diff pre-check ──────────────────────────────────
+        # Win32 screenshots are pixel-exact when unchanged, so ANY
+        # non-zero pixel difference is a real change.  We use a minimal
+        # threshold (>0 intensity, >=1 pixel) to catch even single-
+        # character text changes in large regions that SSIM would miss.
+        try:
+            arr1 = np.array(img1.convert('L'), dtype=np.int16)
+            arr2 = np.array(img2.convert('L'), dtype=np.int16)
+            diff = np.abs(arr1 - arr2)
+            any_diff_px = int(np.count_nonzero(diff > 0))
+            if any_diff_px > 0:
+                max_diff = int(diff.max())
+                logger.debug(
+                    "pixel-diff: %d pixels differ (max_intensity_delta=%d)",
+                    any_diff_px, max_diff,
+                )
+                return True
+        except Exception:
+            pass  # fall through to soft comparison
+
+        # ── Soft comparison (SSIM / pHash) ─────────────────────────────
+        if method == "phash":
+            similarity = ImageProcessor.calculate_phash_similarity(img1, img2)
+        else:
+            similarity = ImageProcessor.calculate_ssim(img1, img2)
+        changed = similarity < threshold
+        if changed:
+            logger.debug(
+                "soft-compare (%s): similarity=%.6f threshold=%.4f -> CHANGED",
+                method, similarity, threshold,
+            )
+        return changed
+
+    @staticmethod
+    def _average_hash(img: Image.Image, hash_size: int = 8) -> np.ndarray:
+        """Compute average hash bits for an image."""
+        gray = img.convert('L').resize((hash_size, hash_size), Image.Resampling.LANCZOS)
+        arr = np.array(gray, dtype=np.float32)
+        avg = arr.mean()
+        return arr > avg
+
+    @staticmethod
+    def calculate_phash_similarity(img1: Image.Image, img2: Image.Image) -> float:
+        """Approximate perceptual-hash similarity in [0,1]."""
+        try:
+            if img1.size != img2.size:
+                img2 = img2.resize(img1.size, Image.Resampling.LANCZOS)
+            h1 = ImageProcessor._average_hash(img1)
+            h2 = ImageProcessor._average_hash(img2)
+            hamming = np.count_nonzero(h1 != h2)
+            total = h1.size
+            return max(0.0, min(1.0, 1.0 - (hamming / max(1, total))))
+        except Exception as e:
+            logger.debug(f"Error calculating pHash similarity: {e}")
+            return 0.0
     
     @staticmethod
     def resize_image(img: Image.Image, width: int, height: int, 
@@ -88,11 +146,13 @@ class ImageProcessor:
             Resized image
         """
         try:
+            # Always work on a copy to avoid mutating the caller's image
+            result = img.copy()
             if maintain_aspect:
-                img.thumbnail((width, height), Image.Resampling.LANCZOS)
+                result.thumbnail((width, height), Image.Resampling.LANCZOS)
             else:
-                img = img.resize((width, height), Image.Resampling.LANCZOS)
-            return img
+                result = result.resize((width, height), Image.Resampling.LANCZOS)
+            return result
         except Exception as e:
             logger.error(f"Error resizing image: {e}")
             return img

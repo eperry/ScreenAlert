@@ -8,6 +8,7 @@ APP_NAME = "ScreenAlert"
 APP_VERSION = "2.0.0"
 APP_AUTHOR = "Ed Perry"
 APP_REPO_URL = "https://github.com/eperry/ScreenAlert"
+APP_RELEASE_API_URL = "https://api.github.com/repos/eperry/ScreenAlert/releases/latest"
 
 # Paths
 if platform.system() == "Windows":
@@ -19,10 +20,12 @@ else:
     LOGS_DIR = os.path.join(CONFIG_DIR, 'logs')
 
 CONFIG_FILE = os.path.join(CONFIG_DIR, "screenalert_config.json")
+TEMP_DIR = os.path.join(CONFIG_DIR, "temp")
 
 # Create directories if they don't exist
 os.makedirs(CONFIG_DIR, exist_ok=True)
 os.makedirs(LOGS_DIR, exist_ok=True)
+os.makedirs(TEMP_DIR, exist_ok=True)
 
 # Default Settings
 DEFAULT_REFRESH_RATE_MS = 1000

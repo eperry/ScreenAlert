@@ -310,7 +310,7 @@ class ThumbnailWindow:
                     self.label.config(image=photo)
                     self.label.image = photo
                     self.photo_image = photo
-                    logger.info(f"[{self.thumbnail_id}] DISPLAY_UPDATE: ✓ image displayed (label={self.label})")
+                    logger.info(f"[{self.thumbnail_id}] DISPLAY_UPDATE: image displayed (label={self.label})")
                 else:
                     logger.error(f"[{self.thumbnail_id}] DISPLAY_ERROR: No label to update (hasattr={hasattr(self, 'label')})")
             except queue.Empty:

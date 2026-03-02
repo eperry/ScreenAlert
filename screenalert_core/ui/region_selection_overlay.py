@@ -34,21 +34,45 @@ class RegionSelectionOverlay:
         monitor_y = monitor_info['top']
         monitor_width = monitor_info['right'] - monitor_info['left']
         monitor_height = monitor_info['bottom'] - monitor_info['top']
+        self.monitor_x = monitor_x
+        self.monitor_y = monitor_y
+        self.monitor_width = monitor_width
+        self.monitor_height = monitor_height
         
         logger.info(f"Window on monitor: ({monitor_x}, {monitor_y}), size: {monitor_width}x{monitor_height}")
         
         # Create full-screen overlay on the same monitor as the window
         self.overlay = tk.Toplevel(parent_root)
-        self.overlay.attributes('-alpha', 1.0)  # Fully opaque to gray out other apps
+        self.overlay.attributes('-alpha', 0.28)
         self.overlay.attributes('-topmost', True)
         self.overlay.overrideredirect(True)
         
         # Position overlay on the target monitor
         self.overlay.geometry(f"{monitor_width}x{monitor_height}+{monitor_x}+{monitor_y}")
         
-        # Dark canvas (fully opaque to gray out other windows)
+        # Dark canvas (semi-transparent so target app remains visible)
         self.canvas = tk.Canvas(self.overlay, bg='#1a1a1a', highlightthickness=0)
         self.canvas.pack(fill=tk.BOTH, expand=True)
+
+        # Highlight the target window area
+        try:
+            rect = win32gui.GetWindowRect(self.window_hwnd)
+            rel_left = max(0, rect[0] - self.monitor_x)
+            rel_top = max(0, rect[1] - self.monitor_y)
+            rel_right = min(self.monitor_width, rect[2] - self.monitor_x)
+            rel_bottom = min(self.monitor_height, rect[3] - self.monitor_y)
+            if rel_right > rel_left and rel_bottom > rel_top:
+                self.canvas.create_rectangle(
+                    rel_left,
+                    rel_top,
+                    rel_right,
+                    rel_bottom,
+                    outline='#00d4ff',
+                    width=3,
+                    tags='target_window'
+                )
+        except Exception:
+            pass
         
         # Bind mouse events
         self.canvas.bind("<Button-1>", self._on_press)
@@ -57,7 +81,7 @@ class RegionSelectionOverlay:
         self.overlay.bind("<Escape>", self._on_cancel)
         
         # Instructions text
-        instruction_text = "Draw a region by clicking and dragging. Selection auto-completes when finished."
+        instruction_text = "Draw a region on the highlighted window. Selection auto-completes on mouse release."
         self.canvas.create_text(
             monitor_width // 2,
             30,
@@ -125,11 +149,13 @@ class RegionSelectionOverlay:
             return
         
         self.canvas.delete("preview_rect")
-        
-        x = min(self.start_x, event.x_root)
-        y = min(self.start_y, event.y_root)
+
+        x_screen = min(self.start_x, event.x_root)
+        y_screen = min(self.start_y, event.y_root)
         width = abs(event.x_root - self.start_x)
         height = abs(event.y_root - self.start_y)
+        x = x_screen - self.monitor_x
+        y = y_screen - self.monitor_y
         
         if width > 0 and height > 0:
             self.canvas.create_rectangle(
@@ -142,7 +168,7 @@ class RegionSelectionOverlay:
             dim_text = f"{width}x{height}px"
             self.canvas.delete("dimension_text")
             self.canvas.create_text(
-                event.x_root + 10, event.y_root - 10,
+                event.x_root - self.monitor_x + 10, event.y_root - self.monitor_y - 10,
                 text=dim_text,
                 fill='#ffff00',
                 font=('Courier', 10, 'bold'),
@@ -174,7 +200,8 @@ class RegionSelectionOverlay:
             # Region too small, show message and continue
             self.canvas.delete("too_small_text")
             self.canvas.create_text(
-                event.x_root, event.y_root - 30,
+                event.x_root - self.monitor_x,
+                event.y_root - self.monitor_y - 30,
                 text=f"Too small ({width}x{height}). Min: {self.min_region_size}x{self.min_region_size}",
                 fill='#ff4444',
                 font=('Arial', 11, 'bold'),
