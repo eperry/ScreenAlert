@@ -797,9 +797,10 @@ class ScreenAlertEngine:
         except Exception as e:
             logger.warning(f"Failed to save snapshot: {e}")
     
-    def _on_thumbnail_interaction(self, thumbnail_id: str, action: str) -> None:
+    def _on_thumbnail_interaction(self, thumbnail_id: str, action: str, payload: Optional[Dict] = None) -> None:
         """Handle thumbnail user interactions"""
-        logger.debug(f"Thumbnail {thumbnail_id} action: {action}")
+        payload = payload or {}
+        logger.debug(f"Thumbnail {thumbnail_id} action: {action} payload={payload}")
         
         if action == "activated":
             # Bring corresponding window to front
@@ -809,12 +810,48 @@ class ScreenAlertEngine:
                 self.window_manager.activate_window(hwnd)
         
         elif action == "position_changed":
-            # Position will be updated via renderer
-            pass
+            thumbnail = self.config.get_thumbnail(thumbnail_id)
+            if not thumbnail:
+                return
+            position = thumbnail.get("position", {})
+            monitor = position.get("monitor", 0)
+            x = int(payload.get("x", position.get("x", 0)))
+            y = int(payload.get("y", position.get("y", 0)))
+            with self.lock:
+                self.config.update_thumbnail_position(thumbnail_id, x, y, monitor)
+                self.config.save()
         
         elif action == "size_changed":
-            # Size will be updated via renderer
-            pass
+            thumbnail = self.config.get_thumbnail(thumbnail_id)
+            if not thumbnail:
+                return
+            size = thumbnail.get("size", {})
+            width = int(payload.get("width", size.get("width", 320)))
+            height = int(payload.get("height", size.get("height", 240)))
+            with self.lock:
+                self.config.update_thumbnail_size(thumbnail_id, width, height)
+                self.config.save()
+
+        elif action == "bulk_geometry_changed":
+            geometries = payload.get("geometries", {})
+            if not isinstance(geometries, dict) or not geometries:
+                return
+            with self.lock:
+                for target_id, geometry in geometries.items():
+                    if not isinstance(geometry, dict):
+                        continue
+                    thumbnail = self.config.get_thumbnail(target_id)
+                    if not thumbnail:
+                        continue
+                    position = thumbnail.get("position", {})
+                    monitor = position.get("monitor", 0)
+                    x = int(geometry.get("x", position.get("x", 0)))
+                    y = int(geometry.get("y", position.get("y", 0)))
+                    width = int(geometry.get("width", thumbnail.get("size", {}).get("width", 320)))
+                    height = int(geometry.get("height", thumbnail.get("size", {}).get("height", 240)))
+                    self.config.update_thumbnail_position(target_id, x, y, monitor)
+                    self.config.update_thumbnail_size(target_id, width, height)
+                self.config.save()
     
     def is_running(self) -> bool:
         """Check if engine is running"""

@@ -56,6 +56,7 @@ class ThumbnailRenderer:
                     thumbnail_id, 
                     config,
                     self.manager_callback,
+                    owner_renderer=self,
                     parent_root=self.parent_root
                 )
                 self.thumbnails[thumbnail_id] = thumbnail
@@ -97,6 +98,7 @@ class ThumbnailRenderer:
                 return False
             
             self.thumbnails[thumbnail_id].set_position(x, y)
+            return True
     
     def update_thumbnail_size(self, thumbnail_id: str, width: int, height: int) -> bool:
         """Update thumbnail size"""
@@ -119,6 +121,19 @@ class ThumbnailRenderer:
     def get_thumbnail(self, thumbnail_id: str) -> Optional['ThumbnailWindow']:
         """Get thumbnail window object"""
         return self.thumbnails.get(thumbnail_id)
+
+    def get_all_thumbnail_geometries(self) -> Dict[str, Dict[str, int]]:
+        """Get current geometry snapshot for all thumbnails."""
+        with self.lock:
+            return {
+                thumbnail_id: {
+                    "x": thumbnail.x,
+                    "y": thumbnail.y,
+                    "width": thumbnail.width,
+                    "height": thumbnail.height,
+                }
+                for thumbnail_id, thumbnail in self.thumbnails.items()
+            }
 
     def set_thumbnail_availability(self, thumbnail_id: str, available: bool,
                                    show_when_unavailable: bool = False) -> bool:
@@ -180,6 +195,7 @@ class ThumbnailWindow:
     
     def __init__(self, thumbnail_id: str, config: Dict, 
                  manager_callback: Callable = None,
+                 owner_renderer: Optional[ThumbnailRenderer] = None,
                  parent_root: Optional[tk.Tk] = None):
         """Initialize thumbnail window
         
@@ -192,6 +208,7 @@ class ThumbnailWindow:
         self.thumbnail_id = thumbnail_id
         self.config = config
         self.manager_callback = manager_callback
+        self.owner_renderer = owner_renderer
         self.parent_root = parent_root
         
         # Position and size
@@ -214,9 +231,14 @@ class ThumbnailWindow:
         self.photo_image: Optional[ImageTk.PhotoImage] = None
         self._is_available = True
         self._show_when_unavailable = False
-        self.is_dragging = False
-        self.is_resizing = False
-        self.drag_start = (0, 0)
+        self.interaction_state = "idle"
+        self.left_pressed = False
+        self.right_pressed = False
+        self.pointer_start = (0, 0)
+        self.start_geometry = {"x": self.x, "y": self.y, "width": self.width, "height": self.height}
+        self._sync_start_sizes: Dict[str, Tuple[int, int]] = {}
+        self._drag_threshold_px = 4
+        self._did_move_or_resize = False
         
         # Thread-safe queue for image updates from worker threads
         self.image_queue: queue.Queue = queue.Queue(maxsize=1)
@@ -279,17 +301,34 @@ class ThumbnailWindow:
             self.label.bind('<Leave>', self._on_mouse_leave)
             
             # Bind drag events to title bar
-            self.title_bar.bind('<Button-1>', self._on_press)
-            self.title_bar.bind('<B1-Motion>', self._on_drag)
-            self.title_bar.bind('<ButtonRelease-1>', self._on_release)
-            self.title_label.bind('<Button-1>', self._on_press)
-            self.title_label.bind('<B1-Motion>', self._on_drag)
-            self.title_label.bind('<ButtonRelease-1>', self._on_release)
+            self.title_bar.bind('<ButtonPress-1>', self._on_left_press)
+            self.title_bar.bind('<ButtonRelease-1>', self._on_left_release)
+            self.title_bar.bind('<ButtonPress-3>', self._on_right_press)
+            self.title_bar.bind('<ButtonRelease-3>', self._on_right_release)
+            self.title_bar.bind('<B1-Motion>', self._on_motion)
+            self.title_bar.bind('<B3-Motion>', self._on_motion)
+            self.title_label.bind('<ButtonPress-1>', self._on_left_press)
+            self.title_label.bind('<ButtonRelease-1>', self._on_left_release)
+            self.title_label.bind('<ButtonPress-3>', self._on_right_press)
+            self.title_label.bind('<ButtonRelease-3>', self._on_right_release)
+            self.title_label.bind('<B1-Motion>', self._on_motion)
+            self.title_label.bind('<B3-Motion>', self._on_motion)
             
             # Bind drag events to label too (when title bar hidden)
-            self.label.bind('<Button-1>', self._on_press)
-            self.label.bind('<B1-Motion>', self._on_drag)
-            self.label.bind('<ButtonRelease-1>', self._on_release)
+            self.label.bind('<ButtonPress-1>', self._on_left_press)
+            self.label.bind('<ButtonRelease-1>', self._on_left_release)
+            self.label.bind('<ButtonPress-3>', self._on_right_press)
+            self.label.bind('<ButtonRelease-3>', self._on_right_release)
+            self.label.bind('<B1-Motion>', self._on_motion)
+            self.label.bind('<B3-Motion>', self._on_motion)
+
+            # Window-level fallback bindings to keep gestures reliable across child boundaries
+            self.window.bind('<ButtonPress-1>', self._on_left_press)
+            self.window.bind('<ButtonRelease-1>', self._on_left_release)
+            self.window.bind('<ButtonPress-3>', self._on_right_press)
+            self.window.bind('<ButtonRelease-3>', self._on_right_release)
+            self.window.bind('<B1-Motion>', self._on_motion)
+            self.window.bind('<B3-Motion>', self._on_motion)
             
             # Schedule periodic queue processing (use after to ensure window is fully initialized)
             self.window.after(50, self._process_image_queue)
@@ -482,28 +521,157 @@ class ThumbnailWindow:
             except:
                 pass
     
-    def _on_press(self, event) -> None:
-        """Start drag operation"""
-        self.is_dragging = True
-        self.drag_start = (event.x_root, event.y_root)
-    
-    def _on_drag(self, event) -> None:
-        """Handle dragging"""
-        if not self.is_dragging or not self.window:
+    @staticmethod
+    def _is_shift_pressed(event) -> bool:
+        return bool(getattr(event, 'state', 0) & 0x0001)
+
+    def _is_within_threshold(self, event) -> bool:
+        dx = abs(event.x_root - self.pointer_start[0])
+        dy = abs(event.y_root - self.pointer_start[1])
+        return dx <= self._drag_threshold_px and dy <= self._drag_threshold_px
+
+    def _begin_interaction(self, event) -> None:
+        self.pointer_start = (event.x_root, event.y_root)
+        self.start_geometry = {
+            "x": self.x,
+            "y": self.y,
+            "width": self.width,
+            "height": self.height,
+        }
+
+    def _begin_move(self, event) -> None:
+        self.interaction_state = "moving"
+        self._did_move_or_resize = False
+        self._begin_interaction(event)
+
+    def _begin_resize(self, event, sync: bool) -> None:
+        self.interaction_state = "sync_resizing" if sync else "resizing"
+        self._did_move_or_resize = False
+        self._begin_interaction(event)
+        self._sync_start_sizes = {}
+        if sync and self.owner_renderer:
+            source_width = self.start_geometry["width"]
+            source_height = self.start_geometry["height"]
+            geometries = self.owner_renderer.get_all_thumbnail_geometries()
+            self._sync_start_sizes = {
+                thumbnail_id: (source_width, source_height)
+                for thumbnail_id, geometry in geometries.items()
+            }
+            for thumbnail in self.owner_renderer.thumbnails.values():
+                thumbnail.set_size(source_width, source_height)
+
+    def _apply_move(self, event) -> None:
+        if self.interaction_state != "moving":
             return
-        
-        dx = event.x_root - self.drag_start[0]
-        dy = event.y_root - self.drag_start[1]
-        
-        new_x = self.x + dx
-        new_y = self.y + dy
-        
+        dx = event.x_root - self.pointer_start[0]
+        dy = event.y_root - self.pointer_start[1]
+        new_x = self.start_geometry["x"] + dx
+        new_y = self.start_geometry["y"] + dy
         self.set_position(new_x, new_y)
-        self.drag_start = (event.x_root, event.y_root)
-    
-    def _on_release(self, event) -> None:
-        """End drag operation"""
-        self.is_dragging = False
+        self._did_move_or_resize = True
+
+    def _apply_resize(self, event) -> None:
+        if self.interaction_state not in ("resizing", "sync_resizing"):
+            return
+
+        dx = event.x_root - self.pointer_start[0]
+        dy = event.y_root - self.pointer_start[1]
+        self._did_move_or_resize = True
+
+        if self.interaction_state == "sync_resizing" and self.owner_renderer:
+            for thumbnail_id, thumbnail in self.owner_renderer.thumbnails.items():
+                start_size = self._sync_start_sizes.get(thumbnail_id, (thumbnail.width, thumbnail.height))
+                start_width, start_height = start_size
+                target_width = max(THUMBNAIL_MIN_WIDTH, min(start_width + dx, THUMBNAIL_MAX_WIDTH))
+                target_height = max(THUMBNAIL_MIN_HEIGHT, min(start_height + dy, THUMBNAIL_MAX_HEIGHT))
+                thumbnail.set_size(target_width, target_height)
+            return
+
+        target_width = max(THUMBNAIL_MIN_WIDTH, min(self.start_geometry["width"] + dx, THUMBNAIL_MAX_WIDTH))
+        target_height = max(THUMBNAIL_MIN_HEIGHT, min(self.start_geometry["height"] + dy, THUMBNAIL_MAX_HEIGHT))
+        self.set_size(target_width, target_height)
+
+    def _emit_interaction(self, action: str, payload: Optional[Dict] = None) -> None:
+        if not self.manager_callback:
+            return
+        try:
+            self.manager_callback(self.thumbnail_id, action, payload or {})
+        except TypeError:
+            self.manager_callback(self.thumbnail_id, action)
+        except Exception as error:
+            logger.debug(f"[{self.thumbnail_id}] interaction callback failed: {error}")
+
+    def _on_left_press(self, event) -> None:
+        self.left_pressed = True
+        if self.right_pressed:
+            self._begin_resize(event, sync=self._is_shift_pressed(event))
+        else:
+            self._begin_interaction(event)
+            self.interaction_state = "pending_focus"
+            self._did_move_or_resize = False
+
+    def _on_right_press(self, event) -> None:
+        self.right_pressed = True
+        if self.left_pressed:
+            self._begin_resize(event, sync=self._is_shift_pressed(event))
+        else:
+            self._begin_move(event)
+
+    def _on_motion(self, event) -> None:
+        if self.left_pressed and self.right_pressed and self.interaction_state not in ("resizing", "sync_resizing"):
+            self._begin_resize(event, sync=self._is_shift_pressed(event))
+
+        if self.interaction_state == "pending_focus" and not self._is_within_threshold(event):
+            self._did_move_or_resize = True
+
+        if self.interaction_state == "moving":
+            self._apply_move(event)
+        elif self.interaction_state in ("resizing", "sync_resizing"):
+            self._apply_resize(event)
+
+    def _on_left_release(self, event) -> None:
+        self.left_pressed = False
+        self._finalize_interaction(event, released_button='left')
+
+    def _on_right_release(self, event) -> None:
+        self.right_pressed = False
+        self._finalize_interaction(event, released_button='right')
+
+    def _finalize_interaction(self, event, released_button: str) -> None:
+        state = self.interaction_state
+
+        if state == "pending_focus":
+            if released_button == 'left' and not self.right_pressed and not self._did_move_or_resize:
+                if self._is_available:
+                    self._emit_interaction("activated", {})
+            self.interaction_state = "idle"
+            return
+
+        if state == "moving" and released_button == 'right':
+            self._emit_interaction(
+                "position_changed",
+                {"x": self.x, "y": self.y, "width": self.width, "height": self.height}
+            )
+            self.interaction_state = "idle"
+            return
+
+        if state == "resizing":
+            if not self.left_pressed and not self.right_pressed:
+                self._emit_interaction(
+                    "size_changed",
+                    {"x": self.x, "y": self.y, "width": self.width, "height": self.height}
+                )
+                self.interaction_state = "idle"
+            return
+
+        if state == "sync_resizing":
+            if not self.left_pressed and not self.right_pressed:
+                geometries = {}
+                if self.owner_renderer:
+                    geometries = self.owner_renderer.get_all_thumbnail_geometries()
+                self._emit_interaction("bulk_geometry_changed", {"geometries": geometries})
+                self.interaction_state = "idle"
+            return
     
     def cleanup(self) -> None:
         """Clean up resources"""
