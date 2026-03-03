@@ -3,12 +3,10 @@
 import json
 import logging
 import os
-import shutil
 from typing import Dict, Any, Optional, List
-from pathlib import Path
 
 from screenalert_core.utils.constants import (
-    CONFIG_FILE, CONFIG_DIR, DEFAULT_REFRESH_RATE_MS, DEFAULT_OPACITY,
+    CONFIG_FILE, WINDOW_REGION_CONFIG_FILE, CONFIG_DIR, DEFAULT_REFRESH_RATE_MS, DEFAULT_OPACITY,
     DEFAULT_ALERT_THRESHOLD, THUMBNAIL_DEFAULT_WIDTH, THUMBNAIL_DEFAULT_HEIGHT
 )
 from screenalert_core.utils.helpers import generate_uuid
@@ -26,7 +24,17 @@ class ConfigManager:
             config_path: Path to config file (default: standard location)
         """
         self.config_path = config_path or CONFIG_FILE
+        self.window_region_config_path = self._derive_window_region_config_path(self.config_path)
         self._config = self._load_or_create_config()
+
+    def _derive_window_region_config_path(self, app_config_path: str) -> str:
+        """Derive window/region data config path from app config path."""
+        if os.path.abspath(app_config_path) == os.path.abspath(CONFIG_FILE):
+            return WINDOW_REGION_CONFIG_FILE
+
+        base_dir = os.path.dirname(app_config_path) or CONFIG_DIR
+        base_name = os.path.splitext(os.path.basename(app_config_path))[0]
+        return os.path.join(base_dir, f"{base_name}_windows_regions.json")
     
     def _get_default_config(self) -> Dict[str, Any]:
         """Get default configuration structure"""
@@ -74,43 +82,48 @@ class ConfigManager:
             }
         }
 
-    def _get_legacy_paths(self) -> List[str]:
-        """Known legacy locations for config migration."""
-        home = str(Path.home())
-        return [
-            os.path.join(home, "screenalert_config.json"),
-            os.path.join(os.getcwd(), "screenalert_config.json"),
-            os.path.join(home, ".screenalert", "screenalert_config.json"),
-        ]
+    def _load_json_file(self, file_path: str) -> Optional[Dict[str, Any]]:
+        """Load JSON file safely and return dict payload or None."""
+        try:
+            if not os.path.exists(file_path):
+                return None
+            with open(file_path, 'r') as f:
+                payload = json.load(f)
+            if isinstance(payload, dict):
+                return payload
+            logger.warning(f"Invalid JSON root (expected object) in {file_path}")
+        except Exception as e:
+            logger.error(f"Error loading config file {file_path}: {e}")
+        return None
 
-    def _try_migrate_legacy_config(self) -> bool:
-        """Attempt to migrate config from legacy locations into current config path."""
-        try:
-            if os.path.exists(self.config_path):
-                return True
-            for legacy in self._get_legacy_paths():
-                if os.path.exists(legacy):
-                    os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
-                    shutil.copy2(legacy, self.config_path)
-                    logger.info(f"Migrated legacy config from {legacy} to {self.config_path}")
-                    return True
-        except Exception as e:
-            logger.warning(f"Legacy config migration failed: {e}")
-        return False
-    
     def _load_or_create_config(self) -> Dict[str, Any]:
-        """Load config from file or create default"""
-        try:
-            if os.path.exists(self.config_path):
-                logger.info(f"Loading config from {self.config_path}")
-                with open(self.config_path, 'r') as f:
-                    return json.load(f)
-            else:
-                logger.info(f"Config file not found, creating default at {self.config_path}")
-                return self._get_default_config()
-        except Exception as e:
-            logger.error(f"Error loading config: {e}, using defaults")
-            return self._get_default_config()
+        """Load split config files (app/ui + windows/regions) or use defaults."""
+        result = self._get_default_config()
+
+        app_loaded = self._load_json_file(self.config_path)
+        if app_loaded:
+            if "version" in app_loaded:
+                result["version"] = app_loaded["version"]
+            if isinstance(app_loaded.get("app"), dict):
+                result["app"].update(app_loaded["app"])
+            if isinstance(app_loaded.get("ui"), dict):
+                result["ui"].update(app_loaded["ui"])
+            if isinstance(app_loaded.get("plugins"), dict):
+                result["plugins"].update(app_loaded["plugins"])
+            if isinstance(app_loaded.get("history"), dict):
+                result["history"].update(app_loaded["history"])
+            logger.info(f"Loaded app/UI config from {self.config_path}")
+        else:
+            logger.info(f"App/UI config not found, using defaults at {self.config_path}")
+
+        data_loaded = self._load_json_file(self.window_region_config_path)
+        if data_loaded and isinstance(data_loaded.get("thumbnails"), list):
+            result["thumbnails"] = data_loaded["thumbnails"]
+            logger.info(f"Loaded window/region config from {self.window_region_config_path}")
+        else:
+            logger.info(f"Window/region config not found, using defaults at {self.window_region_config_path}")
+
+        return result
     
     def _merge_configs(self, defaults: Dict, loaded: Dict) -> Dict:
         """Merge loaded config with defaults, preserving user settings"""
@@ -133,12 +146,31 @@ class ConfigManager:
         return result
     
     def save(self) -> bool:
-        """Save current config to file"""
+        """Save split config files (app/UI and windows/regions)."""
         try:
             os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
+            os.makedirs(os.path.dirname(self.window_region_config_path), exist_ok=True)
+
+            app_payload = {
+                "version": self._config.get("version", "2.0.0"),
+                "app": self._config.get("app", {}),
+                "ui": self._config.get("ui", {}),
+                "plugins": self._config.get("plugins", {}),
+                "history": self._config.get("history", {}),
+            }
+            data_payload = {
+                "version": self._config.get("version", "2.0.0"),
+                "thumbnails": self._config.get("thumbnails", []),
+            }
+
             with open(self.config_path, 'w') as f:
-                json.dump(self._config, f, indent=2)
-            logger.info(f"Config saved to {self.config_path}")
+                json.dump(app_payload, f, indent=2)
+            with open(self.window_region_config_path, 'w') as f:
+                json.dump(data_payload, f, indent=2)
+
+            logger.info(
+                f"Config saved to app/ui={self.config_path} and windows/regions={self.window_region_config_path}"
+            )
             return True
         except Exception as e:
             logger.error(f"Error saving config: {e}")
@@ -360,7 +392,8 @@ class ConfigManager:
             "monitor_id": monitor_id,
             "position": position,
             "size": size,
-            "opacity": DEFAULT_OPACITY,
+            "opacity": self.get_opacity(),
+            "always_on_top": self.get_always_on_top(),
             "show_border": True,
             "enabled": True,
             "monitored_regions": []
@@ -411,6 +444,12 @@ class ConfigManager:
         return self.update_thumbnail(thumbnail_id, {
             "size": {"width": width, "height": height}
         })
+
+    def set_all_thumbnail_opacity(self, opacity: float) -> None:
+        """Set opacity for all existing thumbnails."""
+        clamped = max(0.2, min(float(opacity), 1.0))
+        for thumbnail in self._config.get("thumbnails", []):
+            thumbnail["opacity"] = clamped
     
     def add_region_to_thumbnail(self, thumbnail_id: str, region: Dict) -> Optional[str]:
         """Add monitoring region to thumbnail

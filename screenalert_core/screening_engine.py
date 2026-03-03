@@ -113,6 +113,7 @@ class ScreenAlertEngine:
         try:
             # Check if already added
             if thumbnail_id in [t['id'] for t in self.config.get_all_thumbnails()]:
+                config["always_on_top"] = self.config.get_always_on_top()
                 # Already in config, just add to renderer
                 if not self.renderer.add_thumbnail(thumbnail_id, config):
                     logger.warning(f"Failed to add renderer for {thumbnail_id}")
@@ -162,6 +163,26 @@ class ScreenAlertEngine:
         except Exception as e:
             logger.error(f"Error loading thumbnail from config: {e}", exc_info=True)
             return False
+
+    def apply_runtime_settings(
+        self,
+        opacity: Optional[float] = None,
+        always_on_top: Optional[bool] = None,
+        show_overlay_when_unavailable: Optional[bool] = None,
+    ) -> None:
+        """Apply selected settings to active runtime components immediately."""
+        if opacity is not None:
+            self.config.set_all_thumbnail_opacity(opacity)
+            self.renderer.set_all_thumbnail_opacity(opacity)
+
+        if always_on_top is not None:
+            self.renderer.set_all_thumbnail_topmost(bool(always_on_top))
+            with self.lock:
+                for thumbnail in self.config.get_all_thumbnails():
+                    thumbnail["always_on_top"] = bool(always_on_top)
+
+        if show_overlay_when_unavailable is not None:
+            self.renderer.refresh_unavailable_thumbnails(bool(show_overlay_when_unavailable))
     
     def add_thumbnail(self, window_title: str, window_hwnd: int,
                       window_class: str = None, window_size: tuple = None,

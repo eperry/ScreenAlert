@@ -117,6 +117,25 @@ class ThumbnailRenderer:
             
             self.thumbnails[thumbnail_id].set_opacity(opacity)
             return True
+
+    def set_all_thumbnail_opacity(self, opacity: float) -> None:
+        """Apply opacity to all active thumbnail windows."""
+        with self.lock:
+            for thumbnail in self.thumbnails.values():
+                thumbnail.set_opacity(opacity)
+
+    def set_all_thumbnail_topmost(self, on_top: bool) -> None:
+        """Apply topmost flag to all active thumbnail windows."""
+        with self.lock:
+            for thumbnail in self.thumbnails.values():
+                thumbnail.set_topmost(on_top)
+
+    def refresh_unavailable_thumbnails(self, show_when_unavailable: bool) -> None:
+        """Refresh visibility for currently unavailable thumbnails."""
+        with self.lock:
+            for thumbnail in self.thumbnails.values():
+                if not thumbnail._is_available:
+                    thumbnail.set_availability(False, show_when_unavailable)
     
     def get_thumbnail(self, thumbnail_id: str) -> Optional['ThumbnailWindow']:
         """Get thumbnail window object"""
@@ -223,6 +242,7 @@ class ThumbnailWindow:
         
         # Appearance
         self.opacity = config.get("opacity", 0.8)
+        self.always_on_top = bool(config.get("always_on_top", True))
         self.show_border = config.get("show_border", True)
         self.enabled = config.get("enabled", True)
         
@@ -259,7 +279,7 @@ class ThumbnailWindow:
             self.window.overrideredirect(True)
             
             self.window.geometry(f"{self.width}x{self.height}+{self.x}+{self.y}")
-            self.window.attributes('-topmost', True)  # Always on top
+            self.window.attributes('-topmost', self.always_on_top)
             self.window.attributes('-alpha', self.opacity)  # Set opacity
             
             # Main container
@@ -433,8 +453,15 @@ class ThumbnailWindow:
         if not self.window or not hasattr(self, 'label') or not self.label:
             return
         try:
+            window_state = ""
+            try:
+                window_state = self.window.state()
+            except Exception:
+                window_state = ""
+
             if self._is_available:
-                self.window.deiconify()
+                if window_state == 'withdrawn':
+                    self.window.deiconify()
                 self.label.config(bg='black', fg='white', text='')
                 if self.photo_image is not None:
                     self.label.config(image=self.photo_image)
@@ -442,7 +469,8 @@ class ThumbnailWindow:
             else:
                 self._clear_image_queue()
                 if self._show_when_unavailable:
-                    self.window.deiconify()
+                    if window_state == 'withdrawn':
+                        self.window.deiconify()
                     self.photo_image = None
                     self.label.image = None
                     self.label.config(
@@ -497,6 +525,15 @@ class ThumbnailWindow:
         if self.window:
             try:
                 self.window.attributes('-alpha', self.opacity)
+            except:
+                pass
+
+    def set_topmost(self, on_top: bool) -> None:
+        """Update always-on-top flag for this thumbnail window."""
+        self.always_on_top = bool(on_top)
+        if self.window:
+            try:
+                self.window.attributes('-topmost', self.always_on_top)
             except:
                 pass
     

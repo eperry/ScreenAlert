@@ -20,6 +20,7 @@ else:
     LOGS_DIR = os.path.join(CONFIG_DIR, 'logs')
 
 CONFIG_FILE = os.path.join(CONFIG_DIR, "screenalert_config.json")
+WINDOW_REGION_CONFIG_FILE = os.path.join(CONFIG_DIR, "screenalert_windows_regions.json")
 TEMP_DIR = os.path.join(CONFIG_DIR, "temp")
 
 # Create directories if they don't exist

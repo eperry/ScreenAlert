@@ -3,7 +3,7 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import logging
-from typing import Optional, Dict
+from typing import Optional, Dict, Callable
 
 from screenalert_core.core.config_manager import ConfigManager
 from screenalert_core.utils.constants import (
@@ -16,7 +16,8 @@ logger = logging.getLogger(__name__)
 class SettingsDialog:
     """Dialog for application settings"""
     
-    def __init__(self, parent: tk.Widget, config: ConfigManager):
+    def __init__(self, parent: tk.Widget, config: ConfigManager,
+                 on_apply_callback: Optional[Callable[[Dict], None]] = None):
         """Initialize settings dialog
         
         Args:
@@ -24,6 +25,7 @@ class SettingsDialog:
             config: ConfigManager instance
         """
         self.config = config
+        self.on_apply_callback = on_apply_callback
         self.result: Optional[Dict] = None
         
         # Create dialog
@@ -238,16 +240,26 @@ class SettingsDialog:
     
     def _on_apply(self) -> None:
         """Apply settings without closing"""
-        self._save_settings()
+        settings = self._save_settings()
+        if settings and self.on_apply_callback:
+            try:
+                self.on_apply_callback(settings)
+            except Exception as callback_error:
+                logger.error(f"Error applying runtime settings: {callback_error}")
         logger.info("Settings applied")
     
     def _on_ok(self) -> None:
         """Apply settings and close"""
-        self._save_settings()
-        self.result = self._get_settings()
+        settings = self._save_settings()
+        if settings and self.on_apply_callback:
+            try:
+                self.on_apply_callback(settings)
+            except Exception as callback_error:
+                logger.error(f"Error applying runtime settings: {callback_error}")
+        self.result = settings
         self.dialog.destroy()
     
-    def _save_settings(self) -> None:
+    def _save_settings(self) -> Optional[Dict]:
         """Save settings to config"""
         try:
             self.config.set_refresh_rate(self.refresh_var.get())
@@ -274,8 +286,10 @@ class SettingsDialog:
             self.config.set_diagnostics_enabled(self.diagnostics_var.get())
             self.config.save()
             logger.info("Settings saved")
+            return self._get_settings()
         except Exception as e:
             logger.error(f"Error saving settings: {e}")
+            return None
     
     def _get_settings(self) -> Dict:
         """Get current settings as dict"""
