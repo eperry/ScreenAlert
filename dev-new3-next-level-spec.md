@@ -261,4 +261,35 @@ Notes:
 
 ---
 
+## 10) Migrated from dev-new4 (Non-design Runtime Behavior)
+
+The following operational/runtime requirements were moved from `dev-new4` so that `dev-new4` remains design-only.
+
+### 10.1 Identity & reconnect contract
+- A monitored window is valid only when strict identity checks pass (exact title + exact size, with optional class/monitor checks when available).
+- No fallback matching is allowed for automatic reconnect (no fuzzy, partial-title, or largest-window fallback).
+- Automatic reconnect is one-shot per loss event; after failure, recovery is manual.
+
+### 10.2 Reconnect command behavior
+- `Edit -> Reconnect All Windows` reconnects all configured windows.
+- `Windows -> All` context action reconnects all configured windows.
+- `Windows -> <window>` context action reconnects only the selected window.
+
+### 10.3 Runtime acceptance criteria (migrated)
+- No stale image remains visible after source window becomes unavailable.
+- Overlay behavior follows the unavailable setting exactly (hide vs blue placeholder).
+- Automatic reconnect never attaches to near-match windows.
+- Automatic reconnect attempts once per loss event and does not continue retrying.
+- UI preview and region thumbnails must not display imagery when strict identity fails.
+
+### 10.4 Validation scenarios (migrated)
+1. Attach window and confirm live overlay image.
+2. Break identity by title/size change and verify unavailable behavior.
+3. Verify no repeated auto reconnect attempts after one failed automatic attempt.
+4. Verify reconnect-single affects only selected window.
+5. Verify reconnect-all attempts all configured windows.
+6. Restore exact title+size and verify manual reconnect succeeds.
+
+---
+
 *End of next-level specification.*
