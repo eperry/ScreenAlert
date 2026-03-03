@@ -27,6 +27,7 @@ class WindowSelectorDialog:
         self.window_manager = window_manager
         self.config = config_manager
         self.selected_window: Optional[Dict] = None
+        self.selected_windows: List[Dict] = []
         self.windows: List[Dict] = []  # Initialize windows list BEFORE UI
         
         # Create dialog
@@ -58,7 +59,7 @@ class WindowSelectorDialog:
         filter_frame.pack(fill=tk.X, pady=(0, 5))
         ttk.Label(filter_frame, text="Filter:").pack(side=tk.LEFT)
         initial_filter = self.config.get_last_window_filter() if self.config else ""
-        initial_size_op = "=="
+        initial_size_op = self.config.get_last_window_size_filter_op() if self.config else "=="
         initial_size_value = self.config.get_last_window_size_filter_value() if self.config else ""
         self.filter_var = tk.StringVar(value=initial_filter)
         filter_entry = ttk.Entry(filter_frame, textvariable=self.filter_var)
@@ -94,7 +95,7 @@ class WindowSelectorDialog:
 
         # Listbox
         self.listbox = tk.Listbox(list_frame, yscrollcommand=self.list_scrollbar.set,
-                     font=("Segoe UI", 10), height=15)
+                     font=("Segoe UI", 10), height=15, selectmode=tk.EXTENDED)
         self.listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.listbox.bind("<Double-Button-1>", lambda e: self._on_select())
         self.list_scrollbar.config(command=self.listbox.yview)
@@ -148,16 +149,19 @@ class WindowSelectorDialog:
                 continue
 
             display_title = title if len(title) <= 80 else title[:77] + "..."
-            self.listbox.insert(tk.END, display_title)
-            self._filtered_rows.append(("title", window))
-            self.listbox.insert(tk.END, f"    Size: {window['size'][0]}x{window['size'][1]}")
-            self._filtered_rows.append(("size", window))
+            size = window.get("size")
+            if isinstance(size, (list, tuple)) and len(size) == 2:
+                self.listbox.insert(tk.END, f"{display_title} ({size[0]}x{size[1]})")
+            else:
+                self.listbox.insert(tk.END, display_title)
+            self._filtered_rows.append(window)
         self.list_scrollbar.set(*self.listbox.yview())
         if self._filtered_rows:
             self.listbox.selection_set(0)
             self._on_selection_changed(None)
         else:
             self.selected_window = None
+            self.selected_windows = []
 
     def _on_filter_change(self, event):
         self._save_filter_state()
@@ -237,36 +241,43 @@ class WindowSelectorDialog:
         """Handle window selection change"""
         selection = self.listbox.curselection()
         if not selection or not hasattr(self, '_filtered_rows') or not self._filtered_rows:
+            self.selected_window = None
+            self.selected_windows = []
             return
-        selected_idx = selection[0]
-        row_type, window = self._filtered_rows[selected_idx]
-        if row_type == "size" and selected_idx > 0:
-            self.listbox.selection_clear(0, tk.END)
-            self.listbox.selection_set(selected_idx - 1)
-            self.listbox.activate(selected_idx - 1)
-            selected_idx = selected_idx - 1
-            _, window = self._filtered_rows[selected_idx]
-        self.selected_window = window
+        selected: List[Dict] = []
+        seen_ids = set()
+        for idx in selection:
+            if idx < 0 or idx >= len(self._filtered_rows):
+                continue
+            window = self._filtered_rows[idx]
+            window_id = window.get("hwnd")
+            if window_id in seen_ids:
+                continue
+            seen_ids.add(window_id)
+            selected.append(window)
+
+        self.selected_windows = selected
+        self.selected_window = selected[0] if selected else None
     
     def _on_select(self) -> None:
         """Handle select button"""
         selection = self.listbox.curselection()
         if selection and hasattr(self, '_filtered_rows') and self._filtered_rows:
-            _, self.selected_window = self._filtered_rows[selection[0]]
+            self._on_selection_changed(None)
 
-        if not self.selected_window:
-            messagebox.showwarning("Select Window", "Please select a window first")
+        if not self.selected_windows:
+            messagebox.showwarning("Select Window", "Please select one or more windows first")
             return
         
         self._save_filter_state()
-        self.result = self.selected_window
+        self.result = self.selected_windows
         self.dialog.destroy()
     
-    def show(self) -> Optional[Dict]:
-        """Show dialog and return selected window
+    def show(self) -> Optional[List[Dict]]:
+        """Show dialog and return selected windows
         
         Returns:
-            Selected window dict or None if cancelled
+            Selected windows list or None if cancelled
         """
         self.dialog.wait_window()
         return self.result

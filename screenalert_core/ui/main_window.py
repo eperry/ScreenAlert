@@ -5,6 +5,9 @@ import threading
 import time
 import os
 import subprocess
+import faulthandler
+import traceback
+import sys
 import tkinter as tk
 from tkinter import ttk, messagebox as msgbox, filedialog
 from typing import Optional, List, Dict
@@ -56,6 +59,22 @@ class ScreenAlertMainWindow:
         self._suppress_tree_select_event = False
         self._detail_scroll_update_scheduled = False
         self._force_refresh_counter = 0  # counts periodic-update ticks for forced refresh
+        self._pending_tree_focus_window_id: Optional[str] = None
+        self._pending_tree_focus_region_id: Optional[str] = None
+        self.tree_filter_var: Optional[tk.StringVar] = None
+        self._left_pane_min_width = 260
+        self._splitter_enforce_scheduled = False
+        self._add_window_in_progress = False
+        self._add_window_queue: List[Dict] = []
+        self._add_window_added_count = 0
+        self._add_window_duplicate_count = 0
+        self._add_window_failed_count = 0
+        self._add_window_last_added_thumbnail_id: Optional[str] = None
+        self._ui_heartbeat_ts = time.time()
+        self._ui_heartbeat_after_id = None
+        self._watchdog_stop_event = threading.Event()
+        self._watchdog_thread: Optional[threading.Thread] = None
+        self._watchdog_last_dump_ts = 0.0
         logger.debug("Creating Tk root window")
         self.root = tk.Tk()
         self.root.title("ScreenAlert v2.0 - Multibox Monitor")
@@ -102,6 +121,8 @@ class ScreenAlertMainWindow:
         # Add tooltips to main controls after UI is built
         self.root.after(100, self._add_tooltips)
         self.root.after(500, self._check_for_updates_async)
+        self._schedule_ui_heartbeat()
+        self._start_ui_watchdog()
 
         # Auto-start monitoring after a short delay (matches main branch behaviour)
         self.root.after(3000, self._auto_start_monitoring)
@@ -225,6 +246,7 @@ class ScreenAlertMainWindow:
         help_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Help", menu=help_menu)
         help_menu.add_command(label="Logs", command=self._open_logs_folder)
+        help_menu.add_command(label="Dump Threads Now", command=self._dump_threads_now)
         help_menu.add_separator()
         help_menu.add_command(label="Keyboard Shortcuts", command=self._show_shortcuts)
         help_menu.add_command(label="About", command=self._show_about)
@@ -238,30 +260,56 @@ class ScreenAlertMainWindow:
         # Content area
         content_frame = ttk.Frame(main_frame)
         content_frame.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
-        content_frame.columnconfigure(1, weight=1)
         content_frame.rowconfigure(0, weight=1)
+        content_frame.columnconfigure(0, weight=1)
         main_frame.rowconfigure(0, weight=1)
+
+        # Horizontal splitter: left windows tree <-> right detail panel
+        self.main_splitter = ttk.Panedwindow(content_frame, orient=tk.HORIZONTAL)
+        self.main_splitter.grid(row=0, column=0, sticky="nsew")
         
         # Left: tree of windows/regions
-        tree_frame = ttk.LabelFrame(content_frame, text="Windows", padding=8)
-        tree_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
-        tree_frame.rowconfigure(0, weight=1)
+        tree_frame = ttk.LabelFrame(self.main_splitter, text="Windows", padding=8)
+        tree_frame.rowconfigure(1, weight=1)
         tree_frame.columnconfigure(0, weight=1)
-        content_frame.columnconfigure(0, weight=0)
+
+        filter_row = ttk.Frame(tree_frame)
+        filter_row.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        filter_row.columnconfigure(1, weight=1)
+        ttk.Label(filter_row, text="Filter:").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        self.tree_filter_var = tk.StringVar(value="")
+        tree_filter_entry = ttk.Entry(filter_row, textvariable=self.tree_filter_var)
+        tree_filter_entry.grid(row=0, column=1, sticky="ew")
+        self.tree_filter_var.trace_add("write", self._on_tree_filter_change)
         
         self.window_tree = ttk.Treeview(tree_frame, show="tree")
-        self.window_tree.grid(row=0, column=0, sticky="nsew")
+        self.window_tree.grid(row=1, column=0, sticky="nsew")
+        self.window_tree.tag_configure("window_connected", foreground="#2ecc71")
+        self.window_tree.tag_configure("window_unavailable", foreground="#3498db")
+        self.window_tree.tag_configure("window_disabled", foreground="#7f8c8d")
+        self.window_tree.tag_configure("region_alert", foreground="#e74c3c")
+        self.window_tree.tag_configure("region_warning", foreground="#f39c12")
+        self.window_tree.tag_configure("region_ok", foreground="#2ecc71")
+        self.window_tree.tag_configure("region_paused", foreground="#3498db")
+        self.window_tree.tag_configure("region_unavailable", foreground="#3498db")
+        self.window_tree.tag_configure("region_disabled", foreground="#7f8c8d")
         self.tree_scroll = AutoHideScrollbar(tree_frame, orient=tk.VERTICAL, command=self.window_tree.yview)
-        self.tree_scroll.grid(row=0, column=1, sticky="ns")
+        self.tree_scroll.grid(row=1, column=1, sticky="ns")
         self.window_tree.configure(yscrollcommand=self.tree_scroll.set)
         self.window_tree.bind("<<TreeviewSelect>>", self._on_tree_select)
         self.window_tree.bind("<Button-3>", self._on_tree_right_click)
         
         # Right: window info + region cards
-        self.detail_frame = ttk.Frame(content_frame)
-        self.detail_frame.grid(row=0, column=1, sticky="nsew")
+        self.detail_frame = ttk.Frame(self.main_splitter)
         self.detail_frame.rowconfigure(1, weight=1)
         self.detail_frame.columnconfigure(0, weight=1)
+
+        self.main_splitter.add(tree_frame, weight=0)
+        self.main_splitter.add(self.detail_frame, weight=1)
+        self.main_splitter.bind("<B1-Motion>", lambda _e: self._schedule_splitter_enforce())
+        self.main_splitter.bind("<ButtonRelease-1>", lambda _e: self._schedule_splitter_enforce())
+        self.root.bind("<Configure>", self._on_root_configure)
+        self.root.after_idle(self._enforce_splitter_limits)
         
         self.info_frame = ttk.LabelFrame(self.detail_frame, text="Window Info", padding=6)
         self.info_frame.grid(row=0, column=0, sticky="ew", pady=(0, 6))
@@ -342,41 +390,203 @@ class ScreenAlertMainWindow:
         self.region_canvas.itemconfig(self.region_canvas_window, width=event.width)
         self.region_scroll.set(*self.region_canvas.yview())
 
+    def _on_root_configure(self, _event) -> None:
+        """Handle root resize events and enforce splitter min width."""
+        self._schedule_splitter_enforce()
+
+    def _schedule_splitter_enforce(self) -> None:
+        """Coalesce splitter constraint enforcement to idle time."""
+        if self._splitter_enforce_scheduled:
+            return
+        self._splitter_enforce_scheduled = True
+        self.root.after_idle(self._enforce_splitter_limits)
+
+    def _enforce_splitter_limits(self) -> None:
+        """Ensure left windows pane width does not shrink below minimum."""
+        self._splitter_enforce_scheduled = False
+        try:
+            current = self.main_splitter.sashpos(0)
+            if current < self._left_pane_min_width:
+                self.main_splitter.sashpos(0, self._left_pane_min_width)
+        except Exception:
+            # Ignore while splitter not fully realized or during shutdown
+            pass
+
+    def _on_tree_filter_change(self, *_args) -> None:
+        """Rebuild tree when filter query changes."""
+        self._update_thumbnail_list()
+
+    def _get_tree_filter_query(self) -> str:
+        """Return normalized tree filter query."""
+        if not self.tree_filter_var:
+            return ""
+        return (self.tree_filter_var.get() or "").strip().casefold()
+
+    def _schedule_ui_heartbeat(self) -> None:
+        """Update heartbeat timestamp from Tk thread to detect UI stalls."""
+        self._ui_heartbeat_ts = time.time()
+        if self.root:
+            self._ui_heartbeat_after_id = self.root.after(1000, self._schedule_ui_heartbeat)
+
+    def _start_ui_watchdog(self) -> None:
+        """Start background watchdog that emits thread dumps if UI heartbeat stalls."""
+        if self._watchdog_thread and self._watchdog_thread.is_alive():
+            return
+
+        def _watchdog() -> None:
+            while not self._watchdog_stop_event.wait(2.0):
+                now = time.time()
+                stall_seconds = now - self._ui_heartbeat_ts
+                if stall_seconds < 8.0:
+                    continue
+                if (now - self._watchdog_last_dump_ts) < 30.0:
+                    continue
+
+                self._watchdog_last_dump_ts = now
+                reason = f"UI heartbeat stalled for {stall_seconds:.1f}s"
+                logger.warning(f"[UI WATCHDOG] {reason}")
+                self._write_thread_dump(reason)
+
+        self._watchdog_thread = threading.Thread(target=_watchdog, name="ui-watchdog", daemon=True)
+        self._watchdog_thread.start()
+
+    def _write_thread_dump(self, reason: str) -> None:
+        """Write a full Python thread dump for hang debugging."""
+        try:
+            os.makedirs(LOGS_DIR, exist_ok=True)
+            dump_path = os.path.join(LOGS_DIR, "ui_hang_thread_dumps.log")
+            with open(dump_path, "a", encoding="utf-8") as dump_file:
+                dump_file.write("\n" + "=" * 80 + "\n")
+                dump_file.write(f"Thread dump @ {time.strftime('%Y-%m-%d %H:%M:%S')} | reason={reason}\n")
+                dump_file.write("=" * 80 + "\n")
+                try:
+                    faulthandler.dump_traceback(file=dump_file, all_threads=True)
+                except Exception:
+                    frames = sys._current_frames()
+                    for thread in threading.enumerate():
+                        frame = frames.get(thread.ident)
+                        dump_file.write(f"\n--- Thread: {thread.name} ({thread.ident}) ---\n")
+                        if frame is not None:
+                            dump_file.write("".join(traceback.format_stack(frame)))
+                        else:
+                            dump_file.write("No stack available\n")
+                dump_file.flush()
+            logger.info(f"Thread dump captured: {dump_path}")
+        except Exception as error:
+            logger.error(f"Failed to write thread dump: {error}", exc_info=True)
+
+    def _dump_threads_now(self) -> None:
+        """Manually trigger thread dump from Help menu."""
+        self._write_thread_dump("manual menu trigger")
+        self.status_var.set("Thread dump captured (see logs folder)")
+
     
     def _add_window(self) -> None:
         """Add a new window to monitor"""
+        if self._add_window_in_progress:
+            self.status_var.set("Add windows already in progress...")
+            return
+
         dialog = WindowSelectorDialog(self.root, self.window_manager, self.config)
-        window_info = dialog.show()
-        
-        if window_info:
-            hwnd = window_info['hwnd']
-            title = window_info['title']
-            
-            # Check if window already exists
-            if hwnd in self.thumbnail_map:
-                msgbox.showwarning("Duplicate", f"Window '{title}' is already being monitored")
-                return
-            
-            try:
-                # engine.add_thumbnail() handles everything: config + renderer
-                thumbnail_id = self.engine.add_thumbnail(
-                    window_title=title,
-                    window_hwnd=hwnd,
-                    window_class=window_info.get('class', ''),
-                    window_size=window_info.get('size'),
-                    monitor_id=window_info.get('monitor_id')
-                )
-                if thumbnail_id:
-                    self.thumbnail_map[hwnd] = thumbnail_id
-                    self._update_thumbnail_list()
-                    self.status_var.set(f"Added: {title}")
-                    # Auto-start engine if not already running
-                    self._ensure_engine_running()
-                else:
-                    msgbox.showerror("Error", f"Failed to add window {title}")
-            except Exception as e:
-                logger.error(f"Error adding window '{title}': {str(e)}", exc_info=True)
-                msgbox.showerror("Error", f"Failed to add window: {str(e)}")
+        windows_info = dialog.show()
+
+        if windows_info:
+            self._add_window_in_progress = True
+            self._add_window_queue = list(windows_info)
+            self._add_window_added_count = 0
+            self._add_window_duplicate_count = 0
+            self._add_window_failed_count = 0
+            self._add_window_last_added_thumbnail_id = None
+            self.status_var.set(f"Adding {len(self._add_window_queue)} window(s)...")
+            logger.info(f"[ADD WINDOW] Queued {len(self._add_window_queue)} window(s)")
+            self.root.after(0, self._process_add_window_queue)
+
+    def _process_add_window_queue(self) -> None:
+        """Process one queued window-add operation at a time to keep UI responsive."""
+        if not self._add_window_in_progress:
+            return
+
+        if not self._add_window_queue:
+            self._finalize_add_window_queue()
+            return
+
+        window_info = self._add_window_queue.pop(0)
+        hwnd = window_info.get('hwnd')
+        title = window_info.get('title', 'Unknown')
+
+        if not hwnd:
+            self._add_window_failed_count += 1
+            logger.warning(f"[ADD WINDOW] Missing HWND for selected item '{title}'")
+            self.root.after(1, self._process_add_window_queue)
+            return
+
+        if hwnd in self.thumbnail_map:
+            self._add_window_duplicate_count += 1
+            logger.info(f"[ADD WINDOW] Skipping duplicate '{title}' hwnd={hwnd}")
+            self.root.after(1, self._process_add_window_queue)
+            return
+
+        started = time.perf_counter()
+        try:
+            thumbnail_id = self.engine.add_thumbnail(
+                window_title=title,
+                window_hwnd=hwnd,
+                window_class=window_info.get('class', ''),
+                window_size=window_info.get('size'),
+                monitor_id=window_info.get('monitor_id')
+            )
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            logger.info(f"[ADD WINDOW] title='{title}' hwnd={hwnd} elapsed_ms={elapsed_ms:.1f} result={bool(thumbnail_id)}")
+
+            if elapsed_ms > 2000:
+                self._write_thread_dump(f"slow add window operation ({elapsed_ms:.1f} ms) title={title}")
+
+            if thumbnail_id:
+                self.thumbnail_map[hwnd] = thumbnail_id
+                self._add_window_last_added_thumbnail_id = thumbnail_id
+                self._add_window_added_count += 1
+            else:
+                self._add_window_failed_count += 1
+                logger.error(f"Failed to add window '{title}'")
+        except Exception as error:
+            self._add_window_failed_count += 1
+            logger.error(f"Error adding window '{title}': {error}", exc_info=True)
+
+        self.root.after(1, self._process_add_window_queue)
+
+    def _finalize_add_window_queue(self) -> None:
+        """Finalize queued add-window operation and update UI once."""
+        added_count = self._add_window_added_count
+        duplicate_count = self._add_window_duplicate_count
+        failed_count = self._add_window_failed_count
+        last_added_thumbnail_id = self._add_window_last_added_thumbnail_id
+
+        self._add_window_in_progress = False
+        self._add_window_queue = []
+
+        if added_count > 0:
+            self._pending_tree_focus_window_id = last_added_thumbnail_id
+            self._pending_tree_focus_region_id = None
+            if self.tree_filter_var:
+                self.tree_filter_var.set("")
+            self.show_all_regions = False
+            self.selected_region_id = None
+            self._update_thumbnail_list()
+            self._ensure_engine_running()
+
+        summary_parts = []
+        if added_count:
+            summary_parts.append(f"added {added_count}")
+        if duplicate_count:
+            summary_parts.append(f"skipped {duplicate_count} duplicate")
+        if failed_count:
+            summary_parts.append(f"failed {failed_count}")
+
+        if summary_parts:
+            self.status_var.set("Add windows: " + ", ".join(summary_parts))
+
+        if failed_count > 0 and added_count == 0:
+            msgbox.showerror("Add Windows", "Unable to add selected windows. Check logs for details.")
     
     def _ensure_engine_running(self) -> bool:
         """Ensure the engine is started. Returns True if engine is running."""
@@ -431,14 +641,27 @@ class ScreenAlertMainWindow:
     def _show_settings(self) -> None:
         """Show settings dialog"""
         try:
-            dialog = SettingsDialog(self.root, self.config)
+            dialog = SettingsDialog(self.root, self.config, on_apply_callback=self._apply_settings_realtime)
             result = dialog.show()
             if result:
-                self.set_high_contrast(bool(result.get("high_contrast", False)))
                 self.status_var.set("Settings updated")
         except Exception as e:
             logger.error(f"Error opening settings dialog: {str(e)}", exc_info=True)
             msgbox.showerror("Error", f"Failed to open settings: {str(e)}")
+
+    def _apply_settings_realtime(self, settings: Dict) -> None:
+        """Apply settings that can safely take effect at runtime."""
+        self.set_high_contrast(bool(settings.get("high_contrast", False)))
+        self.engine.apply_runtime_settings(
+            opacity=float(settings.get("opacity", self.config.get_opacity())),
+            always_on_top=bool(settings.get("always_on_top", self.config.get_always_on_top())),
+            show_overlay_when_unavailable=bool(
+                settings.get(
+                    "show_overlay_when_unavailable",
+                    self.config.get_show_overlay_when_unavailable(),
+                )
+            ),
+        )
 
     def _show_shortcuts(self) -> None:
         """Display keyboard shortcuts help popup."""
@@ -500,6 +723,7 @@ class ScreenAlertMainWindow:
             
             if regions_screen:
                 # Convert screen coordinates to window-relative coordinates
+                last_added_region_id = None
                 for i, (x, y, w, h) in enumerate(regions_screen):
                     # Convert screen coords to window-relative
                     region_x = x - window_x
@@ -511,10 +735,15 @@ class ScreenAlertMainWindow:
                     
                     # Note: engine.add_region() internally calls config.add_region_to_thumbnail()
                     # so we only need to call the engine method
-                    self.engine.add_region(thumbnail_id, f"Region_{i+1}", (region_x, region_y, w, h))
+                    last_added_region_id = self.engine.add_region(thumbnail_id, f"Region_{i+1}", (region_x, region_y, w, h))
                     logger.info(f"Added region {i+1}: window-relative ({region_x}, {region_y}, {w}, {h})")
                 
                 self.status_var.set(f"Added {len(regions_screen)} region(s) to {title}")
+                self._pending_tree_focus_window_id = thumbnail_id
+                self._pending_tree_focus_region_id = last_added_region_id
+                if self.tree_filter_var:
+                    self.tree_filter_var.set("")
+                self.show_all_regions = False
                 self._update_thumbnail_list()
             else:
                 self.status_var.set("Region selection cancelled")
@@ -842,43 +1071,126 @@ class ScreenAlertMainWindow:
         for item in self.window_tree.get_children():
             self.window_tree.delete(item)
         self.region_to_thumbnail.clear()
+        tree_filter_query = self._get_tree_filter_query()
         
         thumbnails = self.config.get_all_thumbnails()
         logger.info(f"Updating window tree: {len(thumbnails)} thumbnails from config")
         
         all_root = self.window_tree.insert("", "end", iid="__all__", text="All")
-        for thumbnail in thumbnails:
+        sorted_thumbnails = sorted(
+            thumbnails,
+            key=lambda thumbnail: (
+                0 if self._is_thumbnail_connected(thumbnail) else 1,
+                (thumbnail.get("window_title") or "").casefold(),
+            ),
+        )
+
+        for thumbnail in sorted_thumbnails:
             thumbnail_id = thumbnail.get("id")
             title = thumbnail.get("window_title", "Unknown")
-            regions = thumbnail.get("monitored_regions", [])
+            regions = list(thumbnail.get("monitored_regions", []))
             
             if not thumbnail_id:
                 continue
-            
-            self.window_tree.insert(all_root, "end", iid=thumbnail_id, text=title)
+
+            title_match = tree_filter_query in title.casefold() if tree_filter_query else True
+            if tree_filter_query and not title_match:
+                regions_for_tree = [
+                    region
+                    for region in regions
+                    if tree_filter_query in region.get("name", "Region").casefold()
+                ]
+                if not regions_for_tree:
+                    continue
+            else:
+                regions_for_tree = regions
+
+            window_status = self._get_thumbnail_window_status(thumbnail)
+            self.window_tree.insert(
+                all_root,
+                "end",
+                iid=thumbnail_id,
+                text=self._format_window_tree_text(title, window_status),
+                tags=(self._window_tree_tag(window_status),),
+            )
             if thumbnail_id not in self.region_statuses:
                 self.region_statuses[thumbnail_id] = {}
             
-            for region in regions:
+            for region in regions_for_tree:
                 region_id = region.get("id")
                 region_name = region.get("name", "Region")
                 if not region_id:
                     continue
-                self.window_tree.insert(thumbnail_id, "end", iid=region_id, text=region_name)
+                region_status = self._get_region_effective_status(thumbnail, region, window_status)
+                self.window_tree.insert(
+                    thumbnail_id,
+                    "end",
+                    iid=region_id,
+                    text=self._format_region_tree_text(region_name, region_status),
+                    tags=(self._region_tree_tag(region_status),),
+                )
                 self.region_to_thumbnail[region_id] = thumbnail_id
                 if region_id not in self.region_statuses[thumbnail_id]:
                     self.region_statuses[thumbnail_id][region_id] = "ok"
-        
+
+        self.window_tree.item("__all__", open=True)
+
+        pending_region_id = self._pending_tree_focus_region_id
+        pending_window_id = self._pending_tree_focus_window_id
+        self._pending_tree_focus_region_id = None
+        self._pending_tree_focus_window_id = None
+
+        if pending_region_id and self.window_tree.exists(pending_region_id):
+            parent_window_id = self.region_to_thumbnail.get(pending_region_id)
+            if parent_window_id and self.window_tree.exists(parent_window_id):
+                self.window_tree.item(parent_window_id, open=True)
+                self.show_all_regions = False
+                self.selected_region_id = pending_region_id
+                self._set_tree_selection(pending_region_id)
+                self.window_tree.see(pending_region_id)
+                self._select_thumbnail(parent_window_id)
+                return
+
+        if pending_window_id and self.window_tree.exists(pending_window_id):
+            self.window_tree.item(pending_window_id, open=True)
+            self.show_all_regions = False
+            self.selected_region_id = None
+            self._set_tree_selection(pending_window_id)
+            self.window_tree.see(pending_window_id)
+            self._select_thumbnail(pending_window_id)
+            return
+
         if thumbnails and self.show_all_regions:
             self._set_tree_selection("__all__")
+            self.window_tree.see("__all__")
             self._show_all_regions()
         elif thumbnails:
-            selected_exists = self.selected_thumbnail_id and self.config.get_thumbnail(self.selected_thumbnail_id)
-            if not selected_exists:
-                first_id = thumbnails[0].get("id")
-                if first_id:
-                    self._set_tree_selection(first_id)
-                    self._select_thumbnail(first_id)
+            if self.selected_region_id and self.window_tree.exists(self.selected_region_id):
+                parent_window_id = self.region_to_thumbnail.get(self.selected_region_id)
+                if parent_window_id and self.window_tree.exists(parent_window_id):
+                    self.window_tree.item(parent_window_id, open=True)
+                    self._set_tree_selection(self.selected_region_id)
+                    self.window_tree.see(self.selected_region_id)
+                    self._select_thumbnail(parent_window_id)
+                    return
+
+            if self.selected_thumbnail_id and self.window_tree.exists(self.selected_thumbnail_id):
+                self._set_tree_selection(self.selected_thumbnail_id)
+                self.window_tree.see(self.selected_thumbnail_id)
+                self._select_thumbnail(self.selected_thumbnail_id)
+                return
+
+            visible_windows = self.window_tree.get_children(all_root)
+            if visible_windows:
+                first_id = visible_windows[0]
+                self._set_tree_selection(first_id)
+                self.window_tree.see(first_id)
+                self._select_thumbnail(first_id)
+            else:
+                self.show_all_regions = True
+                self._set_tree_selection("__all__")
+                self.window_tree.see("__all__")
+                self._show_all_regions()
         elif not thumbnails:
             self.selected_thumbnail_id = None
             self._clear_detail_view()
@@ -1100,15 +1412,16 @@ class ScreenAlertMainWindow:
             self.detail_frame.rowconfigure(0, weight=1)
             self.detail_frame.rowconfigure(1, weight=0)
             thumbnails = self.config.get_all_thumbnails()
-            total_regions = sum(len(t.get("monitored_regions", [])) for t in thumbnails)
+            active_thumbnails = [t for t in thumbnails if self._is_thumbnail_connected(t)]
+            total_regions = sum(len(t.get("monitored_regions", [])) for t in active_thumbnails)
             self.window_title_var.set("All windows")
             self.window_hwnd_var.set("")
             self.window_region_count_var.set(str(total_regions))
             self.window_size_var.set("")
 
             preview_image = None
-            if len(thumbnails) == 1:
-                selected_thumb = thumbnails[0]
+            if len(active_thumbnails) == 1:
+                selected_thumb = active_thumbnails[0]
                 preview_hwnd = selected_thumb.get("window_hwnd")
                 preview_image = self._get_window_image_for_ui(preview_hwnd, selected_thumb)
             if preview_image:
@@ -1117,10 +1430,10 @@ class ScreenAlertMainWindow:
                 self.window_preview_photo = ImageTk.PhotoImage(preview)
                 self.window_preview_label.config(image=self.window_preview_photo, text="")
             else:
-                self.window_preview_label.config(image=self._preview_placeholder, text="No preview", fg="white", compound="center")
+                self.window_preview_label.config(image=self._preview_placeholder, text="No connected windows", fg="white", compound="center")
             
             row = 0
-            for thumb in thumbnails:
+            for thumb in active_thumbnails:
                 thumb_id = thumb.get("id")
                 if not thumb_id:
                     continue
@@ -1332,7 +1645,15 @@ class ScreenAlertMainWindow:
         if self.config.update_region(thumbnail_id, region_id, {"name": new_name}):
             self.config.save()
             if self.window_tree.exists(region_id):
-                self.window_tree.item(region_id, text=new_name)
+                thumbnail = self.config.get_thumbnail(thumbnail_id)
+                region = self.config.get_region(thumbnail_id, region_id)
+                if thumbnail and region:
+                    window_status = self._get_thumbnail_window_status(thumbnail)
+                    region_status = self._get_region_effective_status(thumbnail, region, window_status)
+                    self.window_tree.item(
+                        region_id,
+                        text=self._format_region_tree_text(new_name, region_status),
+                    )
 
     def _save_region_alert_text(self, thumbnail_id: str, region_id: str, alert_text_var: tk.StringVar) -> None:
         """Persist region alert TTS template text."""
@@ -1407,6 +1728,157 @@ class ScreenAlertMainWindow:
         if remaining is None:
             return base
         return f"{base}\n{remaining:02d}s"
+
+    def _get_thumbnail_window_status(self, thumbnail: Dict) -> str:
+        """Return effective window status for thumbnail tree/detail rendering."""
+        if not bool(thumbnail.get("enabled", True)):
+            return "disabled"
+        if self._is_thumbnail_connected(thumbnail):
+            return "connected"
+        return "unavailable"
+
+    def _is_thumbnail_connected(self, thumbnail: Dict) -> bool:
+        """Return True when thumbnail is currently connected to the expected window."""
+        hwnd = thumbnail.get("window_hwnd")
+        if not hwnd:
+            return False
+
+        title = thumbnail.get("window_title")
+        expected_class = thumbnail.get("window_class") or None
+        expected_size = tuple(thumbnail["window_size"]) if thumbnail.get("window_size") else None
+        expected_monitor = thumbnail.get("monitor_id")
+        return self.window_manager.validate_window_identity(
+            hwnd,
+            expected_title=title,
+            expected_class=expected_class,
+            expected_monitor_id=expected_monitor,
+            expected_size=expected_size,
+        )
+
+    def _get_region_effective_status(self, thumbnail: Dict, region: Dict, window_status: Optional[str] = None) -> str:
+        """Return effective region status used for tree node coloring."""
+        thumbnail_id = thumbnail.get("id")
+        region_id = region.get("id")
+        if not thumbnail_id or not region_id:
+            return "unavailable"
+
+        if not bool(thumbnail.get("enabled", True)) or not bool(region.get("enabled", True)):
+            return "disabled"
+
+        resolved_window_status = window_status or self._get_thumbnail_window_status(thumbnail)
+        if resolved_window_status != "connected":
+            return "unavailable"
+
+        monitor = self.engine.monitoring_engine.get_monitor(region_id)
+        if monitor and getattr(monitor, "state", None):
+            return monitor.state
+
+        return self.region_statuses.get(thumbnail_id, {}).get(region_id, "ok")
+
+    def _window_tree_tag(self, window_status: str) -> str:
+        """Map window status to tree tag."""
+        if window_status == "connected":
+            return "window_connected"
+        if window_status == "disabled":
+            return "window_disabled"
+        return "window_unavailable"
+
+    def _window_status_label(self, window_status: str) -> str:
+        """Human-friendly window status suffix text."""
+        if window_status == "connected":
+            return "Connected"
+        if window_status == "disabled":
+            return "Disabled"
+        return "Unavailable"
+
+    def _window_status_icon(self, window_status: str) -> str:
+        """Compact icon for window status."""
+        if window_status == "connected":
+            return "🟢"
+        if window_status == "disabled":
+            return "⚪"
+        return "🔵"
+
+    def _format_window_tree_text(self, title: str, window_status: str) -> str:
+        """Format window tree text with icon and status suffix."""
+        icon = self._window_status_icon(window_status)
+        suffix = self._window_status_label(window_status)
+        return f"{icon} {title} [{suffix}]"
+
+    def _region_tree_tag(self, region_status: str) -> str:
+        """Map region status to tree tag."""
+        if region_status == "alert":
+            return "region_alert"
+        if region_status == "warning":
+            return "region_warning"
+        if region_status == "paused":
+            return "region_paused"
+        if region_status == "disabled":
+            return "region_disabled"
+        if region_status == "unavailable":
+            return "region_unavailable"
+        return "region_ok"
+
+    def _region_status_label(self, region_status: str) -> str:
+        """Human-friendly region status suffix text."""
+        if region_status == "alert":
+            return "ALERT"
+        if region_status == "warning":
+            return "WARNING"
+        if region_status == "paused":
+            return "PAUSED"
+        if region_status == "disabled":
+            return "Disabled"
+        if region_status == "unavailable":
+            return "Unavailable"
+        return "OK"
+
+    def _region_status_icon(self, region_status: str) -> str:
+        """Compact icon for region status."""
+        if region_status == "alert":
+            return "🔴"
+        if region_status == "warning":
+            return "🟠"
+        if region_status == "ok":
+            return "🟢"
+        if region_status == "paused":
+            return "🔵"
+        if region_status == "disabled":
+            return "⚪"
+        return "🔵"
+
+    def _format_region_tree_text(self, region_name: str, region_status: str) -> str:
+        """Format region tree text with icon and status suffix."""
+        icon = self._region_status_icon(region_status)
+        suffix = self._region_status_label(region_status)
+        return f"{icon} {region_name} [{suffix}]"
+
+    def _refresh_tree_node_statuses(self) -> None:
+        """Refresh tree node tags to reflect live window/region statuses."""
+        for thumbnail in self.config.get_all_thumbnails():
+            thumbnail_id = thumbnail.get("id")
+            if not thumbnail_id or not self.window_tree.exists(thumbnail_id):
+                continue
+
+            window_status = self._get_thumbnail_window_status(thumbnail)
+            title = thumbnail.get("window_title", "Unknown")
+            self.window_tree.item(
+                thumbnail_id,
+                text=self._format_window_tree_text(title, window_status),
+                tags=(self._window_tree_tag(window_status),),
+            )
+
+            for region in thumbnail.get("monitored_regions", []):
+                region_id = region.get("id")
+                if not region_id or not self.window_tree.exists(region_id):
+                    continue
+                region_status = self._get_region_effective_status(thumbnail, region, window_status)
+                region_name = region.get("name", "Region")
+                self.window_tree.item(
+                    region_id,
+                    text=self._format_region_tree_text(region_name, region_status),
+                    tags=(self._region_tree_tag(region_status),),
+                )
 
     def _refresh_dynamic_status_texts(self) -> None:
         """Refresh dynamic text portions (countdown) without changing colors."""
@@ -1664,6 +2136,7 @@ class ScreenAlertMainWindow:
 
             self._refresh_dynamic_status_texts()
             self._refresh_aggregate_status()
+            self._refresh_tree_node_statuses()
 
             # Force full thumbnail + preview refresh every 5 seconds (5 ticks)
             self._force_refresh_counter += 1
@@ -1706,6 +2179,15 @@ class ScreenAlertMainWindow:
     
     def _on_exit(self) -> None:
         """Handle window close"""
+        self._watchdog_stop_event.set()
+
+        if self._ui_heartbeat_after_id:
+            try:
+                self.root.after_cancel(self._ui_heartbeat_after_id)
+                self._ui_heartbeat_after_id = None
+            except Exception:
+                pass
+
         # Cancel periodic update timer
         if self.update_timer_id:
             try:
