@@ -1,0 +1,8 @@
+# Dear PyGui requirements for ScreenAlert
+dearpygui>=1.10.1
+numpy>=1.24.0
+
+# Existing requirements
+pywin32>=305
+pillow>=10.0.0
+pyttsx3>=2.90
