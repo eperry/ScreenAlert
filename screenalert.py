@@ -99,7 +99,7 @@ def teardown_thread_diagnostics() -> None:
 
 def setup_logging(verbose: bool = False) -> logging.Logger:
     """Configure logging"""
-    log_level = logging.DEBUG if verbose else logging.INFO
+    log_level = logging.DEBUG if verbose else logging.WARNING
     
     # Create logs directory
     os.makedirs(LOGS_DIR, exist_ok=True)

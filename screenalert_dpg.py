@@ -10,7 +10,7 @@ log_dir.mkdir(parents=True, exist_ok=True)
 log_file = log_dir / "screenalert.log"
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler(log_file),
