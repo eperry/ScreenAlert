@@ -548,11 +548,22 @@ class ScreenAlertEngine:
         """Main unified capture and processing loop"""
         # Track previous state per region to fire callbacks only on transitions
         _prev_region_state: dict[str, str] = {}
+        last_refresh_rate_ms: Optional[int] = None
 
         while self.running:
             try:
                 start_time = time.time()
                 refresh_rate_ms = self.config.get_refresh_rate()
+
+                if refresh_rate_ms != last_refresh_rate_ms:
+                    self.cache_manager.lifetime = max(0.01, (refresh_rate_ms - 10) / 1000.0)
+                    self.cache_manager.invalidate_all()
+                    last_refresh_rate_ms = refresh_rate_ms
+                    logger.info(
+                        "Updated refresh rate to %sms (cache lifetime=%.3fs)",
+                        refresh_rate_ms,
+                        self.cache_manager.lifetime,
+                    )
                 
                 # Get snapshot of all thumbnails (copy to avoid mutation during iteration)
                 with self.lock:
