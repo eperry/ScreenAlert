@@ -245,6 +245,7 @@ class ThumbnailWindow:
         self.always_on_top = bool(config.get("always_on_top", True))
         self.show_border = config.get("show_border", True)
         self.enabled = config.get("enabled", True)
+        self._is_active_window = False
         
         # State
         self.current_image: Optional[Image.Image] = None
@@ -283,11 +284,11 @@ class ThumbnailWindow:
             self.window.attributes('-alpha', self.opacity)  # Set opacity
             
             # Main container
-            container = tk.Frame(self.window, bg='#FF9500' if self.show_border else 'black')
-            container.pack(fill=tk.BOTH, expand=True)
+            self.container = tk.Frame(self.window, bg='black')
+            self.container.pack(fill=tk.BOTH, expand=True)
             
             # Custom title bar (hidden by default)
-            self.title_bar = tk.Frame(container, bg='#2e2e2e', height=25)
+            self.title_bar = tk.Frame(self.container, bg='#2e2e2e', height=25)
             self.title_label = tk.Label(self.title_bar, 
                                        text=self.config.get("window_title", "ScreenAlert")[:30],
                                        bg='#2e2e2e', fg='white', 
@@ -304,19 +305,21 @@ class ThumbnailWindow:
             # Will be shown on mouse hover
             
             # Border frame
-            border_frame = tk.Frame(container, bg='black', relief=tk.RAISED, 
-                                   bd=2 if self.show_border else 0)
-            border_frame.pack(fill=tk.BOTH, expand=True, 
-                            padx=(2 if self.show_border else 0), 
-                            pady=(2 if self.show_border else 0))
+            self.border_frame = tk.Frame(self.container, bg='black', relief=tk.FLAT, bd=0)
+            self.border_frame.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
             
             # Image label
-            self.label = tk.Label(border_frame, bg='black', image=None)
+            self.label = tk.Label(self.border_frame, bg='black', image=None)
             self.label.pack(fill=tk.BOTH, expand=True)
+
+            # Border appears only when this overlay window is active
+            self._set_active_border(False)
             
             # Bind hover events to show/hide title bar
             self.window.bind('<Enter>', self._on_mouse_enter)
             self.window.bind('<Leave>', self._on_mouse_leave)
+            self.window.bind('<FocusIn>', self._on_focus_in)
+            self.window.bind('<FocusOut>', self._on_focus_out)
             self.label.bind('<Enter>', self._on_mouse_enter)
             self.label.bind('<Leave>', self._on_mouse_leave)
             
@@ -358,6 +361,30 @@ class ThumbnailWindow:
         except Exception as e:
             logger.error(f"Error creating window: {e}", exc_info=True)
             self.window = None
+
+    def _set_active_border(self, is_active: bool) -> None:
+        """Show border only while this overlay window is active."""
+        self._is_active_window = bool(is_active)
+        if not self.show_border:
+            return
+        if not hasattr(self, 'container') or not hasattr(self, 'border_frame'):
+            return
+        try:
+            border_px = 2 if self._is_active_window else 0
+            self.container.configure(bg='#FF9500' if self._is_active_window else 'black')
+            self.border_frame.configure(
+                relief=tk.RAISED if self._is_active_window else tk.FLAT,
+                bd=border_px,
+            )
+            self.border_frame.pack_configure(padx=border_px, pady=border_px)
+        except Exception:
+            pass
+
+    def _on_focus_in(self, _event) -> None:
+        self._set_active_border(True)
+
+    def _on_focus_out(self, _event) -> None:
+        self._set_active_border(False)
     
     def _process_image_queue(self) -> None:
         """Process image updates from queue (runs on main thread)"""
