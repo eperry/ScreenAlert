@@ -75,6 +75,8 @@ class ScreenAlertMainWindow:
         self._watchdog_stop_event = threading.Event()
         self._watchdog_thread: Optional[threading.Thread] = None
         self._watchdog_last_dump_ts = 0.0
+        self._last_alert_focus_ts = 0.0
+        self._alert_focus_cooldown_seconds = 0.75
         logger.debug("Creating Tk root window")
         self.root = tk.Tk()
         self.root.title("ScreenAlert v2.0 - Multibox Monitor")
@@ -330,11 +332,31 @@ class ScreenAlertMainWindow:
         ttk.Label(self.info_frame, text="Size:").grid(row=3, column=0, sticky="w", padx=(0, 6))
         self.window_size_var = tk.StringVar(value="")
         ttk.Label(self.info_frame, textvariable=self.window_size_var).grid(row=3, column=1, sticky="w")
+
+        self.window_primary_var = tk.BooleanVar(value=False)
+        self.window_primary_checkbox = ttk.Checkbutton(
+            self.info_frame,
+            text="Primary (bring to front on startup)",
+            variable=self.window_primary_var,
+            command=self._toggle_primary_window,
+        )
+        self.window_primary_checkbox.grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        self.window_primary_checkbox.state(["disabled"])
+
+        self.window_alert_focus_var = tk.BooleanVar(value=False)
+        self.window_alert_focus_checkbox = ttk.Checkbutton(
+            self.info_frame,
+            text="Alert Focus (bring to front on alert)",
+            variable=self.window_alert_focus_var,
+            command=self._toggle_alert_focus_window,
+        )
+        self.window_alert_focus_checkbox.grid(row=5, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        self.window_alert_focus_checkbox.state(["disabled"])
         
         self._preview_placeholder = ImageTk.PhotoImage(Image.new("RGB", (180, 100), "#1a1a1a"))
         self.window_preview_label = tk.Label(self.info_frame, bg="#1a1a1a",
                                              image=self._preview_placeholder)
-        self.window_preview_label.grid(row=0, column=2, rowspan=4, sticky="e", padx=(10, 0))
+        self.window_preview_label.grid(row=0, column=2, rowspan=6, sticky="e", padx=(10, 0))
         
         self.regions_frame = ttk.LabelFrame(self.detail_frame, text="Regions", padding=8)
         self.regions_frame.grid(row=1, column=0, sticky="nsew")
@@ -611,8 +633,175 @@ class ScreenAlertMainWindow:
             self.engine.set_paused(False)
             self.status_var.set("Monitoring auto-started")
             logger.info("Monitoring auto-started")
+            self.root.after(500, self._activate_primary_windows_on_startup)
         else:
             logger.info("Auto-start skipped: no thumbnails configured")
+
+    def _activate_primary_windows_on_startup(self) -> None:
+        """Bring configured primary window(s) to foreground on app startup if available."""
+        try:
+            primary_thumbnails = [
+                thumbnail for thumbnail in self.config.get_all_thumbnails()
+                if bool(thumbnail.get("is_primary", False)) and thumbnail.get("enabled", True)
+            ]
+            if not primary_thumbnails:
+                return
+
+            activated = 0
+            for thumbnail in primary_thumbnails:
+                thumbnail_id = thumbnail.get("id")
+                hwnd = thumbnail.get("window_hwnd")
+                if not thumbnail_id:
+                    continue
+
+                if not hwnd or not self.window_manager.is_window_valid(hwnd):
+                    reconnect_state = self.engine.reconnect_window(thumbnail_id)
+                    if reconnect_state not in ("already_valid", "reconnected"):
+                        continue
+                    refreshed = self.config.get_thumbnail(thumbnail_id)
+                    hwnd = refreshed.get("window_hwnd") if refreshed else None
+
+                if hwnd and self.window_manager.activate_window(hwnd):
+                    activated += 1
+
+            if activated:
+                self.status_var.set(f"Primary window activated ({activated})")
+        except Exception as error:
+            logger.error(f"Failed primary-window startup activation: {error}", exc_info=True)
+
+    def _toggle_primary_window(self) -> None:
+        """Persist Primary flag for selected window (single-primary semantics)."""
+        if not self.selected_thumbnail_id:
+            return
+
+        is_primary = bool(self.window_primary_var.get())
+        updated = False
+
+        for thumbnail in self.config.get_all_thumbnails():
+            thumbnail_id = thumbnail.get("id")
+            if not thumbnail_id:
+                continue
+            should_be_primary = is_primary and thumbnail_id == self.selected_thumbnail_id
+            current = bool(thumbnail.get("is_primary", False))
+            if current != should_be_primary:
+                self.config.update_thumbnail(thumbnail_id, {"is_primary": should_be_primary})
+                updated = True
+
+        if updated:
+            self.config.save()
+
+        self._refresh_focus_option_states()
+
+        self.status_var.set("Primary window set" if is_primary else "Primary window cleared")
+
+    def _toggle_alert_focus_window(self) -> None:
+        """Persist Alert Focus flag for selected window (single-alert-focus semantics)."""
+        if not self.selected_thumbnail_id:
+            return
+
+        is_alert_focus = bool(self.window_alert_focus_var.get())
+        updated = False
+
+        for thumbnail in self.config.get_all_thumbnails():
+            thumbnail_id = thumbnail.get("id")
+            if not thumbnail_id:
+                continue
+            should_be_alert_focus = is_alert_focus and thumbnail_id == self.selected_thumbnail_id
+            current = bool(thumbnail.get("is_alert_focus", False))
+            if current != should_be_alert_focus:
+                self.config.update_thumbnail(thumbnail_id, {"is_alert_focus": should_be_alert_focus})
+                updated = True
+
+        if updated:
+            self.config.save()
+
+        self._refresh_focus_option_states()
+
+        self.status_var.set("Alert Focus window set" if is_alert_focus else "Alert Focus window cleared")
+
+    def _get_focus_owner_ids(self) -> tuple[Optional[str], Optional[str]]:
+        """Return (primary_owner_id, alert_focus_owner_id)."""
+        primary_owner_id: Optional[str] = None
+        alert_focus_owner_id: Optional[str] = None
+        for thumbnail in self.config.get_all_thumbnails():
+            thumbnail_id = thumbnail.get("id")
+            if not thumbnail_id:
+                continue
+            if primary_owner_id is None and bool(thumbnail.get("is_primary", False)):
+                primary_owner_id = thumbnail_id
+            if alert_focus_owner_id is None and bool(thumbnail.get("is_alert_focus", False)):
+                alert_focus_owner_id = thumbnail_id
+            if primary_owner_id and alert_focus_owner_id:
+                break
+        return primary_owner_id, alert_focus_owner_id
+
+    def _refresh_focus_option_states(self) -> None:
+        """Refresh enabled/disabled state of Primary and Alert Focus checkboxes."""
+        selected_id = self.selected_thumbnail_id
+        if not selected_id:
+            self.window_primary_var.set(False)
+            self.window_primary_checkbox.state(["disabled"])
+            self.window_alert_focus_var.set(False)
+            self.window_alert_focus_checkbox.state(["disabled"])
+            return
+
+        thumbnail = self.config.get_thumbnail(selected_id)
+        if not thumbnail:
+            self.window_primary_var.set(False)
+            self.window_primary_checkbox.state(["disabled"])
+            self.window_alert_focus_var.set(False)
+            self.window_alert_focus_checkbox.state(["disabled"])
+            return
+
+        primary_owner_id, alert_focus_owner_id = self._get_focus_owner_ids()
+
+        is_selected_primary = bool(thumbnail.get("is_primary", False))
+        is_selected_alert_focus = bool(thumbnail.get("is_alert_focus", False))
+        self.window_primary_var.set(is_selected_primary)
+        self.window_alert_focus_var.set(is_selected_alert_focus)
+
+        primary_locked_by_other = bool(primary_owner_id and primary_owner_id != selected_id)
+        alert_focus_locked_by_other = bool(alert_focus_owner_id and alert_focus_owner_id != selected_id)
+
+        if primary_locked_by_other:
+            self.window_primary_checkbox.state(["disabled"])
+        else:
+            self.window_primary_checkbox.state(["!disabled"])
+
+        if alert_focus_locked_by_other:
+            self.window_alert_focus_checkbox.state(["disabled"])
+        else:
+            self.window_alert_focus_checkbox.state(["!disabled"])
+
+    def _activate_alert_focus_window(self) -> None:
+        """Bring configured alert-focus window to foreground, throttled."""
+        now = time.time()
+        if (now - self._last_alert_focus_ts) < self._alert_focus_cooldown_seconds:
+            return
+
+        alert_focus_thumbnail = None
+        for thumbnail in self.config.get_all_thumbnails():
+            if bool(thumbnail.get("is_alert_focus", False)) and thumbnail.get("enabled", True):
+                alert_focus_thumbnail = thumbnail
+                break
+
+        if not alert_focus_thumbnail:
+            return
+
+        thumbnail_id = alert_focus_thumbnail.get("id")
+        hwnd = alert_focus_thumbnail.get("window_hwnd")
+        if not thumbnail_id:
+            return
+
+        if not hwnd or not self.window_manager.is_window_valid(hwnd):
+            reconnect_state = self.engine.reconnect_window(thumbnail_id)
+            if reconnect_state not in ("already_valid", "reconnected"):
+                return
+            refreshed = self.config.get_thumbnail(thumbnail_id)
+            hwnd = refreshed.get("window_hwnd") if refreshed else None
+
+        if hwnd and self.window_manager.activate_window(hwnd):
+            self._last_alert_focus_ts = now
 
     def _toggle_pause(self) -> None:
         """Toggle between paused and monitoring states."""
@@ -1359,6 +1548,8 @@ class ScreenAlertMainWindow:
             title = thumbnail.get('window_title', 'Unknown')
             
             logger.info(f"[ALERT EVENT] {title} - {region_name} (region_id={region_id})")
+
+            self._activate_alert_focus_window()
             
             # Mark region as dirty for BOTH status and thumbnail updates
             self._mark_dirty(thumbnail_id, region_id, status="alert", thumbnail=True)
@@ -1418,6 +1609,10 @@ class ScreenAlertMainWindow:
             self.window_hwnd_var.set("")
             self.window_region_count_var.set(str(total_regions))
             self.window_size_var.set("")
+            self.window_primary_var.set(False)
+            self.window_primary_checkbox.state(["disabled"])
+            self.window_alert_focus_var.set(False)
+            self.window_alert_focus_checkbox.state(["disabled"])
 
             preview_image = None
             if len(active_thumbnails) == 1:
@@ -1459,6 +1654,7 @@ class ScreenAlertMainWindow:
             self.window_title_var.set(title)
             self.window_hwnd_var.set(str(hwnd) if hwnd else "")
             self.window_region_count_var.set(str(len(regions)))
+            self._refresh_focus_option_states()
             size = thumbnail.get("window_size")
             if isinstance(size, (list, tuple)) and len(size) == 2:
                 self.window_size_var.set(f"{size[0]}x{size[1]}")
@@ -1515,6 +1711,10 @@ class ScreenAlertMainWindow:
         self.window_hwnd_var.set("")
         self.window_region_count_var.set("0")
         self.window_size_var.set("")
+        self.window_primary_var.set(False)
+        self.window_primary_checkbox.state(["disabled"])
+        self.window_alert_focus_var.set(False)
+        self.window_alert_focus_checkbox.state(["disabled"])
         self.window_preview_label.config(image=self._preview_placeholder, text="No window selected", fg="white", compound="center")
         for widget in self.regions_inner_frame.winfo_children():
             widget.destroy()

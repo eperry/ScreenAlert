@@ -6,7 +6,10 @@ import platform
 import time
 
 if platform.system() == "Windows":
+    import win32api
+    import win32con
     import win32gui
+    import win32process
     import win32ui
     from ctypes import windll
 
@@ -303,15 +306,88 @@ class WindowManager:
         try:
             if not self.is_window_valid(hwnd):
                 return False
-            
+
+            target_hwnd = int(hwnd)
+            foreground_before = self.get_foreground_window()
+
+            if foreground_before == target_hwnd:
+                return True
+
             if self.is_window_minimized(hwnd):
-                win32gui.ShowWindow(hwnd, 9)  # SW_RESTORE
-            
-            win32gui.SetForegroundWindow(hwnd)
-            return True
+                win32gui.ShowWindow(target_hwnd, win32con.SW_RESTORE)
+            else:
+                win32gui.ShowWindow(target_hwnd, win32con.SW_SHOW)
+
+            current_thread_id = win32api.GetCurrentThreadId()
+            attached_thread_ids = set()
+
+            try:
+                if foreground_before:
+                    fg_thread_id, _ = win32process.GetWindowThreadProcessId(foreground_before)
+                    if fg_thread_id and fg_thread_id != current_thread_id:
+                        win32process.AttachThreadInput(fg_thread_id, current_thread_id, True)
+                        attached_thread_ids.add(fg_thread_id)
+
+                target_thread_id, _ = win32process.GetWindowThreadProcessId(target_hwnd)
+                if target_thread_id and target_thread_id != current_thread_id:
+                    win32process.AttachThreadInput(target_thread_id, current_thread_id, True)
+                    attached_thread_ids.add(target_thread_id)
+
+                win32gui.BringWindowToTop(target_hwnd)
+                win32gui.SetWindowPos(
+                    target_hwnd,
+                    win32con.HWND_TOP,
+                    0,
+                    0,
+                    0,
+                    0,
+                    win32con.SWP_NOMOVE | win32con.SWP_NOSIZE,
+                )
+                win32gui.SetForegroundWindow(target_hwnd)
+                win32gui.SetActiveWindow(target_hwnd)
+            finally:
+                for thread_id in attached_thread_ids:
+                    try:
+                        win32process.AttachThreadInput(thread_id, current_thread_id, False)
+                    except Exception:
+                        pass
+
+            if self.get_foreground_window() == target_hwnd:
+                return True
+
+            win32gui.SetWindowPos(
+                target_hwnd,
+                win32con.HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                win32con.SWP_NOMOVE | win32con.SWP_NOSIZE,
+            )
+            win32gui.SetWindowPos(
+                target_hwnd,
+                win32con.HWND_NOTOPMOST,
+                0,
+                0,
+                0,
+                0,
+                win32con.SWP_NOMOVE | win32con.SWP_NOSIZE,
+            )
+            win32gui.BringWindowToTop(target_hwnd)
+            win32gui.SetForegroundWindow(target_hwnd)
+
+            return self.get_foreground_window() == target_hwnd
         except Exception as e:
             logger.error(f"Error activating window {hwnd}: {e}")
             return False
+
+    def get_foreground_window(self) -> Optional[int]:
+        """Return current foreground window handle, or None when unavailable."""
+        try:
+            hwnd = win32gui.GetForegroundWindow()
+            return int(hwnd) if hwnd else None
+        except Exception:
+            return None
     
     def get_monitor_info(self) -> List[Dict]:
         """Get information about all monitors (DPI/scaling robust)"""
