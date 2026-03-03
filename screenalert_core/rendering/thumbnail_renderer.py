@@ -34,6 +34,7 @@ class ThumbnailRenderer:
         self.running = False
         self.render_thread: Optional[threading.Thread] = None
         self.lock = threading.Lock()
+        self._active_thumbnail_id: Optional[str] = None
         logger.info("Thumbnail renderer initialized")
     
     def add_thumbnail(self, thumbnail_id: str, config: Dict) -> bool:
@@ -76,11 +77,53 @@ class ThumbnailRenderer:
             try:
                 self.thumbnails[thumbnail_id].cleanup()
                 del self.thumbnails[thumbnail_id]
+                if self._active_thumbnail_id == thumbnail_id:
+                    self._active_thumbnail_id = None
+                    if self.thumbnails:
+                        self._active_thumbnail_id = next(iter(self.thumbnails.keys()))
                 logger.info(f"Removed thumbnail: {thumbnail_id}")
                 return True
             except Exception as e:
                 logger.error(f"Error removing thumbnail {thumbnail_id}: {e}", exc_info=True)
                 return False
+
+    def set_active_thumbnail(self, thumbnail_id: str, bring_to_front: bool = True) -> None:
+        """Mark one overlay as active/top and update border visibility for all overlays."""
+        thumbnails_snapshot = {}
+        active_thumbnail = None
+        previous_active_id: Optional[str] = None
+        with self.lock:
+            if thumbnail_id not in self.thumbnails:
+                return
+
+            previous_active_id = self._active_thumbnail_id
+            if previous_active_id == thumbnail_id and not bring_to_front:
+                return
+
+            self._active_thumbnail_id = thumbnail_id
+            active_thumbnail = self.thumbnails.get(thumbnail_id)
+            thumbnails_snapshot = dict(self.thumbnails)
+
+        if bring_to_front and active_thumbnail:
+            active_thumbnail.lift_threadsafe()
+
+        if previous_active_id == thumbnail_id:
+            return
+
+        for current_id, thumbnail in thumbnails_snapshot.items():
+            thumbnail.set_active_border_threadsafe(current_id == thumbnail_id)
+
+    def clear_active_thumbnail(self) -> None:
+        """Clear active overlay border state for all overlays."""
+        thumbnails_snapshot = {}
+        with self.lock:
+            if self._active_thumbnail_id is None:
+                return
+            self._active_thumbnail_id = None
+            thumbnails_snapshot = dict(self.thumbnails)
+
+        for thumbnail in thumbnails_snapshot.values():
+            thumbnail.set_active_border_threadsafe(False)
     
     def update_thumbnail_image(self, thumbnail_id: str, image: Image.Image) -> bool:
         """Update thumbnail display image"""
@@ -287,7 +330,7 @@ class ThumbnailWindow:
             self.container = tk.Frame(self.window, bg='black')
             self.container.pack(fill=tk.BOTH, expand=True)
             
-            # Custom title bar (hidden by default)
+            # Custom title bar (hidden by default); placed as overlay so it never affects geometry
             self.title_bar = tk.Frame(self.container, bg='#2e2e2e', height=25)
             self.title_label = tk.Label(self.title_bar, 
                                        text=self.config.get("window_title", "ScreenAlert")[:30],
@@ -319,7 +362,6 @@ class ThumbnailWindow:
             self.window.bind('<Enter>', self._on_mouse_enter)
             self.window.bind('<Leave>', self._on_mouse_leave)
             self.window.bind('<FocusIn>', self._on_focus_in)
-            self.window.bind('<FocusOut>', self._on_focus_out)
             self.label.bind('<Enter>', self._on_mouse_enter)
             self.label.bind('<Leave>', self._on_mouse_leave)
             
@@ -380,11 +422,28 @@ class ThumbnailWindow:
         except Exception:
             pass
 
-    def _on_focus_in(self, _event) -> None:
-        self._set_active_border(True)
+    def set_active_border_threadsafe(self, is_active: bool) -> None:
+        """Set active border state on Tk thread regardless of caller thread."""
+        if self._is_active_window == bool(is_active):
+            return
+        if not self.window:
+            return
+        try:
+            self.window.after(0, lambda: self._set_active_border(is_active))
+        except Exception:
+            pass
 
-    def _on_focus_out(self, _event) -> None:
-        self._set_active_border(False)
+    def lift_threadsafe(self) -> None:
+        """Lift overlay on Tk thread regardless of caller thread."""
+        if not self.window:
+            return
+        try:
+            self.window.after(0, self.window.lift)
+        except Exception:
+            pass
+
+    def _on_focus_in(self, _event) -> None:
+        pass
     
     def _process_image_queue(self) -> None:
         """Process image updates from queue (runs on main thread)"""
@@ -568,7 +627,8 @@ class ThumbnailWindow:
         """Show title bar when mouse enters"""
         if hasattr(self, 'title_bar') and self.title_bar:
             try:
-                self.title_bar.pack(side=tk.TOP, fill=tk.X, before=self.label.master)
+                self.title_bar.place(x=0, y=0, relwidth=1.0, height=25)
+                self.title_bar.lift()
             except:
                 pass
     
@@ -581,7 +641,7 @@ class ThumbnailWindow:
                 widget = self.window.winfo_containing(x, y)
                 # If pointer is not over any part of this window, hide title bar
                 if widget is None or widget.winfo_toplevel() != self.window:
-                    self.title_bar.pack_forget()
+                    self.title_bar.place_forget()
             except:
                 pass
     

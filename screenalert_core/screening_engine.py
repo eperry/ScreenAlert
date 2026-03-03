@@ -6,6 +6,7 @@ import time
 import os
 import re
 import string
+import ctypes
 import tkinter as tk
 from datetime import datetime
 from typing import Dict, Optional, List, Callable
@@ -47,6 +48,10 @@ class ScreenAlertEngine:
         self.running = False
         self.paused = False
         self.loop_thread: Optional[threading.Thread] = None
+        self.foreground_hook_thread: Optional[threading.Thread] = None
+        self._foreground_hook_thread_id: Optional[int] = None
+        self._foreground_event_hook_handle = None
+        self._foreground_event_proc = None
         self.lock = threading.Lock()
         
         # Callbacks
@@ -347,6 +352,9 @@ class ScreenAlertEngine:
             # Start main loop thread
             self.loop_thread = threading.Thread(target=self._main_loop, daemon=True)
             self.loop_thread.start()
+
+            # Start Windows foreground-change event hook (no polling)
+            self._start_foreground_event_hook()
             
             logger.info("ScreenAlert engine started")
             self.plugin_hooks.emit("engine.started")
@@ -370,6 +378,8 @@ class ScreenAlertEngine:
                 self.loop_thread.join(timeout=5.0)
             except Exception as error:
                 logger.error(f"Error joining loop thread: {error}")
+
+        self._stop_foreground_event_hook()
 
         try:
             self.config.save()
@@ -589,7 +599,7 @@ class ScreenAlertEngine:
                 # Get snapshot of all thumbnails (copy to avoid mutation during iteration)
                 with self.lock:
                     thumbnails = list(self.config.get_all_thumbnails())
-                
+
                 # Process each thumbnail
                 for thumbnail_config in thumbnails:
                     if not thumbnail_config.get("enabled", True):
@@ -698,6 +708,7 @@ class ScreenAlertEngine:
                             prev = _prev_region_state.get(region_id)
                             if state != prev:
                                 _prev_region_state[region_id] = state
+
                                 self._diag_change_count += 1
                                 self.plugin_hooks.emit("region.changed", thumbnail_id=thumbnail_id, region_id=region_id)
                                 self.on_region_change(thumbnail_id, region_id, state)
@@ -795,6 +806,133 @@ class ScreenAlertEngine:
             except Exception as e:
                 logger.error(f"Error in main loop: {e}")
                 time.sleep(0.1)
+
+    def _update_overlay_active_by_foreground_source(self, thumbnails: List[Dict], foreground_hwnd: int) -> None:
+        """Highlight overlay whose monitored source window is currently foreground."""
+        try:
+            if not foreground_hwnd:
+                return
+
+            active_thumbnail_id: Optional[str] = None
+            for thumbnail in thumbnails:
+                if not thumbnail.get("enabled", True):
+                    continue
+                thumbnail_id = thumbnail.get("id")
+                hwnd = thumbnail.get("window_hwnd")
+                if not thumbnail_id or not hwnd:
+                    continue
+                if int(hwnd) == int(foreground_hwnd):
+                    active_thumbnail_id = thumbnail_id
+                    break
+
+            if active_thumbnail_id:
+                self.renderer.set_active_thumbnail(active_thumbnail_id, bring_to_front=False)
+            else:
+                self.renderer.clear_active_thumbnail()
+        except Exception as error:
+            logger.debug(f"Unable to update active overlay from foreground source: {error}")
+
+    def _start_foreground_event_hook(self) -> None:
+        """Start Windows foreground window event hook (EVENT_SYSTEM_FOREGROUND)."""
+        if os.name != "nt":
+            return
+        if self.foreground_hook_thread and self.foreground_hook_thread.is_alive():
+            return
+
+        self.foreground_hook_thread = threading.Thread(
+            target=self._foreground_event_hook_loop,
+            daemon=True,
+            name="foreground-event-hook",
+        )
+        self.foreground_hook_thread.start()
+
+    def _stop_foreground_event_hook(self) -> None:
+        """Stop foreground event hook thread and unhook Windows event."""
+        if os.name != "nt":
+            return
+
+        try:
+            if self._foreground_hook_thread_id:
+                ctypes.windll.user32.PostThreadMessageW(self._foreground_hook_thread_id, 0x0012, 0, 0)
+        except Exception as error:
+            logger.debug(f"Unable to post WM_QUIT to foreground hook thread: {error}")
+
+        if self.foreground_hook_thread:
+            try:
+                self.foreground_hook_thread.join(timeout=2.0)
+            except Exception as error:
+                logger.debug(f"Unable to join foreground hook thread: {error}")
+
+        self.foreground_hook_thread = None
+        self._foreground_hook_thread_id = None
+        self._foreground_event_proc = None
+        self._foreground_event_hook_handle = None
+
+    def _foreground_event_hook_loop(self) -> None:
+        """Windows message loop for foreground-change events."""
+        if os.name != "nt":
+            return
+
+        try:
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+            self._foreground_hook_thread_id = int(kernel32.GetCurrentThreadId())
+
+            EVENT_SYSTEM_FOREGROUND = 0x0003
+            WINEVENT_OUTOFCONTEXT = 0x0000
+            WINEVENT_SKIPOWNPROCESS = 0x0002
+
+            WinEventProcType = ctypes.WINFUNCTYPE(
+                None,
+                ctypes.c_void_p,
+                ctypes.c_uint,
+                ctypes.c_void_p,
+                ctypes.c_long,
+                ctypes.c_long,
+                ctypes.c_uint,
+                ctypes.c_uint,
+            )
+
+            def _win_event_callback(_hook, _event, hwnd, _id_object, _id_child, _event_thread, _event_time):
+                try:
+                    if not hwnd:
+                        return
+                    foreground_hwnd = int(hwnd)
+                    with self.lock:
+                        thumbnails = list(self.config.get_all_thumbnails())
+                    self._update_overlay_active_by_foreground_source(thumbnails, foreground_hwnd)
+                except Exception as callback_error:
+                    logger.debug(f"Foreground hook callback error: {callback_error}")
+
+            self._foreground_event_proc = WinEventProcType(_win_event_callback)
+
+            self._foreground_event_hook_handle = user32.SetWinEventHook(
+                EVENT_SYSTEM_FOREGROUND,
+                EVENT_SYSTEM_FOREGROUND,
+                0,
+                self._foreground_event_proc,
+                0,
+                0,
+                WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+            )
+
+            if not self._foreground_event_hook_handle:
+                logger.warning("Failed to install foreground event hook")
+                return
+
+            msg = ctypes.wintypes.MSG()
+            while self.running and user32.GetMessageW(ctypes.byref(msg), 0, 0, 0) > 0:
+                user32.TranslateMessage(ctypes.byref(msg))
+                user32.DispatchMessageW(ctypes.byref(msg))
+
+        except Exception as error:
+            logger.warning(f"Foreground event hook loop failed: {error}")
+        finally:
+            try:
+                if self._foreground_event_hook_handle:
+                    ctypes.windll.user32.UnhookWinEvent(self._foreground_event_hook_handle)
+            except Exception:
+                pass
 
     def _capture_region_snapshot(self, thumbnail_config: Dict, region_config: Dict,
                                  window_image: Image.Image, status: str = "alert") -> None:
