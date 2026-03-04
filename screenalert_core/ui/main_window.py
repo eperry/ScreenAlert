@@ -79,7 +79,7 @@ class ScreenAlertMainWindow:
         self._alert_focus_cooldown_seconds = 0.75
         logger.debug("Creating Tk root window")
         self.root = tk.Tk()
-        self.root.title("ScreenAlert v2.0 - Multibox Monitor")
+        self.root.title("ScreenAlert v2.0.2 - Multibox Monitor")
         logger.debug("Tk root window created and titled")
         self.root.geometry("1200x800")
         # Pass tkinter root to engine for overlay windows
@@ -98,13 +98,20 @@ class ScreenAlertMainWindow:
         # Configure style/theme
         self.style = ttk.Style()
         self.style.theme_use('clam')
-        self._current_theme = 'dark'
+        self._current_theme = 'high-contrast' if self.config.get_high_contrast() else 'dark'
+        self._theme_preset = self.config.get_theme_preset()
+        self._palette: Dict[str, str] = {}
+        self._pending_runtime_settings: Optional[Dict[str, object]] = None
+        self._runtime_apply_scheduled = False
+        self._last_applied_runtime_settings: Dict[str, object] = {}
         self._apply_theme(self._current_theme)
 
         # Build UI
         logger.debug("Building UI")
         self._build_ui()
         logger.debug("UI built")
+
+        self._ensure_window_slot_consistency()
 
         # Update thumbnail list with any saved thumbnails from config
         logger.debug("Updating thumbnail list from config")
@@ -152,35 +159,298 @@ class ScreenAlertMainWindow:
 
     def _apply_theme(self, theme: str) -> None:
         """Apply the selected theme (dark or high-contrast)"""
+        self._current_theme = theme
         if theme == 'high-contrast':
             self.style.theme_use('clam')
-            # High-contrast colors
-            self.style.configure('.', background='#000000', foreground='#FFFFFF', font=('Segoe UI', 10, 'bold'))
-            self.style.configure('TLabel', background='#000000', foreground='#FFFFFF', font=('Segoe UI', 10, 'bold'))
-            self.style.configure('TFrame', background='#000000')
-            self.style.configure('TButton', background='#000000', foreground='#FFFF00', font=('Segoe UI', 10, 'bold'))
-            self.style.configure('Treeview', background='#000000', foreground='#FFFFFF', fieldbackground='#000000', font=('Segoe UI', 10, 'bold'))
-            self.style.configure('TEntry', fieldbackground='#000000', foreground='#FFFFFF', font=('Segoe UI', 10, 'bold'))
+            self._palette = {
+                "bg": "#000000",
+                "panel": "#000000",
+                "surface": "#000000",
+                "surface_alt": "#000000",
+                "text": "#FFFFFF",
+                "text_muted": "#FFFF00",
+                "accent": "#FFFF00",
+                "entry_bg": "#000000",
+                "ok": "#00FF00",
+                "info": "#004578",
+                "warn": "#FFD800",
+                "danger": "#FF3B30",
+                "disabled": "#888888",
+                "selection_bg": "#FFFF00",
+                "selection_fg": "#000000",
+            }
+
+            p = self._palette
+            self.style.configure('.', background=p["bg"], foreground=p["text"], font=('Segoe UI', 10, 'bold'))
+            self.style.configure('TLabel', background=p["bg"], foreground=p["text"], font=('Segoe UI', 10, 'bold'))
+            self.style.configure('TFrame', background=p["panel"])
+            self.style.configure('TButton', background=p["surface"], foreground=p["accent"], font=('Segoe UI', 10, 'bold'))
+            self.style.map('TButton', background=[('active', p["accent"])], foreground=[('active', p["bg"])])
+            self.style.configure(
+                'Treeview',
+                background=p["panel"],
+                foreground=p["text"],
+                fieldbackground=p["panel"],
+                font=('Segoe UI', 10, 'bold'),
+            )
+            self.style.map('Treeview', background=[('selected', p["selection_bg"])], foreground=[('selected', p["selection_fg"])])
+            self.style.configure('Treeview.Heading', background=p["surface"], foreground=p["text"], font=('Segoe UI', 10, 'bold'))
+            self.style.configure('TEntry', fieldbackground=p["entry_bg"], foreground=p["text"], font=('Segoe UI', 10, 'bold'))
+            self.style.configure('TSpinbox', fieldbackground=p["entry_bg"], foreground=p["text"], background=p["surface"], arrowcolor=p["accent"], insertcolor=p["text"])
+            self.style.configure('Horizontal.TScale', background=p["panel"], troughcolor=p["surface"])
+            self.style.configure('TNotebook', background=p["panel"], borderwidth=0)
+            self.style.configure('TNotebook.Tab', background=p["surface"], foreground=p["text"], padding=(10, 4), font=('Segoe UI', 10, 'bold'))
+            self.style.map('TNotebook.Tab', background=[('selected', p["accent"]), ('active', p["surface_alt"])], foreground=[('selected', p["bg"]), ('active', p["text"])])
+            self.style.configure('TLabelframe', background=p["panel"], bordercolor=p["surface"], relief=tk.GROOVE)
+            self.style.configure('TLabelframe.Label', background=p["panel"], foreground=p["text"], font=('Segoe UI', 10, 'bold'))
+            self.style.configure('TCheckbutton', background=p["bg"], foreground=p["text"], indicatorcolor=p["entry_bg"])
+            self.style.map('TCheckbutton', background=[('disabled', p["bg"]), ('active', p["bg"])], foreground=[('disabled', p["text"]), ('active', p["text"])], indicatorcolor=[('disabled', p["disabled"]), ('selected', p["accent"]), ('!selected', p["entry_bg"])])
+            self.style.configure(
+                'App.TCheckbutton',
+                background=p["bg"],
+                foreground=p["text"],
+                indicatorcolor=p["entry_bg"],
+            )
+            self.style.map(
+                'App.TCheckbutton',
+                background=[('disabled', p["bg"]), ('active', p["bg"])],
+                foreground=[('disabled', p["text"]), ('active', p["text"])],
+                indicatorcolor=[('disabled', p["disabled"]), ('selected', p["accent"]), ('!selected', p["entry_bg"])],
+            )
+            self.style.configure(
+                'App.TCombobox',
+                fieldbackground=p["entry_bg"],
+                background=p["surface"],
+                foreground=p["text"],
+                arrowcolor=p["accent"],
+                selectforeground=p["text"],
+                selectbackground=p["selection_bg"],
+            )
+            self.style.map(
+                'App.TCombobox',
+                fieldbackground=[('readonly', p["entry_bg"])],
+                background=[('readonly', p["surface"])],
+                foreground=[('readonly', p["text"])],
+            )
+
+            self.style.configure('App.Card.TFrame', background=p["surface"], relief=tk.GROOVE, borderwidth=1)
+            self.style.configure('App.CardInner.TFrame', background=p["surface"])
+            self.style.configure('App.Controls.TFrame', background=p["surface"], relief=tk.FLAT, borderwidth=0)
+            self.style.configure('App.Muted.TLabel', background=p["surface"], foreground=p["text_muted"], font=('Segoe UI', 10))
+            self.style.configure('App.Image.TLabel', background=p["surface_alt"], foreground=p["text"], font=('Segoe UI', 10))
+            self.style.configure('App.ImageUnavailable.TLabel', background=p["surface_alt"], foreground=p["text_muted"], font=('Segoe UI', 10, 'bold'))
+            self.style.configure('App.RegionAction.TButton', background=p["surface_alt"], foreground=p["accent"], font=('Segoe UI', 10, 'bold'))
+            self.style.map('App.RegionAction.TButton', background=[('active', p["accent"])], foreground=[('active', p["bg"])])
+            self.style.configure('App.Status.Ok.TLabel', background=p["ok"], foreground='#000000', font=('Segoe UI', 9, 'bold'))
+            self.style.configure('App.Status.Warning.TLabel', background=p["warn"], foreground='#000000', font=('Segoe UI', 9, 'bold'))
+            self.style.configure('App.Status.Alert.TLabel', background=p["danger"], foreground='#FFFFFF', font=('Segoe UI', 9, 'bold'))
+            self.style.configure('App.Status.Info.TLabel', background=p["info"], foreground='#FFFFFF', font=('Segoe UI', 9, 'bold'))
+            self.style.configure('App.Status.Disabled.TLabel', background=p["disabled"], foreground='#FFFFFF', font=('Segoe UI', 9, 'bold'))
+            self.style.configure('App.Preview.TLabel', background=p["surface_alt"], foreground=p["text"])
+            self.style.configure('App.PreviewUnavailable.TLabel', background=p["surface_alt"], foreground=p["text_muted"], font=('Segoe UI', 10, 'bold'))
+            self.style.configure('App.StatusBar.TFrame', background=p["surface"])
         else:
             self.style.theme_use('clam')
-            # Modern dark theme colors (gaming style)
-            accent = '#00bfff'
-            bg = '#181a20'
-            fg = '#e0e0e0'
-            panel = '#23272e'
-            highlight = '#222b3a'
-            self.style.configure('.', background=bg, foreground=fg, font=('Segoe UI', 10))
-            self.style.configure('TLabel', background=bg, foreground=fg, font=('Segoe UI', 10, 'bold'))
-            self.style.configure('TFrame', background=panel)
-            self.style.configure('TButton', background=highlight, foreground=accent, font=('Segoe UI', 10, 'bold'))
-            self.style.map('TButton', background=[('active', accent)], foreground=[('active', '#181a20')])
-            self.style.configure('Treeview', background=panel, foreground=fg, fieldbackground=panel, font=('Segoe UI', 10))
-            self.style.configure('TEntry', fieldbackground=highlight, foreground=fg, font=('Segoe UI', 10))
+            self._palette = self._get_dark_palette(self._theme_preset)
+
+            p = self._palette
+            self.style.configure('.', background=p["bg"], foreground=p["text"], font=('Segoe UI', 10))
+            self.style.configure('TLabel', background=p["bg"], foreground=p["text"], font=('Segoe UI', 10, 'bold'))
+            self.style.configure('TFrame', background=p["panel"])
+            self.style.configure('TButton', background=p["entry_bg"], foreground=p["accent"], font=('Segoe UI', 10, 'bold'))
+            self.style.map('TButton', background=[('active', p["accent"])], foreground=[('active', p["bg"])])
+            self.style.configure('Treeview', background=p["panel"], foreground=p["text"], fieldbackground=p["panel"], font=('Segoe UI', 10))
+            self.style.map('Treeview', background=[('selected', p["selection_bg"])], foreground=[('selected', p["selection_fg"])])
+            self.style.configure('Treeview.Heading', background=p["surface"], foreground=p["text"], font=('Segoe UI', 10, 'bold'))
+            self.style.configure('TEntry', fieldbackground=p["entry_bg"], foreground=p["text"], font=('Segoe UI', 10))
+            self.style.configure('TSpinbox', fieldbackground=p["entry_bg"], foreground=p["text"], background=p["surface"], arrowcolor=p["accent"], insertcolor=p["text"])
+            self.style.configure('Horizontal.TScale', background=p["panel"], troughcolor=p["surface"])
+            self.style.configure('TNotebook', background=p["panel"], borderwidth=0)
+            self.style.configure('TNotebook.Tab', background=p["surface"], foreground=p["text"], padding=(10, 4), font=('Segoe UI', 10, 'bold'))
+            self.style.map('TNotebook.Tab', background=[('selected', p["accent"]), ('active', p["surface_alt"])], foreground=[('selected', p["bg"]), ('active', p["text"])])
+            self.style.configure('TLabelframe', background=p["panel"], bordercolor=p["surface"], relief=tk.GROOVE)
+            self.style.configure('TLabelframe.Label', background=p["panel"], foreground=p["text"], font=('Segoe UI', 10, 'bold'))
+            self.style.configure('TCheckbutton', background=p["bg"], foreground=p["text"], indicatorcolor=p["entry_bg"])
+            self.style.map('TCheckbutton', background=[('disabled', p["bg"]), ('active', p["bg"])], foreground=[('disabled', p["text"]), ('active', p["text"])], indicatorcolor=[('disabled', p["disabled"]), ('selected', p["accent"]), ('!selected', p["entry_bg"])])
+            self.style.configure(
+                'App.TCheckbutton',
+                background=p["bg"],
+                foreground=p["text"],
+                indicatorcolor=p["entry_bg"],
+            )
+            self.style.map(
+                'App.TCheckbutton',
+                background=[('disabled', p["bg"]), ('active', p["bg"])],
+                foreground=[('disabled', p["text"]), ('active', p["text"])],
+                indicatorcolor=[('disabled', p["disabled"]), ('selected', p["accent"]), ('!selected', p["entry_bg"])],
+            )
+            self.style.configure(
+                'App.TCombobox',
+                fieldbackground=p["entry_bg"],
+                background=p["surface"],
+                foreground=p["text"],
+                arrowcolor=p["accent"],
+                selectforeground=p["text"],
+                selectbackground=p["selection_bg"],
+            )
+            self.style.map(
+                'App.TCombobox',
+                fieldbackground=[('readonly', p["entry_bg"])],
+                background=[('readonly', p["surface"])],
+                foreground=[('readonly', p["text"])],
+            )
+
+            self.style.configure('App.Card.TFrame', background=p["surface"], relief=tk.GROOVE, borderwidth=1)
+            self.style.configure('App.CardInner.TFrame', background=p["surface"])
+            self.style.configure('App.Controls.TFrame', background=p["surface"], relief=tk.FLAT, borderwidth=0)
+            self.style.configure('App.Muted.TLabel', background=p["surface"], foreground=p["text_muted"], font=('Segoe UI', 10))
+            self.style.configure('App.Image.TLabel', background=p["surface_alt"], foreground=p["text"], font=('Segoe UI', 10))
+            self.style.configure('App.ImageUnavailable.TLabel', background=p["surface_alt"], foreground=p["text_muted"], font=('Segoe UI', 10, 'bold'))
+            self.style.configure('App.RegionAction.TButton', background=p["surface_alt"], foreground=p["accent"], font=('Segoe UI', 10, 'bold'))
+            self.style.map('App.RegionAction.TButton', background=[('active', p["accent"])], foreground=[('active', p["bg"])])
+            self.style.configure('App.Status.Ok.TLabel', background=p["ok"], foreground='#000000', font=('Segoe UI', 9, 'bold'))
+            self.style.configure('App.Status.Warning.TLabel', background=p["warn"], foreground='#000000', font=('Segoe UI', 9, 'bold'))
+            self.style.configure('App.Status.Alert.TLabel', background=p["danger"], foreground='#FFFFFF', font=('Segoe UI', 9, 'bold'))
+            self.style.configure('App.Status.Info.TLabel', background=p["info"], foreground='#FFFFFF', font=('Segoe UI', 9, 'bold'))
+            self.style.configure('App.Status.Disabled.TLabel', background=p["disabled"], foreground='#FFFFFF', font=('Segoe UI', 9, 'bold'))
+            self.style.configure('App.Preview.TLabel', background=p["surface_alt"], foreground=p["text"])
+            self.style.configure('App.PreviewUnavailable.TLabel', background=p["surface_alt"], foreground=p["text_muted"], font=('Segoe UI', 10, 'bold'))
+            self.style.configure('App.StatusBar.TFrame', background=p["surface"])
+
+        self._apply_palette_to_runtime_widgets()
+
+    def _rebuild_preview_placeholder(self) -> None:
+        """Rebuild preview placeholder image using current palette."""
+        self._preview_placeholder = ImageTk.PhotoImage(
+            Image.new("RGB", (180, 100), self._palette.get("surface_alt", "#1a1a1a"))
+        )
+
+    def _set_preview_placeholder(self, text: str) -> None:
+        """Show palette-aware placeholder in the preview area."""
+        self.window_preview_photo = None
+        if hasattr(self, 'window_preview_label'):
+            self.window_preview_label.config(
+                image=self._preview_placeholder,
+                text=text,
+                style='App.PreviewUnavailable.TLabel',
+                compound='center',
+            )
+
+    def _apply_palette_to_runtime_widgets(self) -> None:
+        """Apply palette colors to non-ttk surfaces that are already created."""
+        if not getattr(self, '_palette', None):
+            return
+
+        self._rebuild_preview_placeholder()
+
+        if hasattr(self, 'region_canvas'):
+            self.region_canvas.configure(bg=self._palette["panel"], highlightbackground=self._palette["panel"])
+        if hasattr(self, 'regions_inner_frame'):
+            self.regions_inner_frame.configure(bg=self._palette["panel"])
+        if hasattr(self, 'window_tree'):
+            self._configure_tree_tags()
+        if hasattr(self, 'aggregate_status_badge'):
+            self._refresh_aggregate_status()
+        if hasattr(self, 'window_preview_label'):
+            current_text = self.window_preview_label.cget('text') or 'Not Available'
+            current_image = self.window_preview_label.cget('image')
+            preview_image = str(self.window_preview_photo) if self.window_preview_photo else ''
+            if preview_image and current_image == preview_image:
+                self.window_preview_label.config(style='App.Preview.TLabel')
+            else:
+                self._set_preview_placeholder(current_text)
+
+    def _configure_tree_tags(self) -> None:
+        """Apply tree item tag colors from current palette."""
+        self.window_tree.tag_configure("window_connected", foreground=self._palette["ok"])
+        self.window_tree.tag_configure("window_unavailable", foreground=self._palette["info"])
+        self.window_tree.tag_configure("window_disabled", foreground=self._palette["disabled"])
+        self.window_tree.tag_configure("region_alert", foreground=self._palette["danger"])
+        self.window_tree.tag_configure("region_warning", foreground=self._palette["warn"])
+        self.window_tree.tag_configure("region_ok", foreground=self._palette["ok"])
+        self.window_tree.tag_configure("region_paused", foreground=self._palette["info"])
+        self.window_tree.tag_configure("region_unavailable", foreground=self._palette["info"])
+        self.window_tree.tag_configure("region_disabled", foreground=self._palette["disabled"])
 
     def set_high_contrast(self, enabled: bool) -> None:
         """Public method to toggle high-contrast mode at runtime"""
         self._current_theme = 'high-contrast' if enabled else 'dark'
         self._apply_theme(self._current_theme)
+        self.root.update_idletasks()
+
+    def _get_dark_palette(self, preset: str) -> Dict[str, str]:
+        """Return dark palette token set for a preset name."""
+        normalized = (preset or "default").strip().lower()
+        palettes = {
+            "default": {
+                "bg": "#181a20",
+                "panel": "#23272e",
+                "surface": "#1f2430",
+                "surface_alt": "#141821",
+                "text": "#E6EDF3",
+                "text_muted": "#A7B3C2",
+                "accent": "#33B1FF",
+                "entry_bg": "#222b3a",
+                "ok": "#2ECC71",
+                "info": "#3B82F6",
+                "warn": "#F59E0B",
+                "danger": "#EF4444",
+                "disabled": "#64748B",
+                "selection_bg": "#23476C",
+                "selection_fg": "#F2F8FF",
+            },
+            "slate": {
+                "bg": "#141922",
+                "panel": "#1C2430",
+                "surface": "#202B38",
+                "surface_alt": "#111827",
+                "text": "#E5EEF8",
+                "text_muted": "#97A6B8",
+                "accent": "#4CC9F0",
+                "entry_bg": "#263445",
+                "ok": "#34D399",
+                "info": "#60A5FA",
+                "warn": "#FBBF24",
+                "danger": "#F87171",
+                "disabled": "#718096",
+                "selection_bg": "#2D4F74",
+                "selection_fg": "#F2F8FF",
+            },
+            "midnight": {
+                "bg": "#10131A",
+                "panel": "#1A1F2B",
+                "surface": "#21283A",
+                "surface_alt": "#0D111A",
+                "text": "#EAF0FF",
+                "text_muted": "#94A3B8",
+                "accent": "#7C9BFF",
+                "entry_bg": "#27324A",
+                "ok": "#4ADE80",
+                "info": "#60A5FA",
+                "warn": "#F59E0B",
+                "danger": "#FB7185",
+                "disabled": "#6B7280",
+                "selection_bg": "#334E80",
+                "selection_fg": "#F3F7FF",
+            },
+        }
+        return palettes.get(normalized, palettes["default"])
+
+    def set_theme_preset(self, preset: str) -> None:
+        """Set theme preset and apply immediately."""
+        normalized = (preset or "default").strip().lower()
+        if normalized not in ("default", "slate", "midnight", "high-contrast"):
+            normalized = "default"
+
+        if normalized == "high-contrast":
+            self._current_theme = 'high-contrast'
+            self._apply_theme('high-contrast')
+            self.root.update_idletasks()
+            return
+
+        self._theme_preset = normalized
+        self._current_theme = 'dark'
+        self._apply_theme('dark')
         self.root.update_idletasks()
 
     def _check_for_updates_async(self) -> None:
@@ -223,6 +493,9 @@ class ScreenAlertMainWindow:
         self.root.bind('<Control-Shift-S>', lambda e: self._save_config_as())
         self.root.bind('<F6>', lambda e: self._toggle_pause())
         self.root.bind('<Control-q>', lambda e: self._on_exit())
+        for slot in range(1, 10):
+            self.root.bind(f'<Alt-KeyPress-{slot}>', lambda _e, s=slot: self._activate_window_by_slot(s))
+        self.root.bind('<Alt-KeyPress-0>', lambda _e: self._activate_window_by_slot(10))
 
     def _build_ui(self) -> None:
         """Build main UI with tree + region detail layout"""
@@ -286,15 +559,7 @@ class ScreenAlertMainWindow:
         
         self.window_tree = ttk.Treeview(tree_frame, show="tree")
         self.window_tree.grid(row=1, column=0, sticky="nsew")
-        self.window_tree.tag_configure("window_connected", foreground="#2ecc71")
-        self.window_tree.tag_configure("window_unavailable", foreground="#3498db")
-        self.window_tree.tag_configure("window_disabled", foreground="#7f8c8d")
-        self.window_tree.tag_configure("region_alert", foreground="#e74c3c")
-        self.window_tree.tag_configure("region_warning", foreground="#f39c12")
-        self.window_tree.tag_configure("region_ok", foreground="#2ecc71")
-        self.window_tree.tag_configure("region_paused", foreground="#3498db")
-        self.window_tree.tag_configure("region_unavailable", foreground="#3498db")
-        self.window_tree.tag_configure("region_disabled", foreground="#7f8c8d")
+        self._configure_tree_tags()
         self.tree_scroll = AutoHideScrollbar(tree_frame, orient=tk.VERTICAL, command=self.window_tree.yview)
         self.tree_scroll.grid(row=1, column=1, sticky="ns")
         self.window_tree.configure(yscrollcommand=self.tree_scroll.set)
@@ -333,43 +598,62 @@ class ScreenAlertMainWindow:
         self.window_size_var = tk.StringVar(value="")
         ttk.Label(self.info_frame, textvariable=self.window_size_var).grid(row=3, column=1, sticky="w")
 
+        ttk.Label(self.info_frame, text="Alt Slot:").grid(row=4, column=0, sticky="w", padx=(0, 6))
+        self.window_slot_var = tk.StringVar(value="")
+        self.window_slot_combo = ttk.Combobox(
+            self.info_frame,
+            style="App.TCombobox",
+            textvariable=self.window_slot_var,
+            values=[str(i) for i in range(1, 11)],
+            width=6,
+            state="disabled",
+        )
+        self.window_slot_combo.grid(row=4, column=1, sticky="w")
+        self.window_slot_combo.bind('<<ComboboxSelected>>', self._on_window_slot_changed)
+
         self.window_primary_var = tk.BooleanVar(value=False)
         self.window_primary_checkbox = ttk.Checkbutton(
             self.info_frame,
+            style="App.TCheckbutton",
             text="Primary (bring to front on startup)",
             variable=self.window_primary_var,
             command=self._toggle_primary_window,
         )
-        self.window_primary_checkbox.grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        self.window_primary_checkbox.grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 0))
         self.window_primary_checkbox.state(["disabled"])
 
         self.window_alert_focus_var = tk.BooleanVar(value=False)
         self.window_alert_focus_checkbox = ttk.Checkbutton(
             self.info_frame,
+            style="App.TCheckbutton",
             text="Alert Focus (bring to front on alert)",
             variable=self.window_alert_focus_var,
             command=self._toggle_alert_focus_window,
         )
-        self.window_alert_focus_checkbox.grid(row=5, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        self.window_alert_focus_checkbox.grid(row=6, column=0, columnspan=2, sticky="w", pady=(2, 0))
         self.window_alert_focus_checkbox.state(["disabled"])
         
-        self._preview_placeholder = ImageTk.PhotoImage(Image.new("RGB", (180, 100), "#1a1a1a"))
-        self.window_preview_label = tk.Label(self.info_frame, bg="#1a1a1a",
-                                             image=self._preview_placeholder)
-        self.window_preview_label.grid(row=0, column=2, rowspan=6, sticky="e", padx=(10, 0))
+        self._rebuild_preview_placeholder()
+        self.window_preview_label = ttk.Label(
+            self.info_frame,
+            style='App.PreviewUnavailable.TLabel',
+            image=self._preview_placeholder,
+            anchor='center',
+        )
+        self.window_preview_label.grid(row=0, column=2, rowspan=7, sticky="e", padx=(10, 0))
         
-        self.regions_frame = ttk.LabelFrame(self.detail_frame, text="Regions", padding=8)
+        self.regions_frame = ttk.LabelFrame(self.detail_frame, text="Regions (0/0)", padding=8)
         self.regions_frame.grid(row=1, column=0, sticky="nsew")
         self.regions_frame.rowconfigure(0, weight=1)
         self.regions_frame.columnconfigure(0, weight=1)
         
-        self.region_canvas = tk.Canvas(self.regions_frame, bg="#202020", highlightthickness=0)
+        self.region_canvas = tk.Canvas(self.regions_frame, bg=self._palette["panel"], highlightthickness=0)
         self.region_canvas.grid(row=0, column=0, sticky="nsew")
         self.region_scroll = AutoHideScrollbar(self.regions_frame, orient=tk.VERTICAL, command=self.region_canvas.yview)
         self.region_scroll.grid(row=0, column=1, sticky="ns")
         self.region_canvas.configure(yscrollcommand=self.region_scroll.set)
         
-        self.regions_inner_frame = tk.Frame(self.region_canvas, bg="#202020")
+        self.regions_inner_frame = tk.Frame(self.region_canvas, bg=self._palette["panel"])
         self.region_canvas_window = self.region_canvas.create_window(0, 0, window=self.regions_inner_frame, anchor="nw")
         self.region_canvas.bind("<Configure>", self._on_region_canvas_configure)
         
@@ -378,17 +662,17 @@ class ScreenAlertMainWindow:
         self.aggregate_status_var = tk.StringVar(value="Overall: N/A")
         self._update_pause_menu_labels()
 
-        status_bar_frame = tk.Frame(self.root, bd=1, relief=tk.SUNKEN)
-        status_bar_frame.pack(fill=tk.X, side=tk.BOTTOM, padx=5, pady=5)
+        self.status_bar_frame = ttk.Frame(self.root, style='App.StatusBar.TFrame')
+        self.status_bar_frame.pack(fill=tk.X, side=tk.BOTTOM, padx=5, pady=5)
 
-        self.status_text_label = ttk.Label(status_bar_frame, textvariable=self.status_var, anchor="w")
+        self.status_text_label = ttk.Label(self.status_bar_frame, textvariable=self.status_var, anchor="w")
         self.status_text_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 4), pady=2)
 
         self.aggregate_status_badge = tk.Label(
-            status_bar_frame,
+            self.status_bar_frame,
             textvariable=self.aggregate_status_var,
-            bg="#2c3e50",
-            fg="white",
+            bg=self._palette["surface"],
+            fg=self._palette["text"],
             padx=10,
             pady=2,
             relief=tk.RIDGE,
@@ -565,6 +849,7 @@ class ScreenAlertMainWindow:
 
             if thumbnail_id:
                 self.thumbnail_map[hwnd] = thumbnail_id
+                self._assign_default_slot_if_missing(thumbnail_id)
                 self._add_window_last_added_thumbnail_id = thumbnail_id
                 self._add_window_added_count += 1
             else:
@@ -675,6 +960,15 @@ class ScreenAlertMainWindow:
             return
 
         is_primary = bool(self.window_primary_var.get())
+        if is_primary:
+            selected_thumbnail = self.config.get_thumbnail(self.selected_thumbnail_id)
+            selected_slot = self._get_window_slot(selected_thumbnail)
+            slot_one_owner_id = self._get_slot_owner_id(1)
+            if selected_slot != 1 and slot_one_owner_id and slot_one_owner_id != self.selected_thumbnail_id:
+                self.window_primary_var.set(False)
+                self.status_var.set("Cannot set Primary: slot 1 is occupied and cannot be swapped")
+                return
+
         updated = False
 
         for thumbnail in self.config.get_all_thumbnails():
@@ -687,12 +981,232 @@ class ScreenAlertMainWindow:
                 self.config.update_thumbnail(thumbnail_id, {"is_primary": should_be_primary})
                 updated = True
 
+        if is_primary:
+            updated = self._swap_or_assign_window_slot(self.selected_thumbnail_id, 1) or updated
+
         if updated:
             self.config.save()
+            self.engine.refresh_thumbnail_titles()
 
         self._refresh_focus_option_states()
 
         self.status_var.set("Primary window set" if is_primary else "Primary window cleared")
+
+    def _normalize_window_slot(self, value) -> Optional[int]:
+        """Return a valid 1-10 slot number or None."""
+        try:
+            slot = int(value)
+        except (TypeError, ValueError):
+            return None
+        return slot if 1 <= slot <= 10 else None
+
+    def _get_window_slot(self, thumbnail: Optional[Dict]) -> Optional[int]:
+        """Get normalized slot number from thumbnail config."""
+        if not thumbnail:
+            return None
+        return self._normalize_window_slot(thumbnail.get("window_slot"))
+
+    def _get_slot_owner_id(self, slot: int) -> Optional[str]:
+        """Return thumbnail id currently owning a slot, if any."""
+        for thumbnail in self.config.get_all_thumbnails():
+            thumbnail_id = thumbnail.get("id")
+            if not thumbnail_id:
+                continue
+            if self._get_window_slot(thumbnail) == slot:
+                return thumbnail_id
+        return None
+
+    def _swap_or_assign_window_slot(self, target_thumbnail_id: str, new_slot: int) -> bool:
+        """Assign a slot to target, swapping with current owner when needed."""
+        target = self.config.get_thumbnail(target_thumbnail_id)
+        if not target:
+            return False
+
+        normalized_slot = self._normalize_window_slot(new_slot)
+        if normalized_slot is None:
+            return False
+
+        current_slot = self._get_window_slot(target)
+        if current_slot == normalized_slot:
+            return False
+
+        owner_id = self._get_slot_owner_id(normalized_slot)
+        changed = False
+
+        if owner_id and owner_id != target_thumbnail_id:
+            if normalized_slot == 1 or current_slot == 1:
+                return False
+            owner = self.config.get_thumbnail(owner_id)
+            if owner:
+                owner_updates = {"window_slot": current_slot if current_slot is not None else None}
+                if owner.get("window_slot") != owner_updates["window_slot"]:
+                    self.config.update_thumbnail(owner_id, owner_updates)
+                    changed = True
+
+        if target.get("window_slot") != normalized_slot:
+            self.config.update_thumbnail(target_thumbnail_id, {"window_slot": normalized_slot})
+            changed = True
+
+        return changed
+
+    def _get_first_available_slot(self) -> Optional[int]:
+        """Return first free slot in range 1..10."""
+        used = {
+            slot for slot in (self._get_window_slot(thumb) for thumb in self.config.get_all_thumbnails())
+            if slot is not None
+        }
+        for slot in range(1, 11):
+            if slot not in used:
+                return slot
+        return None
+
+    def _assign_default_slot_if_missing(self, thumbnail_id: str) -> None:
+        """Assign the next available slot to a window when unassigned."""
+        thumbnail = self.config.get_thumbnail(thumbnail_id)
+        if not thumbnail or self._get_window_slot(thumbnail) is not None:
+            return
+
+        if bool(thumbnail.get("is_primary", False)):
+            desired = 1
+        else:
+            desired = self._get_first_available_slot()
+
+        if desired is None:
+            return
+
+        if self._swap_or_assign_window_slot(thumbnail_id, desired):
+            self.config.save()
+            self.engine.refresh_thumbnail_titles()
+
+    def _ensure_window_slot_consistency(self) -> None:
+        """Ensure windows have unique slots and Primary remains on slot 1."""
+        changed = False
+
+        primary_owner_id, _ = self._get_focus_owner_ids()
+        slot_one_owner_id = self._get_slot_owner_id(1)
+        if primary_owner_id:
+            if slot_one_owner_id and slot_one_owner_id != primary_owner_id:
+                # Slot 1 is non-swappable: keep slot owner at 1 and align Primary to it.
+                for thumbnail in self.config.get_all_thumbnails():
+                    thumbnail_id = thumbnail.get("id")
+                    if not thumbnail_id:
+                        continue
+                    should_be_primary = thumbnail_id == slot_one_owner_id
+                    if bool(thumbnail.get("is_primary", False)) != should_be_primary:
+                        self.config.update_thumbnail(thumbnail_id, {"is_primary": should_be_primary})
+                        changed = True
+            else:
+                changed = self._swap_or_assign_window_slot(primary_owner_id, 1) or changed
+
+        for thumbnail in self.config.get_all_thumbnails():
+            thumbnail_id = thumbnail.get("id")
+            if not thumbnail_id:
+                continue
+            if self._get_window_slot(thumbnail) is not None:
+                continue
+            desired = self._get_first_available_slot()
+            if desired is None:
+                continue
+            self.config.update_thumbnail(thumbnail_id, {"window_slot": desired})
+            changed = True
+
+        if changed:
+            self.config.save()
+            self.engine.refresh_thumbnail_titles()
+
+    def _on_window_slot_changed(self, _event=None) -> None:
+        """Handle slot change from Window Info UI with swap behavior."""
+        selected_id = self.selected_thumbnail_id
+        if not selected_id:
+            return
+
+        selected_thumbnail = self.config.get_thumbnail(selected_id)
+        if not selected_thumbnail:
+            return
+
+        new_slot = self._normalize_window_slot(self.window_slot_var.get())
+        if new_slot is None:
+            return
+
+        primary_owner_id, _ = self._get_focus_owner_ids()
+        is_selected_primary = bool(selected_thumbnail.get("is_primary", False))
+        previous_slot = self._get_window_slot(selected_thumbnail)
+        slot_one_owner_id = self._get_slot_owner_id(1)
+        requested_owner_id = self._get_slot_owner_id(new_slot)
+
+        if is_selected_primary and new_slot != 1:
+            self.window_slot_var.set("1")
+            self.status_var.set("Primary window must use slot 1")
+            return
+
+        if not is_selected_primary and primary_owner_id and primary_owner_id != selected_id and new_slot == 1:
+            self.window_slot_var.set(str(previous_slot) if previous_slot else "")
+            self.status_var.set("Slot 1 is reserved for the Primary window")
+            return
+
+        if new_slot == 1 and slot_one_owner_id and slot_one_owner_id != selected_id:
+            self.window_slot_var.set(str(previous_slot) if previous_slot else "")
+            self.status_var.set("Slot 1 cannot be swapped")
+            return
+
+        if previous_slot == 1 and requested_owner_id and requested_owner_id != selected_id:
+            self.window_slot_var.set("1")
+            self.status_var.set("Slot 1 cannot be swapped")
+            return
+
+        if self._swap_or_assign_window_slot(selected_id, new_slot):
+            self.config.save()
+            self.engine.refresh_thumbnail_titles()
+            self.status_var.set(f"Window slot set to {new_slot}")
+        else:
+            self.status_var.set(f"Window slot remains {new_slot}")
+
+        selected_thumbnail = self.config.get_thumbnail(selected_id)
+        selected_slot = self._get_window_slot(selected_thumbnail)
+        self.window_slot_var.set(str(selected_slot) if selected_slot else "")
+
+    def _activate_window_by_slot(self, slot: int):
+        """Activate window assigned to Alt slot number."""
+        target_slot = self._normalize_window_slot(slot)
+        if target_slot is None:
+            return "break"
+
+        target_thumbnail = None
+        for thumbnail in self.config.get_all_thumbnails():
+            if self._get_window_slot(thumbnail) == target_slot:
+                target_thumbnail = thumbnail
+                break
+
+        if not target_thumbnail:
+            self.status_var.set(f"No window assigned to Alt+{0 if target_slot == 10 else target_slot}")
+            return "break"
+
+        thumbnail_id = target_thumbnail.get("id")
+        hwnd = target_thumbnail.get("window_hwnd")
+        title = target_thumbnail.get("window_title", "Unknown")
+        if not thumbnail_id:
+            return "break"
+
+        if not hwnd or not self.window_manager.is_window_valid(hwnd):
+            reconnect_state = self.engine.reconnect_window(thumbnail_id)
+            if reconnect_state not in ("already_valid", "reconnected"):
+                self.status_var.set(f"Alt+{0 if target_slot == 10 else target_slot}: window unavailable")
+                return "break"
+            refreshed = self.config.get_thumbnail(thumbnail_id)
+            hwnd = refreshed.get("window_hwnd") if refreshed else None
+
+        if hwnd and self.window_manager.activate_window(hwnd):
+            self.selected_thumbnail_id = thumbnail_id
+            self.selected_region_id = None
+            self.show_all_regions = False
+            self._pending_tree_focus_window_id = thumbnail_id
+            self._pending_tree_focus_region_id = None
+            self._update_thumbnail_list()
+            self.status_var.set(f"Activated Alt+{0 if target_slot == 10 else target_slot}: {title}")
+        else:
+            self.status_var.set(f"Failed to activate Alt+{0 if target_slot == 10 else target_slot}")
+
+        return "break"
 
     def _toggle_alert_focus_window(self) -> None:
         """Persist Alert Focus flag for selected window (single-alert-focus semantics)."""
@@ -840,17 +1354,55 @@ class ScreenAlertMainWindow:
 
     def _apply_settings_realtime(self, settings: Dict) -> None:
         """Apply settings that can safely take effect at runtime."""
-        self.set_high_contrast(bool(settings.get("high_contrast", False)))
-        self.engine.apply_runtime_settings(
-            opacity=float(settings.get("opacity", self.config.get_opacity())),
-            always_on_top=bool(settings.get("always_on_top", self.config.get_always_on_top())),
-            show_overlay_when_unavailable=bool(
+        if "theme_preset" in settings:
+            self.set_theme_preset(str(settings.get("theme_preset", self._theme_preset)))
+        elif "high_contrast" in settings:
+            self.set_high_contrast(bool(settings.get("high_contrast", self._current_theme == 'high-contrast')))
+        self._schedule_runtime_settings_apply(settings)
+
+    def _schedule_runtime_settings_apply(self, settings: Dict) -> None:
+        """Coalesce runtime setting updates to keep UI responsive during rapid Apply actions."""
+        runtime_payload = {
+            "opacity": float(settings.get("opacity", self.config.get_opacity())),
+            "always_on_top": bool(settings.get("always_on_top", self.config.get_always_on_top())),
+            "show_borders": bool(settings.get("show_borders", self.config.get_show_borders())),
+            "show_overlay_when_unavailable": bool(
                 settings.get(
                     "show_overlay_when_unavailable",
                     self.config.get_show_overlay_when_unavailable(),
                 )
             ),
-        )
+        }
+        self._pending_runtime_settings = runtime_payload
+        if self._runtime_apply_scheduled:
+            return
+        self._runtime_apply_scheduled = True
+        self.root.after_idle(self._flush_runtime_settings_apply)
+
+    def _flush_runtime_settings_apply(self) -> None:
+        """Apply latest queued runtime settings once."""
+        self._runtime_apply_scheduled = False
+        payload = self._pending_runtime_settings
+        self._pending_runtime_settings = None
+        if not payload:
+            return
+        if payload == self._last_applied_runtime_settings:
+            return
+        try:
+            self.engine.apply_runtime_settings(
+                opacity=float(payload.get("opacity", self.config.get_opacity())),
+                always_on_top=bool(payload.get("always_on_top", self.config.get_always_on_top())),
+                show_borders=bool(payload.get("show_borders", self.config.get_show_borders())),
+                show_overlay_when_unavailable=bool(
+                    payload.get(
+                        "show_overlay_when_unavailable",
+                        self.config.get_show_overlay_when_unavailable(),
+                    )
+                ),
+            )
+            self._last_applied_runtime_settings = dict(payload)
+        except Exception as runtime_error:
+            logger.error(f"Error applying runtime settings: {runtime_error}")
 
     def _show_shortcuts(self) -> None:
         """Display keyboard shortcuts help popup."""
@@ -862,6 +1414,7 @@ class ScreenAlertMainWindow:
             "Ctrl+Delete: Remove Window\n"
             "Ctrl+S: Save Config\n"
             "Ctrl+Shift+S: Save Config As\n"
+            "Alt+1..9, Alt+0: Focus assigned window slots 1..10\n"
             "F6: Pause / Resume\n"
             "Ctrl+Q: Exit"
         )
@@ -1057,7 +1610,7 @@ class ScreenAlertMainWindow:
         """Show about dialog"""
         try:
             msgbox.showinfo("About ScreenAlert", 
-                           "ScreenAlert v2.0\n\n"
+                           "ScreenAlert v2.0.2\n\n"
                            "Advanced multi-window change detection\n"
                            "with Pygame-based overlays")
         except Exception as e:
@@ -1263,7 +1816,11 @@ class ScreenAlertMainWindow:
         tree_filter_query = self._get_tree_filter_query()
         
         thumbnails = self.config.get_all_thumbnails()
-        logger.info(f"Updating window tree: {len(thumbnails)} thumbnails from config")
+        active_thumbnails = [thumbnail for thumbnail in thumbnails if self._is_thumbnail_connected(thumbnail)]
+        logger.info(
+            f"Updating window tree: {len(thumbnails)} configured thumbnails "
+            f"({len(active_thumbnails)} active)"
+        )
         
         all_root = self.window_tree.insert("", "end", iid="__all__", text="All")
         sorted_thumbnails = sorted(
@@ -1596,6 +2153,8 @@ class ScreenAlertMainWindow:
             widget.destroy()
         self.region_widgets.clear()
         self.region_photos.clear()
+        displayed_regions = 0
+        total_regions = 0
         
         if self.show_all_regions or not thumbnail:
             self.info_frame.grid_remove()
@@ -1604,11 +2163,13 @@ class ScreenAlertMainWindow:
             self.detail_frame.rowconfigure(1, weight=0)
             thumbnails = self.config.get_all_thumbnails()
             active_thumbnails = [t for t in thumbnails if self._is_thumbnail_connected(t)]
-            total_regions = sum(len(t.get("monitored_regions", [])) for t in active_thumbnails)
+            total_regions = sum(len(t.get("monitored_regions", [])) for t in thumbnails)
             self.window_title_var.set("All windows")
             self.window_hwnd_var.set("")
             self.window_region_count_var.set(str(total_regions))
             self.window_size_var.set("")
+            self.window_slot_var.set("-")
+            self.window_slot_combo.configure(state="disabled")
             self.window_primary_var.set(False)
             self.window_primary_checkbox.state(["disabled"])
             self.window_alert_focus_var.set(False)
@@ -1623,9 +2184,9 @@ class ScreenAlertMainWindow:
                 preview = preview_image.copy()
                 preview.thumbnail((180, 100), Image.Resampling.LANCZOS)
                 self.window_preview_photo = ImageTk.PhotoImage(preview)
-                self.window_preview_label.config(image=self.window_preview_photo, text="")
+                self.window_preview_label.config(image=self.window_preview_photo, text="", style='App.Preview.TLabel')
             else:
-                self.window_preview_label.config(image=self._preview_placeholder, text="No connected windows", fg="white", compound="center")
+                self._set_preview_placeholder("No connected windows")
             
             row = 0
             for thumb in active_thumbnails:
@@ -1641,6 +2202,7 @@ class ScreenAlertMainWindow:
                     self._create_region_card(thumb_id, region_id, region, window_image, row,
                                              window_title=thumb.get("window_title", "Unknown"))
                     row += 1
+            displayed_regions = row
         else:
             self.info_frame.grid()
             self.regions_frame.grid(row=1, column=0, sticky="nsew")
@@ -1650,11 +2212,23 @@ class ScreenAlertMainWindow:
             title = thumbnail.get("window_title", "Unknown")
             hwnd = thumbnail.get("window_hwnd")
             regions = thumbnail.get("monitored_regions", [])
+
+            if thumbnail_id:
+                self._assign_default_slot_if_missing(thumbnail_id)
+                refreshed_thumbnail = self.config.get_thumbnail(thumbnail_id)
+                if refreshed_thumbnail:
+                    thumbnail = refreshed_thumbnail
+                    title = thumbnail.get("window_title", "Unknown")
+                    hwnd = thumbnail.get("window_hwnd")
+                    regions = thumbnail.get("monitored_regions", [])
             
             self.window_title_var.set(title)
             self.window_hwnd_var.set(str(hwnd) if hwnd else "")
             self.window_region_count_var.set(str(len(regions)))
             self._refresh_focus_option_states()
+            slot = self._get_window_slot(thumbnail)
+            self.window_slot_var.set(str(slot) if slot else "-")
+            self.window_slot_combo.configure(state="readonly")
             size = thumbnail.get("window_size")
             if isinstance(size, (list, tuple)) and len(size) == 2:
                 self.window_size_var.set(f"{size[0]}x{size[1]}")
@@ -1667,9 +2241,9 @@ class ScreenAlertMainWindow:
                 preview = window_image.copy()
                 preview.thumbnail((180, 100), Image.Resampling.LANCZOS)
                 self.window_preview_photo = ImageTk.PhotoImage(preview)
-                self.window_preview_label.config(image=self.window_preview_photo, text="")
+                self.window_preview_label.config(image=self.window_preview_photo, text="", style='App.Preview.TLabel')
             else:
-                self.window_preview_label.config(image=self._preview_placeholder, text="No preview", fg="white", compound="center")
+                self._set_preview_placeholder("No preview")
             
             regions_to_render = regions
             if self.selected_region_id:
@@ -1677,11 +2251,16 @@ class ScreenAlertMainWindow:
                 if selected:
                     regions_to_render = selected
 
+            total_regions = len(regions)
+
             for idx, region in enumerate(regions_to_render):
                 region_id = region.get("id")
                 if not region_id:
                     continue
                 self._create_region_card(thumbnail_id, region_id, region, window_image, idx)
+                displayed_regions += 1
+
+        self.regions_frame.configure(text=f"Regions ({displayed_regions}/{total_regions})")
 
         self._schedule_detail_scroll_refresh()
 
@@ -1710,12 +2289,15 @@ class ScreenAlertMainWindow:
         self.window_title_var.set("")
         self.window_hwnd_var.set("")
         self.window_region_count_var.set("0")
+        self.regions_frame.configure(text="Regions (0/0)")
         self.window_size_var.set("")
+        self.window_slot_var.set("-")
+        self.window_slot_combo.configure(state="disabled")
         self.window_primary_var.set(False)
         self.window_primary_checkbox.state(["disabled"])
         self.window_alert_focus_var.set(False)
         self.window_alert_focus_checkbox.state(["disabled"])
-        self.window_preview_label.config(image=self._preview_placeholder, text="No window selected", fg="white", compound="center")
+        self._set_preview_placeholder("No window selected")
         for widget in self.regions_inner_frame.winfo_children():
             widget.destroy()
         self.region_widgets.clear()
@@ -1725,19 +2307,18 @@ class ScreenAlertMainWindow:
     def _create_region_card(self, thumbnail_id: str, region_id: str, region: Dict,
                              window_image, row: int, window_title: Optional[str] = None) -> None:
         """Create a region card row"""
-        card = tk.Frame(self.regions_inner_frame, bg="#202020", bd=1, relief=tk.RIDGE)
-        card.grid(row=row, column=0, sticky="ew", pady=2, padx=4)
+        card = ttk.Frame(self.regions_inner_frame, style="App.Card.TFrame")
+        card.grid(row=row, column=0, sticky="ew", pady=4, padx=4)
         card.columnconfigure(2, weight=1)
         
         content_row = 0
         
         # Left status pill
-        status_pill = tk.Label(card, text="OK", bg="#2ecc71", fg="black",
-                               width=7, height=2)
+        status_pill = ttk.Label(card, text="OK", style="App.Status.Ok.TLabel", width=7, anchor="center")
         status_pill.grid(row=content_row, column=0, rowspan=2, sticky="ns", padx=(4, 0), pady=3)
         
         # Region image
-        image_label = tk.Label(card, bg="#1a1a1a")
+        image_label = ttk.Label(card, style="App.Image.TLabel", anchor="center")
         image_label.grid(row=content_row, column=1, rowspan=2, sticky="w", padx=6, pady=3)
         
         if window_image:
@@ -1746,31 +2327,31 @@ class ScreenAlertMainWindow:
                 region_image.thumbnail((220, 96), Image.Resampling.LANCZOS)
                 photo = ImageTk.PhotoImage(region_image)
                 self.region_photos[region_id] = photo
-                image_label.config(image=photo)
+                image_label.config(image=photo, text="", style="App.Image.TLabel")
             except Exception as e:
                 logger.error(f"Error creating region image {region_id}: {e}", exc_info=True)
-                image_label.config(text="No image", fg="white")
+                image_label.config(image="", text="No image", style="App.ImageUnavailable.TLabel")
         else:
-            image_label.config(text="Not Available", fg="white", bg="#0078D7")
+            image_label.config(image="", text="Not Available", style="App.ImageUnavailable.TLabel")
         
         # Region form fields (name + alert text)
-        form_frame = tk.Frame(card, bg="#202020")
-        form_frame.grid(row=content_row, column=2, rowspan=2, sticky="nsew", padx=(0, 8), pady=(3, 2))
+        form_frame = ttk.Frame(card, style="App.CardInner.TFrame")
+        form_frame.grid(row=content_row, column=2, rowspan=2, sticky="nsew", padx=(0, 8), pady=(4, 4))
 
         row_offset = 0
         if window_title:
-            tk.Label(form_frame, text="Window:", bg="#202020", fg="#bdbdbd").grid(row=0, column=0, sticky="w", padx=(0, 6))
-            tk.Label(form_frame, text=window_title, bg="#202020", fg="#bdbdbd").grid(row=0, column=1, sticky="w")
+            ttk.Label(form_frame, text="Window:", style="App.Muted.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 6))
+            ttk.Label(form_frame, text=window_title, style="App.Muted.TLabel").grid(row=0, column=1, sticky="w")
             row_offset = 1
 
-        tk.Label(form_frame, text="Name:", bg="#202020", fg="#bdbdbd").grid(row=row_offset, column=0, sticky="w", padx=(0, 6), pady=(2 if row_offset else 0, 0))
+        ttk.Label(form_frame, text="Name:", style="App.Muted.TLabel").grid(row=row_offset, column=0, sticky="w", padx=(0, 6), pady=(2 if row_offset else 0, 0))
         name_var = tk.StringVar(value=region.get("name", "Region"))
         name_entry = ttk.Entry(form_frame, textvariable=name_var, width=24)
         name_entry.grid(row=row_offset, column=1, sticky="w", pady=(2 if row_offset else 0, 0))
         name_entry.bind("<Return>", lambda e: self._save_region_name(thumbnail_id, region_id, name_var))
         name_entry.bind("<FocusOut>", lambda e: self._save_region_name(thumbnail_id, region_id, name_var))
 
-        tk.Label(form_frame, text="Alert Text:", bg="#202020", fg="#bdbdbd").grid(row=row_offset + 1, column=0, sticky="w", padx=(0, 6), pady=(3, 0))
+        ttk.Label(form_frame, text="Alert Text:", style="App.Muted.TLabel").grid(row=row_offset + 1, column=0, sticky="w", padx=(0, 6), pady=(3, 0))
         alert_text_var = tk.StringVar(value=region.get("tts_message", self.config.get_default_tts_message()))
         alert_text_entry = ttk.Entry(form_frame, textvariable=alert_text_var, width=24)
         alert_text_entry.grid(row=row_offset + 1, column=1, sticky="w", pady=(3, 0))
@@ -1778,20 +2359,21 @@ class ScreenAlertMainWindow:
         alert_text_entry.bind("<FocusOut>", lambda e: self._save_region_alert_text(thumbnail_id, region_id, alert_text_var))
         
         # Right control panel
-        controls_panel = tk.Frame(card, bg="#1a1a1a", bd=1, relief=tk.RIDGE)
-        controls_panel.grid(row=content_row, column=3, rowspan=2, sticky="e", padx=(0, 6), pady=3)
+        controls_panel = ttk.Frame(card, style="App.Controls.TFrame")
+        controls_panel.grid(row=content_row, column=3, rowspan=2, sticky="ne", padx=(0, 6), pady=4)
         
-        pause_btn = ttk.Button(controls_panel, text="Pause", width=9, command=lambda: self._toggle_region_pause(region_id))
-        pause_btn.pack(padx=6, pady=(4, 2))
+        pause_btn = ttk.Button(controls_panel, style="App.RegionAction.TButton", text="Pause", width=8, command=lambda: self._toggle_region_pause(region_id))
+        pause_btn.pack(padx=2, pady=(0, 4))
 
         enabled_now = bool(region.get("enabled", True))
         disable_btn = ttk.Button(
             controls_panel,
+            style="App.RegionAction.TButton",
             text=("Disable" if enabled_now else "Enable"),
-            width=9,
+            width=8,
             command=lambda: self._toggle_region_enabled(thumbnail_id, region_id)
         )
-        disable_btn.pack(padx=6, pady=(0, 3))
+        disable_btn.pack(padx=2, pady=0)
         
         self.region_widgets[region_id] = {
             "status_pill": status_pill,
@@ -1893,17 +2475,17 @@ class ScreenAlertMainWindow:
             return
         status_text = self._format_region_status_text(region_id, status)
         if status == "alert":
-            pill.config(text=status_text, bg="#e74c3c", fg="white")
+            pill.config(text=status_text, style="App.Status.Alert.TLabel")
         elif status == "warning":
-            pill.config(text=status_text, bg="#f39c12", fg="black")
+            pill.config(text=status_text, style="App.Status.Warning.TLabel")
         elif status == "paused":
-            pill.config(text=status_text, bg="#3498db", fg="white")
+            pill.config(text=status_text, style="App.Status.Info.TLabel")
         elif status == "unavailable":
-            pill.config(text=status_text, bg="#3498db", fg="white")
+            pill.config(text=status_text, style="App.Status.Info.TLabel")
         elif status == "disabled":
-            pill.config(text=status_text, bg="#7f8c8d", fg="white")
+            pill.config(text=status_text, style="App.Status.Disabled.TLabel")
         else:
-            pill.config(text=status_text, bg="#2ecc71", fg="black")
+            pill.config(text=status_text, style="App.Status.Ok.TLabel")
 
     def _format_region_status_text(self, region_id: str, status: str) -> str:
         """Build region status text, including countdown for timed states."""
@@ -2145,19 +2727,19 @@ class ScreenAlertMainWindow:
 
         if aggregate == "alert":
             self.aggregate_status_var.set("Overall: ALERT")
-            self.aggregate_status_badge.config(bg="#e74c3c", fg="white")
+            self.aggregate_status_badge.config(bg=self._palette["danger"], fg="white")
         elif aggregate == "warning":
             self.aggregate_status_var.set("Overall: WARNING")
-            self.aggregate_status_badge.config(bg="#f39c12", fg="black")
+            self.aggregate_status_badge.config(bg=self._palette["warn"], fg="black")
         elif aggregate == "ok":
             self.aggregate_status_var.set("Overall: OK")
-            self.aggregate_status_badge.config(bg="#2ecc71", fg="black")
+            self.aggregate_status_badge.config(bg=self._palette["ok"], fg="black")
         elif aggregate == "paused":
             self.aggregate_status_var.set("Overall: PAUSED")
-            self.aggregate_status_badge.config(bg="#3498db", fg="white")
+            self.aggregate_status_badge.config(bg=self._palette["info"], fg="white")
         else:
             self.aggregate_status_var.set("Overall: N/A")
-            self.aggregate_status_badge.config(bg="#3498db", fg="white")
+            self.aggregate_status_badge.config(bg=self._palette["info"], fg="white")
 
     def _update_region_thumbnail(self, thumbnail_id: str, region_id: str) -> None:
         """Update a single region thumbnail image"""
@@ -2181,7 +2763,7 @@ class ScreenAlertMainWindow:
         window_image = self._get_window_image_for_ui(hwnd, thumbnail)
         if not window_image:
             logger.warning(f"[THUMBNAIL UPDATE] No image available for hwnd {hwnd}")
-            image_label.config(image="", text="Not Available", fg="white", bg="#0078D7")
+            image_label.config(image="", text="Not Available", style="App.ImageUnavailable.TLabel")
             self.region_photos.pop(region_id, None)
             self._set_region_status(thumbnail_id, region_id, "unavailable")
             self._apply_region_status(thumbnail_id, region_id)
@@ -2191,7 +2773,7 @@ class ScreenAlertMainWindow:
             region_image.thumbnail((220, 96), Image.Resampling.LANCZOS)
             photo = ImageTk.PhotoImage(region_image)
             self.region_photos[region_id] = photo
-            image_label.config(image=photo, text="", bg="#1a1a1a")
+            image_label.config(image=photo, text="", style="App.Image.TLabel")
             current_status = self.region_statuses.get(thumbnail_id, {}).get(region_id)
             if current_status == "unavailable":
                 monitor = self.engine.monitoring_engine.get_monitor(region_id)
@@ -2253,15 +2835,9 @@ class ScreenAlertMainWindow:
                 preview = window_image.copy()
                 preview.thumbnail((180, 100), Image.Resampling.LANCZOS)
                 self.window_preview_photo = ImageTk.PhotoImage(preview)
-                self.window_preview_label.config(image=self.window_preview_photo, text="")
+                self.window_preview_label.config(image=self.window_preview_photo, text="", style='App.Preview.TLabel')
             else:
-                self.window_preview_photo = None
-                self.window_preview_label.config(
-                    image=self._preview_placeholder,
-                    text="Not Available",
-                    fg="white",
-                    compound="center",
-                )
+                self._set_preview_placeholder("Not Available")
         except Exception as e:
             logger.debug(f"Error refreshing window preview: {e}")
 

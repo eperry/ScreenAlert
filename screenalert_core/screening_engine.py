@@ -173,6 +173,7 @@ class ScreenAlertEngine:
         self,
         opacity: Optional[float] = None,
         always_on_top: Optional[bool] = None,
+        show_borders: Optional[bool] = None,
         show_overlay_when_unavailable: Optional[bool] = None,
     ) -> None:
         """Apply selected settings to active runtime components immediately."""
@@ -186,8 +187,18 @@ class ScreenAlertEngine:
                 for thumbnail in self.config.get_all_thumbnails():
                     thumbnail["always_on_top"] = bool(always_on_top)
 
+        if show_borders is not None:
+            self.renderer.set_all_thumbnail_borders(bool(show_borders))
+            with self.lock:
+                for thumbnail in self.config.get_all_thumbnails():
+                    thumbnail["show_border"] = bool(show_borders)
+
         if show_overlay_when_unavailable is not None:
             self.renderer.refresh_unavailable_thumbnails(bool(show_overlay_when_unavailable))
+
+    def refresh_thumbnail_titles(self) -> None:
+        """Refresh overlay title text for all active thumbnails."""
+        self.renderer.refresh_thumbnail_titles()
     
     def add_thumbnail(self, window_title: str, window_hwnd: int,
                       window_class: str = None, window_size: tuple = None,

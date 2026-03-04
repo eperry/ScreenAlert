@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ScreenAlert v2.0 - Advanced Multibox Monitor with Thumbnails
+ScreenAlert v2.0.2 - Advanced Multibox Monitor with Thumbnails
 Entry point for the application
 """
 

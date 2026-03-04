@@ -39,11 +39,12 @@ class ConfigManager:
     def _get_default_config(self) -> Dict[str, Any]:
         """Get default configuration structure"""
         return {
-            "version": "2.0.0",
+            "version": "2.0.2",
             "app": {
                 "refresh_rate_ms": DEFAULT_REFRESH_RATE_MS,
                 "opacity": DEFAULT_OPACITY,
                 "always_on_top": True,
+                "show_borders": True,
                 "show_overlay_when_unavailable": False,
                 "log_verbose": False,
                 "high_contrast": False,
@@ -73,6 +74,7 @@ class ConfigManager:
             "ui": {
                 "main_window_geometry": "1200x800+100+100",
                 "settings_expanded": False,
+                "theme_preset": "default",
             },
             "plugins": {
                 "hooks": {}
@@ -152,14 +154,14 @@ class ConfigManager:
             os.makedirs(os.path.dirname(self.window_region_config_path), exist_ok=True)
 
             app_payload = {
-                "version": self._config.get("version", "2.0.0"),
+                "version": self._config.get("version", "2.0.2"),
                 "app": self._config.get("app", {}),
                 "ui": self._config.get("ui", {}),
                 "plugins": self._config.get("plugins", {}),
                 "history": self._config.get("history", {}),
             }
             data_payload = {
-                "version": self._config.get("version", "2.0.0"),
+                "version": self._config.get("version", "2.0.2"),
                 "thumbnails": self._config.get("thumbnails", []),
             }
 
@@ -201,6 +203,17 @@ class ConfigManager:
         """Set whether thumbnails should stay on top"""
         self._config["app"]["always_on_top"] = on_top
 
+    def get_show_borders(self) -> bool:
+        """Get whether overlay borders are shown for thumbnails."""
+        return bool(self._config.get("app", {}).get("show_borders", True))
+
+    def set_show_borders(self, enabled: bool) -> None:
+        """Set whether overlay borders are shown and persist to thumbnail configs."""
+        value = bool(enabled)
+        self._config["app"]["show_borders"] = value
+        for thumbnail in self._config.get("thumbnails", []):
+            thumbnail["show_border"] = value
+
     def get_show_overlay_when_unavailable(self) -> bool:
         """Get whether overlays should remain visible when source window is unavailable."""
         return bool(self._config.get("app", {}).get("show_overlay_when_unavailable", False))
@@ -219,11 +232,21 @@ class ConfigManager:
 
     def get_high_contrast(self) -> bool:
         """Get high contrast mode setting."""
+        ui_preset = str(self._config.get("ui", {}).get("theme_preset", "") or "").strip().lower()
+        if ui_preset == "high-contrast":
+            return True
         return bool(self._config.get("app", {}).get("high_contrast", False))
 
     def set_high_contrast(self, enabled: bool) -> None:
         """Set high contrast mode setting."""
-        self._config["app"]["high_contrast"] = bool(enabled)
+        value = bool(enabled)
+        self._config["app"]["high_contrast"] = value
+        if value:
+            self._config.setdefault("ui", {})["theme_preset"] = "high-contrast"
+        else:
+            current = str(self._config.get("ui", {}).get("theme_preset", "default") or "default").strip().lower()
+            if current == "high-contrast":
+                self._config.setdefault("ui", {})["theme_preset"] = "default"
 
     def get_default_alert_threshold(self) -> float:
         return float(self._config.get("app", {}).get("default_alert_threshold", DEFAULT_ALERT_THRESHOLD))
@@ -387,6 +410,7 @@ class ConfigManager:
             "id": thumbnail_id,
             "window_title": window_title,
             "window_hwnd": window_hwnd,
+            "window_slot": None,
             "window_class": window_class or "",
             "window_size": list(window_size) if window_size else None,
             "monitor_id": monitor_id,
@@ -394,7 +418,7 @@ class ConfigManager:
             "size": size,
             "opacity": self.get_opacity(),
             "always_on_top": self.get_always_on_top(),
-            "show_border": True,
+            "show_border": self.get_show_borders(),
             "enabled": True,
             "monitored_regions": []
         }
@@ -522,6 +546,23 @@ class ConfigManager:
     def set_main_window_geometry(self, geometry: str) -> None:
         """Save main window geometry"""
         self._config["ui"]["main_window_geometry"] = geometry
+
+    def get_theme_preset(self) -> str:
+        """Get UI theme name."""
+        preset = str(self._config.get("ui", {}).get("theme_preset", "default") or "default").strip().lower()
+        if preset in ("default", "slate", "midnight", "high-contrast"):
+            return preset
+        if bool(self._config.get("app", {}).get("high_contrast", False)):
+            return "high-contrast"
+        return "default"
+
+    def set_theme_preset(self, preset: str) -> None:
+        """Set UI theme name."""
+        normalized = str(preset or "default").strip().lower()
+        if normalized not in ("default", "slate", "midnight", "high-contrast"):
+            normalized = "default"
+        self._config.setdefault("ui", {})["theme_preset"] = normalized
+        self._config.setdefault("app", {})["high_contrast"] = normalized == "high-contrast"
 
     def export_config(self, export_path: str) -> bool:
         """Export current config to a specified path."""
