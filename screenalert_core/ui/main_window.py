@@ -9,10 +9,11 @@ import faulthandler
 import traceback
 import sys
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import ttk, messagebox as msgbox, filedialog
 from typing import Optional, List, Dict
 import win32gui
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageDraw, ImageFont
 
 from screenalert_core.screening_engine import ScreenAlertEngine
 from screenalert_core.ui.window_selector_dialog import WindowSelectorDialog
@@ -77,6 +78,13 @@ class ScreenAlertMainWindow:
         self._watchdog_last_dump_ts = 0.0
         self._last_alert_focus_ts = 0.0
         self._alert_focus_cooldown_seconds = 0.75
+        self._tree_icon_tooltip_window: Optional[tk.Toplevel] = None
+        self._tree_icon_tooltip_after_id = None
+        self._tree_icon_tooltip_target: Optional[tuple] = None
+        self._tree_window_icon_meta: Dict[str, List[tuple[str, str]]] = {}
+        self._window_tree_icon_strip_cache: Dict[tuple, ImageTk.PhotoImage] = {}
+        self._tree_pil_font: Optional[ImageFont.FreeTypeFont] = None
+        self._tree_text_font: Optional[tkfont.Font] = None
         logger.debug("Creating Tk root window")
         self.root = tk.Tk()
         self.root.title("ScreenAlert v2.0.2 - Multibox Monitor")
@@ -139,9 +147,6 @@ class ScreenAlertMainWindow:
     def _add_tooltips(self) -> None:
         # Add tooltips to main window controls
         try:
-            # Add tooltips to treeview
-            if hasattr(self, 'window_tree'):
-                ToolTip(self.window_tree, 'List of monitored windows and regions')
             # Add tooltips to region cards
             for region_id, widgets in getattr(self, 'region_widgets', {}).items():
                 if 'pause_btn' in widgets:
@@ -224,7 +229,7 @@ class ScreenAlertMainWindow:
                 foreground=p["text"],
                 arrowcolor=p["accent"],
                 selectforeground=p["text"],
-                selectbackground=p["selection_bg"],
+                selectbackground=p["entry_bg"],
             )
             self.style.map(
                 'App.TCombobox',
@@ -291,7 +296,7 @@ class ScreenAlertMainWindow:
                 foreground=p["text"],
                 arrowcolor=p["accent"],
                 selectforeground=p["text"],
-                selectbackground=p["selection_bg"],
+                selectbackground=p["entry_bg"],
             )
             self.style.map(
                 'App.TCombobox',
@@ -363,6 +368,9 @@ class ScreenAlertMainWindow:
     def _configure_tree_tags(self) -> None:
         """Apply tree item tag colors from current palette."""
         self.window_tree.tag_configure("window_connected", foreground=self._palette["ok"])
+        self.window_tree.tag_configure("window_alert", foreground=self._palette["danger"])
+        self.window_tree.tag_configure("window_warning", foreground=self._palette["warn"])
+        self.window_tree.tag_configure("window_paused", foreground=self._palette["info"])
         self.window_tree.tag_configure("window_unavailable", foreground=self._palette["info"])
         self.window_tree.tag_configure("window_disabled", foreground=self._palette["disabled"])
         self.window_tree.tag_configure("region_alert", foreground=self._palette["danger"])
@@ -512,11 +520,16 @@ class ScreenAlertMainWindow:
 
         self.edit_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Edit", menu=self.edit_menu)
-        self.edit_menu.add_command(label="Add Window", command=self._add_window)
         self.edit_menu.add_command(label="Pause All", command=self._toggle_pause)
-        self.edit_menu.add_command(label="Reconnect All Windows", command=self._reconnect_all_windows)
         self.edit_menu.add_separator()
         self.edit_menu.add_command(label="Settings...", command=self._show_settings)
+
+        self.windows_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Windows", menu=self.windows_menu)
+        self.windows_menu.add_command(label="Add Window", command=self._add_window)
+        self.windows_menu.add_command(label="Reconnect All Windows", command=self._reconnect_all_windows)
+        self.windows_menu.add_command(label="Enable All Overviews", command=self._enable_all_overviews)
+        self.windows_menu.add_command(label="Close All Overviews", command=self._close_all_overviews)
         
         help_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Help", menu=help_menu)
@@ -610,6 +623,8 @@ class ScreenAlertMainWindow:
         )
         self.window_slot_combo.grid(row=4, column=1, sticky="w")
         self.window_slot_combo.bind('<<ComboboxSelected>>', self._on_window_slot_changed)
+        self.window_slot_combo.bind('<FocusIn>', lambda _e: self._schedule_clear_window_slot_selection())
+        self.window_slot_combo.bind('<ButtonRelease-1>', lambda _e: self._schedule_clear_window_slot_selection())
 
         self.window_primary_var = tk.BooleanVar(value=False)
         self.window_primary_checkbox = ttk.Checkbutton(
@@ -960,16 +975,39 @@ class ScreenAlertMainWindow:
             return
 
         is_primary = bool(self.window_primary_var.get())
+        updated = False
+
         if is_primary:
             selected_thumbnail = self.config.get_thumbnail(self.selected_thumbnail_id)
-            selected_slot = self._get_window_slot(selected_thumbnail)
-            slot_one_owner_id = self._get_slot_owner_id(1)
-            if selected_slot != 1 and slot_one_owner_id and slot_one_owner_id != self.selected_thumbnail_id:
+            if not selected_thumbnail:
                 self.window_primary_var.set(False)
-                self.status_var.set("Cannot set Primary: slot 1 is occupied and cannot be swapped")
                 return
 
-        updated = False
+            if not self._is_thumbnail_connected(selected_thumbnail):
+                self.window_primary_var.set(False)
+                self.status_var.set("Primary requires an attached/connected window")
+                self._refresh_selected_window_info_panel()
+                self._refresh_tree_node_statuses()
+                return
+
+            selected_slot = self._get_window_slot(selected_thumbnail)
+            slot_one_owner_id = self._get_slot_owner_id(1)
+
+            if slot_one_owner_id and slot_one_owner_id != self.selected_thumbnail_id:
+                fallback_slot = selected_slot if selected_slot and selected_slot != 1 else self._get_first_available_slot()
+                slot_one_owner = self.config.get_thumbnail(slot_one_owner_id)
+                if slot_one_owner:
+                    current_owner_slot = self._get_window_slot(slot_one_owner)
+                    if fallback_slot is not None and current_owner_slot != fallback_slot:
+                        self.config.update_thumbnail(slot_one_owner_id, {"window_slot": fallback_slot})
+                        updated = True
+                    elif fallback_slot is None and current_owner_slot is not None:
+                        self.config.update_thumbnail(slot_one_owner_id, {"window_slot": None})
+                        updated = True
+
+            if selected_slot != 1:
+                self.config.update_thumbnail(self.selected_thumbnail_id, {"window_slot": 1})
+                updated = True
 
         for thumbnail in self.config.get_all_thumbnails():
             thumbnail_id = thumbnail.get("id")
@@ -988,9 +1026,15 @@ class ScreenAlertMainWindow:
             self.config.save()
             self.engine.refresh_thumbnail_titles()
 
-        self._refresh_focus_option_states()
+        self._refresh_selected_window_info_panel()
+        self._refresh_tree_node_statuses()
 
         self.status_var.set("Primary window set" if is_primary else "Primary window cleared")
+
+    def _is_overview_visible_live(self, thumbnail_id: str, thumbnail: Optional[Dict] = None) -> bool:
+        """Return overview visibility from config state."""
+        source = thumbnail if thumbnail is not None else self.config.get_thumbnail(thumbnail_id)
+        return bool((source or {}).get("overview_visible", True))
 
     def _normalize_window_slot(self, value) -> Optional[int]:
         """Return a valid 1-10 slot number or None."""
@@ -1034,8 +1078,6 @@ class ScreenAlertMainWindow:
         changed = False
 
         if owner_id and owner_id != target_thumbnail_id:
-            if normalized_slot == 1 or current_slot == 1:
-                return False
             owner = self.config.get_thumbnail(owner_id)
             if owner:
                 owner_updates = {"window_slot": current_slot if current_slot is not None else None}
@@ -1149,11 +1191,6 @@ class ScreenAlertMainWindow:
             self.status_var.set("Slot 1 cannot be swapped")
             return
 
-        if previous_slot == 1 and requested_owner_id and requested_owner_id != selected_id:
-            self.window_slot_var.set("1")
-            self.status_var.set("Slot 1 cannot be swapped")
-            return
-
         if self._swap_or_assign_window_slot(selected_id, new_slot):
             self.config.save()
             self.engine.refresh_thumbnail_titles()
@@ -1164,6 +1201,24 @@ class ScreenAlertMainWindow:
         selected_thumbnail = self.config.get_thumbnail(selected_id)
         selected_slot = self._get_window_slot(selected_thumbnail)
         self.window_slot_var.set(str(selected_slot) if selected_slot else "")
+        self._schedule_clear_window_slot_selection()
+
+    def _schedule_clear_window_slot_selection(self) -> None:
+        """Clear selected text in Alt Slot combobox to prevent unreadable highlight."""
+        combo = getattr(self, 'window_slot_combo', None)
+        if not combo:
+            return
+
+        def _clear() -> None:
+            try:
+                combo.selection_clear()
+            except Exception:
+                pass
+
+        try:
+            self.root.after_idle(_clear)
+        except Exception:
+            _clear()
 
     def _activate_window_by_slot(self, slot: int):
         """Activate window assigned to Alt slot number."""
@@ -1229,7 +1284,8 @@ class ScreenAlertMainWindow:
         if updated:
             self.config.save()
 
-        self._refresh_focus_option_states()
+        self._refresh_selected_window_info_panel()
+        self._refresh_tree_node_statuses()
 
         self.status_var.set("Alert Focus window set" if is_alert_focus else "Alert Focus window cleared")
 
@@ -1267,25 +1323,41 @@ class ScreenAlertMainWindow:
             self.window_alert_focus_checkbox.state(["disabled"])
             return
 
-        primary_owner_id, alert_focus_owner_id = self._get_focus_owner_ids()
-
         is_selected_primary = bool(thumbnail.get("is_primary", False))
         is_selected_alert_focus = bool(thumbnail.get("is_alert_focus", False))
         self.window_primary_var.set(is_selected_primary)
         self.window_alert_focus_var.set(is_selected_alert_focus)
 
-        primary_locked_by_other = bool(primary_owner_id and primary_owner_id != selected_id)
-        alert_focus_locked_by_other = bool(alert_focus_owner_id and alert_focus_owner_id != selected_id)
+        self.window_primary_checkbox.state(["!disabled"])
+        self.window_alert_focus_checkbox.state(["!disabled"])
 
-        if primary_locked_by_other:
-            self.window_primary_checkbox.state(["disabled"])
-        else:
-            self.window_primary_checkbox.state(["!disabled"])
+    def _refresh_selected_window_info_panel(self) -> None:
+        """Refresh right-side window info fields for the current selection."""
+        selected_id = self.selected_thumbnail_id
+        if not selected_id or self.show_all_regions:
+            return
 
-        if alert_focus_locked_by_other:
-            self.window_alert_focus_checkbox.state(["disabled"])
+        thumbnail = self.config.get_thumbnail(selected_id)
+        if not thumbnail:
+            return
+
+        self.window_title_var.set(thumbnail.get("window_title", "Unknown"))
+        hwnd = thumbnail.get("window_hwnd")
+        self.window_hwnd_var.set(str(hwnd) if hwnd else "")
+        regions = thumbnail.get("monitored_regions", [])
+        self.window_region_count_var.set(str(len(regions)))
+
+        slot = self._get_window_slot(thumbnail)
+        self.window_slot_var.set(str(slot) if slot else "-")
+        self._schedule_clear_window_slot_selection()
+
+        size = thumbnail.get("window_size")
+        if isinstance(size, (list, tuple)) and len(size) == 2:
+            self.window_size_var.set(f"{size[0]}x{size[1]}")
         else:
-            self.window_alert_focus_checkbox.state(["!disabled"])
+            self.window_size_var.set("")
+
+        self._refresh_focus_option_states()
 
     def _activate_alert_focus_window(self) -> None:
         """Bring configured alert-focus window to foreground, throttled."""
@@ -1690,6 +1762,11 @@ class ScreenAlertMainWindow:
         menu = tk.Menu(self.root, tearoff=0)
         if kind == "all":
             menu.add_command(label="Add Window", command=self._add_window)
+            menu.add_command(
+                label="Enable All Overviews",
+                command=self._enable_all_overviews,
+                state=tk.NORMAL,
+            )
             menu.add_command(label=("Resume All" if self.engine.paused else "Pause All"), command=self._toggle_pause)
             menu.add_command(label="Reconnect All Windows", command=self._reconnect_all_windows)
             menu.add_separator()
@@ -1701,6 +1778,11 @@ class ScreenAlertMainWindow:
             )
         elif kind == "window":
             menu.add_command(label="Add Region", command=self._add_region)
+            menu.add_command(
+                label="Enable Overview",
+                command=self._enable_selected_overview,
+                state=tk.NORMAL,
+            )
             menu.add_command(label="Reconnect Window", command=self._reconnect_selected_window)
             menu.add_command(label="Remove All Regions", command=self._remove_all_regions)
             menu.add_separator()
@@ -1827,12 +1909,79 @@ class ScreenAlertMainWindow:
         except Exception as error:
             logger.error(f"Error reconnecting window '{title}': {error}", exc_info=True)
             msgbox.showerror("Reconnect", f"Reconnect failed: {error}")
+
+    def _set_overview_enabled(self, thumbnail_id: str, enabled: bool) -> bool:
+        """Show/hide a single overview window without changing monitor state."""
+        thumbnail = self.config.get_thumbnail(thumbnail_id)
+        if not thumbnail:
+            return False
+
+        target_enabled = bool(enabled)
+        current_visible = bool(thumbnail.get("overview_visible", True))
+        if current_visible != target_enabled:
+            self.config.update_thumbnail(thumbnail_id, {"overview_visible": target_enabled})
+            self.config.save()
+
+        if target_enabled:
+            self.engine.renderer.set_thumbnail_user_visibility(thumbnail_id, True)
+            self.engine.renderer.set_thumbnail_availability(
+                thumbnail_id,
+                True,
+                self.config.get_show_overlay_when_unavailable(),
+            )
+        else:
+            self.engine.renderer.set_thumbnail_user_visibility(thumbnail_id, False)
+
+        return True
+
+    def _enable_selected_overview(self) -> None:
+        """Enable overview window for the currently selected thumbnail."""
+        if not self.selected_thumbnail_id:
+            self.status_var.set("Select a window first")
+            return
+
+        thumbnail = self.config.get_thumbnail(self.selected_thumbnail_id)
+        if not thumbnail:
+            self.status_var.set("Selected window not found")
+            return
+
+        title = thumbnail.get("window_title", "Unknown")
+        self._set_overview_enabled(self.selected_thumbnail_id, True)
+        self.status_var.set(f"Overview enabled: {title}")
+        self._update_thumbnail_list()
+
+    def _enable_all_overviews(self) -> None:
+        """Enable all configured overview windows."""
+        total = 0
+        for thumbnail in self.config.get_all_thumbnails():
+            thumbnail_id = thumbnail.get("id")
+            if not thumbnail_id:
+                continue
+            self._set_overview_enabled(thumbnail_id, True)
+            total += 1
+
+        self.status_var.set(f"Enabled {total} overview(s)")
+        self._update_thumbnail_list()
+
+    def _close_all_overviews(self) -> None:
+        """Close all configured overview windows visually (keep monitoring active)."""
+        total = 0
+        for thumbnail in self.config.get_all_thumbnails():
+            thumbnail_id = thumbnail.get("id")
+            if thumbnail_id:
+                self._set_overview_enabled(thumbnail_id, False)
+                total += 1
+
+        self.status_var.set(f"Closed {total} overview(s)")
+        self._update_thumbnail_list()
     
     def _update_thumbnail_list(self) -> None:
         """Update window tree display"""
         for item in self.window_tree.get_children():
             self.window_tree.delete(item)
         self.region_to_thumbnail.clear()
+        self._tree_window_icon_meta.clear()
+        self._window_tree_icon_strip_cache.clear()
         tree_filter_query = self._get_tree_filter_query()
         
         thumbnails = self.config.get_all_thumbnails()
@@ -1872,12 +2021,15 @@ class ScreenAlertMainWindow:
                 regions_for_tree = regions
 
             window_status = self._get_thumbnail_window_status(thumbnail)
+            self._tree_window_icon_meta[thumbnail_id] = self._window_tree_suffix_icons(thumbnail, window_status)
+            window_tree_state = self._get_window_tree_state(thumbnail, window_status)
             self.window_tree.insert(
                 all_root,
                 "end",
                 iid=thumbnail_id,
-                text=self._format_window_tree_text(title, window_status),
-                tags=(self._window_tree_tag(window_status),),
+                text="",
+                image=self._get_window_tree_icon_image(thumbnail, window_status, window_tree_state),
+                tags=(self._window_tree_tag(window_tree_state),),
             )
             if thumbnail_id not in self.region_statuses:
                 self.region_statuses[thumbnail_id] = {}
@@ -2577,13 +2729,45 @@ class ScreenAlertMainWindow:
 
         return self.region_statuses.get(thumbnail_id, {}).get(region_id, "ok")
 
-    def _window_tree_tag(self, window_status: str) -> str:
+    def _window_tree_tag(self, window_state: str) -> str:
         """Map window status to tree tag."""
-        if window_status == "connected":
+        if window_state == "alert":
+            return "window_alert"
+        if window_state == "warning":
+            return "window_warning"
+        if window_state == "paused":
+            return "window_paused"
+        if window_state == "connected":
             return "window_connected"
-        if window_status == "disabled":
+        if window_state == "disabled":
             return "window_disabled"
         return "window_unavailable"
+
+    def _get_window_tree_state(self, thumbnail: Dict, window_status: str) -> str:
+        """Return aggregated window state for parent tree-row coloring."""
+        if window_status == "disabled":
+            return "disabled"
+        if window_status != "connected":
+            return "unavailable"
+
+        region_states: List[str] = []
+        for region in thumbnail.get("monitored_regions", []):
+            region_state = self._get_region_effective_status(thumbnail, region, window_status)
+            region_states.append(region_state)
+
+        if not region_states:
+            return "connected"
+        if "alert" in region_states:
+            return "alert"
+        if "warning" in region_states:
+            return "warning"
+        if "paused" in region_states:
+            return "paused"
+        if "ok" in region_states:
+            return "connected"
+        if all(state == "disabled" for state in region_states):
+            return "disabled"
+        return "unavailable"
 
     def _window_status_label(self, window_status: str) -> str:
         """Human-friendly window status suffix text."""
@@ -2594,18 +2778,293 @@ class ScreenAlertMainWindow:
         return "Unavailable"
 
     def _window_status_icon(self, window_status: str) -> str:
-        """Compact icon for window status."""
+        """Compact connectivity icon for window status."""
         if window_status == "connected":
-            return "🟢"
-        if window_status == "disabled":
-            return "⚪"
-        return "🔵"
+            return "✅️"
+        return "❌️"
 
-    def _format_window_tree_text(self, title: str, window_status: str) -> str:
-        """Format window tree text with icon and status suffix."""
-        icon = self._window_status_icon(window_status)
-        suffix = self._window_status_label(window_status)
-        return f"{icon} {title} [{suffix}]"
+    def _window_tree_suffix_icons(self, thumbnail: Dict, window_status: str) -> List[tuple[str, str]]:
+        """Tooltip metadata for logical status icons rendered in window-row image."""
+        icons: List[tuple[str, str]] = []
+        if window_status == "connected":
+            icons.append(("connected", "Window is connected"))
+        else:
+            icons.append(("disconnected", "Window is disconnected/disabled"))
+
+        thumbnail_id = thumbnail.get("id")
+        if self._is_overview_visible_live(thumbnail_id, thumbnail):
+            icons.append(("overview_open", "Overview is visible"))
+        return icons
+
+    def _format_window_tree_text(self, thumbnail: Dict, window_status: str) -> str:
+        """Format window tree text with primary marker at start and other icons at end."""
+        title = thumbnail.get("window_title", "Unknown")
+        prefix = "• " if bool(thumbnail.get("is_primary", False)) else "  "
+        return f"{prefix}{title}"
+
+    def _window_tree_text_color(self, window_tree_state: str) -> str:
+        """Resolve text color for image-rendered window rows."""
+        if window_tree_state == "alert":
+            return self._palette["danger"]
+        if window_tree_state == "warning":
+            return self._palette["warn"]
+        if window_tree_state == "paused":
+            return self._palette["info"]
+        if window_tree_state == "disabled":
+            return self._palette["disabled"]
+        if window_tree_state == "unavailable":
+            return self._palette["info"]
+        return self._palette["ok"]
+
+    def _resolve_tree_pil_font(self) -> ImageFont.ImageFont:
+        """Return PIL font matching tree text size as closely as practical."""
+        if self._tree_pil_font is not None:
+            return self._tree_pil_font
+
+        resolved_tk_font = None
+        try:
+            configured_font = self.style.lookup('Treeview', 'font') or ('Segoe UI', 10, 'bold')
+            resolved_tk_font = tkfont.Font(font=configured_font)
+            self._tree_text_font = resolved_tk_font
+        except Exception:
+            resolved_tk_font = tkfont.Font(family='Segoe UI', size=10, weight='bold')
+            self._tree_text_font = resolved_tk_font
+
+        family = str(resolved_tk_font.actual('family') or 'Segoe UI')
+        size = abs(int(resolved_tk_font.actual('size') or 10))
+        weight = str(resolved_tk_font.actual('weight') or 'normal').lower()
+
+        candidate_paths: List[str] = []
+        windir = os.environ.get('WINDIR', 'C:/Windows')
+        family_lower = family.casefold()
+
+        if 'segoe ui' in family_lower:
+            candidate_paths.append(f"{windir}/Fonts/segoeuib.ttf" if weight == 'bold' else f"{windir}/Fonts/segoeui.ttf")
+            candidate_paths.append(f"{windir}/Fonts/segoeui.ttf")
+        candidate_paths.append(f"{windir}/Fonts/arialbd.ttf" if weight == 'bold' else f"{windir}/Fonts/arial.ttf")
+
+        loaded = None
+        for path in candidate_paths:
+            try:
+                loaded = ImageFont.truetype(path, size)
+                break
+            except Exception:
+                continue
+
+        if loaded is None:
+            try:
+                loaded = ImageFont.truetype("segoeui.ttf", size)
+            except Exception:
+                loaded = ImageFont.load_default()
+
+        self._tree_pil_font = loaded
+        return self._tree_pil_font
+
+    def _draw_connection_icon(self, draw: ImageDraw.ImageDraw, x: int, y: int, size: int, connected: bool) -> None:
+        """Draw connected/disconnected square icon."""
+        x2 = x + size - 1
+        y2 = y + size - 1
+        pad = max(2, size // 4)
+        stroke = max(1, size // 6)
+        radius = max(2, size // 6)
+        if connected:
+            draw.rounded_rectangle((x, y, x2, y2), radius=radius, fill=(0, 170, 0, 255), outline=(0, 255, 0, 255), width=1)
+            draw.line((x + pad, y + (size // 2), x + (size // 2) - 1, y + size - pad - 1), fill=(255, 255, 255, 255), width=stroke)
+            draw.line((x + (size // 2) - 1, y + size - pad - 1, x + size - pad, y + pad), fill=(255, 255, 255, 255), width=stroke)
+        else:
+            draw.rounded_rectangle((x, y, x2, y2), radius=radius, fill=(170, 20, 20, 255), outline=(255, 80, 80, 255), width=1)
+            draw.line((x + pad, y + pad, x + size - pad, y + size - pad), fill=(255, 255, 255, 255), width=stroke)
+            draw.line((x + size - pad, y + pad, x + pad, y + size - pad), fill=(255, 255, 255, 255), width=stroke)
+
+    def _draw_open_eye_icon(self, draw: ImageDraw.ImageDraw, x: int, y: int, size: int) -> None:
+        """Draw open-eye icon (with lashes) for visible overlay."""
+        outline = (190, 220, 255, 255)
+        iris = (140, 190, 255, 255)
+        pupil = (40, 70, 110, 255)
+
+        left = x + 1
+        top = y + max(1, size // 4)
+        right = x + size - 1
+        bottom = y + size - max(1, size // 4)
+        stroke = max(1, size // 8)
+
+        draw.ellipse((left, top, right, bottom), outline=outline, width=stroke)
+        iris_r = max(2, size // 5)
+        cx = x + (size // 2)
+        cy = y + (size // 2)
+        draw.ellipse((cx - iris_r, cy - iris_r, cx + iris_r, cy + iris_r), fill=iris, outline=iris)
+        pupil_r = max(1, size // 8)
+        draw.ellipse((cx - pupil_r, cy - pupil_r, cx + pupil_r, cy + pupil_r), fill=pupil, outline=pupil)
+        lash_y = top - 1
+        draw.line((left + 1, top, left, lash_y), fill=outline, width=1)
+        draw.line((cx, top, cx, lash_y), fill=outline, width=1)
+        draw.line((right - 1, top, right, lash_y), fill=outline, width=1)
+
+    def _get_window_tree_icon_image(self, thumbnail: Dict, window_status: str, window_tree_state: str) -> Optional[ImageTk.PhotoImage]:
+        """Return cached full row image in order: bullet/blank, title, connected icon, optional eye icon."""
+        title = thumbnail.get("window_title", "Unknown")
+        is_primary = bool(thumbnail.get("is_primary", False))
+        thumbnail_id = thumbnail.get("id")
+        overview_visible = self._is_overview_visible_live(thumbnail_id, thumbnail)
+        row_text = f"{'• ' if is_primary else '  '}{title}"
+
+        cache_key = (row_text, window_status, overview_visible, window_tree_state, self._current_theme, self._theme_preset)
+
+        cached = self._window_tree_icon_strip_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        font = self._resolve_tree_pil_font()
+        probe = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
+        probe_draw = ImageDraw.Draw(probe)
+        left, top, right, bottom = probe_draw.textbbox((0, 0), row_text, font=font)
+        text_width = max(1, right - left)
+        text_height = max(1, bottom - top)
+
+        if self._tree_text_font is None:
+            try:
+                self._tree_text_font = tkfont.Font(font=self.style.lookup('Treeview', 'font') or ('Segoe UI', 10, 'bold'))
+            except Exception:
+                self._tree_text_font = tkfont.Font(family='Segoe UI', size=10, weight='bold')
+
+        line_space = int(self._tree_text_font.metrics('linespace') or 14)
+        icon_size = max(12, line_space - 2)
+        spacing = 6
+        right_pad = 2
+        icon_count = 1 + (1 if overview_visible else 0)
+        icons_width = (icon_count * icon_size) + ((icon_count - 1) * spacing)
+
+        width = 4 + text_width + 10 + icons_width + right_pad
+        height = max(text_height, icon_size) + 4
+        image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+
+        text_y = (height - text_height) // 2 - top
+        draw.text((2, text_y), row_text, font=font, fill=self._window_tree_text_color(window_tree_state))
+
+        icon_y = (height - icon_size) // 2
+        icon_x = 4 + text_width + 10
+        self._draw_connection_icon(draw, icon_x, icon_y, icon_size, connected=(window_status == "connected"))
+        icon_x += icon_size + spacing
+
+        if overview_visible:
+            self._draw_open_eye_icon(draw, icon_x, icon_y, icon_size)
+
+        tk_image = ImageTk.PhotoImage(image)
+        self._window_tree_icon_strip_cache[cache_key] = tk_image
+        return tk_image
+
+    def _on_tree_motion(self, event) -> None:
+        """Show quick tooltip when hovering a trailing window icon."""
+        item_id = self.window_tree.identify_row(event.y)
+        if not item_id or self._tree_item_kind(item_id) != "window":
+            self._hide_tree_icon_tooltip()
+            return
+
+        thumbnail = self.config.get_thumbnail(item_id)
+        if not thumbnail:
+            self._hide_tree_icon_tooltip()
+            return
+
+        suffix_icons = self._tree_window_icon_meta.get(item_id)
+        if suffix_icons is None:
+            window_status = self._get_thumbnail_window_status(thumbnail)
+            suffix_icons = self._window_tree_suffix_icons(thumbnail, window_status)
+            self._tree_window_icon_meta[item_id] = suffix_icons
+        if not suffix_icons:
+            self._hide_tree_icon_tooltip()
+            return
+
+        bbox = self.window_tree.bbox(item_id)
+        if not bbox:
+            self._hide_tree_icon_tooltip()
+            return
+
+        if self._tree_text_font is None:
+            self._tree_text_font = tkfont.Font(font=self.style.lookup('Treeview', 'font') or ('Segoe UI', 10))
+        text_font = self._tree_text_font
+        row_x, _row_y, _row_w, _row_h = bbox
+        title_prefix = "• " if bool(thumbnail.get("is_primary", False)) else "  "
+        title_text = thumbnail.get("window_title", "Unknown")
+        suffix_text = " ".join(icon for icon, _tip in suffix_icons)
+        start_text = f"{title_prefix}{title_text} "
+        start_x = row_x + text_font.measure(start_text)
+        end_x = start_x + text_font.measure(suffix_text)
+
+        if event.x < start_x or event.x > end_x:
+            self._hide_tree_icon_tooltip()
+            return
+
+        current_x = start_x
+        hovered_tip: Optional[str] = None
+        for index, (icon, tip_text) in enumerate(suffix_icons):
+            icon_width = text_font.measure(icon)
+            if current_x <= event.x <= (current_x + icon_width):
+                hovered_tip = tip_text
+                break
+            current_x += icon_width
+            if index < (len(suffix_icons) - 1):
+                current_x += text_font.measure(" ")
+
+        if not hovered_tip:
+            self._hide_tree_icon_tooltip()
+            return
+
+        target = (item_id, hovered_tip)
+        if self._tree_icon_tooltip_target == target and self._tree_icon_tooltip_window:
+            self._tree_icon_tooltip_window.wm_geometry(f"+{event.x_root + 16}+{event.y_root + 12}")
+            return
+
+        self._schedule_tree_icon_tooltip(hovered_tip, event.x_root + 16, event.y_root + 12, target)
+
+    def _on_tree_leave(self, _event) -> None:
+        """Hide icon tooltip when cursor leaves tree."""
+        self._hide_tree_icon_tooltip()
+
+    def _schedule_tree_icon_tooltip(self, text: str, x_root: int, y_root: int, target: tuple) -> None:
+        """Schedule icon tooltip with short delay for quick hover feedback."""
+        self._hide_tree_icon_tooltip()
+
+        def _show() -> None:
+            tooltip_window = tk.Toplevel(self.window_tree)
+            tooltip_window.wm_overrideredirect(True)
+            tooltip_window.wm_geometry(f"+{x_root}+{y_root}")
+            label = tk.Label(
+                tooltip_window,
+                text=text,
+                justify=tk.LEFT,
+                background=self._palette.get("surface", "#222"),
+                foreground=self._palette.get("text", "#fff"),
+                relief=tk.SOLID,
+                borderwidth=1,
+                font=("Segoe UI", 9),
+                padx=6,
+                pady=3,
+            )
+            label.pack()
+            self._tree_icon_tooltip_window = tooltip_window
+            self._tree_icon_tooltip_target = target
+            self._tree_icon_tooltip_after_id = None
+
+        self._tree_icon_tooltip_after_id = self.window_tree.after(150, _show)
+
+    def _hide_tree_icon_tooltip(self) -> None:
+        """Cancel/hide icon tooltip for tree rows."""
+        if self._tree_icon_tooltip_after_id:
+            try:
+                self.window_tree.after_cancel(self._tree_icon_tooltip_after_id)
+            except Exception:
+                pass
+            self._tree_icon_tooltip_after_id = None
+
+        if self._tree_icon_tooltip_window:
+            try:
+                self._tree_icon_tooltip_window.destroy()
+            except Exception:
+                pass
+            self._tree_icon_tooltip_window = None
+
+        self._tree_icon_tooltip_target = None
 
     def _region_tree_tag(self, region_status: str) -> str:
         """Map region status to tree tag."""
@@ -2657,17 +3116,24 @@ class ScreenAlertMainWindow:
 
     def _refresh_tree_node_statuses(self) -> None:
         """Refresh tree node tags to reflect live window/region statuses."""
+        primary_cleared = False
         for thumbnail in self.config.get_all_thumbnails():
             thumbnail_id = thumbnail.get("id")
             if not thumbnail_id or not self.window_tree.exists(thumbnail_id):
                 continue
 
             window_status = self._get_thumbnail_window_status(thumbnail)
-            title = thumbnail.get("window_title", "Unknown")
+            if window_status != "connected" and bool(thumbnail.get("is_primary", False)):
+                self.config.update_thumbnail(thumbnail_id, {"is_primary": False})
+                thumbnail["is_primary"] = False
+                primary_cleared = True
+            self._tree_window_icon_meta[thumbnail_id] = self._window_tree_suffix_icons(thumbnail, window_status)
+            window_tree_state = self._get_window_tree_state(thumbnail, window_status)
             self.window_tree.item(
                 thumbnail_id,
-                text=self._format_window_tree_text(title, window_status),
-                tags=(self._window_tree_tag(window_status),),
+                text="",
+                image=self._get_window_tree_icon_image(thumbnail, window_status, window_tree_state),
+                tags=(self._window_tree_tag(window_tree_state),),
             )
 
             for region in thumbnail.get("monitored_regions", []):
@@ -2681,6 +3147,13 @@ class ScreenAlertMainWindow:
                     text=self._format_region_tree_text(region_name, region_status),
                     tags=(self._region_tree_tag(region_status),),
                 )
+
+        if primary_cleared:
+            self.config.save()
+            if self.selected_thumbnail_id:
+                selected = self.config.get_thumbnail(self.selected_thumbnail_id)
+                if selected and not self._is_thumbnail_connected(selected):
+                    self.window_primary_var.set(False)
 
     def _refresh_dynamic_status_texts(self) -> None:
         """Refresh dynamic text portions (countdown) without changing colors."""
