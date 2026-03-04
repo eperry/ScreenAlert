@@ -388,6 +388,76 @@ class WindowManager:
             return int(hwnd) if hwnd else None
         except Exception:
             return None
+
+    def get_window_handle_family(self, hwnd: int) -> set[int]:
+        """Return related handles for robust foreground/source matching.
+
+        Includes the window itself plus common related handles (root/root-owner,
+        owner, parent, and last active popup) to handle cases where foreground
+        events report a child or owned popup instead of the tracked top-level HWND.
+        """
+        handles: set[int] = set()
+        try:
+            if not hwnd:
+                return handles
+
+            root = int(hwnd)
+            handles.add(root)
+
+            try:
+                parent = win32gui.GetParent(root)
+                if parent:
+                    handles.add(int(parent))
+            except Exception:
+                pass
+
+            try:
+                owner = win32gui.GetWindow(root, win32con.GW_OWNER)
+                if owner:
+                    handles.add(int(owner))
+            except Exception:
+                pass
+
+            try:
+                ga_root = win32gui.GetAncestor(root, win32con.GA_ROOT)
+                if ga_root:
+                    handles.add(int(ga_root))
+            except Exception:
+                pass
+
+            try:
+                ga_root_owner = win32gui.GetAncestor(root, win32con.GA_ROOTOWNER)
+                if ga_root_owner:
+                    handles.add(int(ga_root_owner))
+            except Exception:
+                pass
+
+            # Include one-hop relatives for each discovered handle.
+            snapshot = list(handles)
+            for candidate in snapshot:
+                try:
+                    popup = win32gui.GetLastActivePopup(int(candidate))
+                    if popup:
+                        handles.add(int(popup))
+                except Exception:
+                    pass
+                try:
+                    parent = win32gui.GetParent(int(candidate))
+                    if parent:
+                        handles.add(int(parent))
+                except Exception:
+                    pass
+                try:
+                    owner = win32gui.GetWindow(int(candidate), win32con.GW_OWNER)
+                    if owner:
+                        handles.add(int(owner))
+                except Exception:
+                    pass
+
+        except Exception as error:
+            logger.debug(f"Unable to build window handle family for {hwnd}: {error}")
+
+        return handles
     
     def get_monitor_info(self) -> List[Dict]:
         """Get information about all monitors (DPI/scaling robust)"""

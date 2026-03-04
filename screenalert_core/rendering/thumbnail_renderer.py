@@ -197,6 +197,14 @@ class ThumbnailRenderer:
         """Get thumbnail window object"""
         return self.thumbnails.get(thumbnail_id)
 
+    def is_thumbnail_visible(self, thumbnail_id: str) -> Optional[bool]:
+        """Return live visibility for a thumbnail window, or None if missing."""
+        with self.lock:
+            thumbnail = self.thumbnails.get(thumbnail_id)
+            if not thumbnail:
+                return None
+            return thumbnail.is_visible()
+
     def get_all_thumbnail_geometries(self) -> Dict[str, Dict[str, int]]:
         """Get current geometry snapshot for all thumbnails."""
         with self.lock:
@@ -221,6 +229,20 @@ class ThumbnailRenderer:
                 show_when_unavailable=show_when_unavailable,
             )
             return True
+
+    def set_thumbnail_user_visibility(self, thumbnail_id: str, visible: bool) -> bool:
+        """Show or hide a thumbnail window based on user action."""
+        with self.lock:
+            if thumbnail_id not in self.thumbnails:
+                return False
+            self.thumbnails[thumbnail_id].set_user_visibility(bool(visible))
+            return True
+
+    def set_all_thumbnail_user_visibility(self, visible: bool) -> None:
+        """Apply user-requested visibility to all thumbnail windows."""
+        with self.lock:
+            for thumbnail in self.thumbnails.values():
+                thumbnail.set_user_visibility(bool(visible))
     
     def start(self) -> None:
         """Start render loop"""
@@ -308,6 +330,7 @@ class ThumbnailWindow:
         self.photo_image: Optional[ImageTk.PhotoImage] = None
         self._is_available = True
         self._show_when_unavailable = False
+        self._is_user_hidden = False
         self.interaction_state = "idle"
         self.left_pressed = False
         self.right_pressed = False
@@ -355,7 +378,7 @@ class ThumbnailWindow:
             close_btn = tk.Label(self.title_bar, text="✕", bg='#2e2e2e', fg='white',
                                 font=('Segoe UI', 10, 'bold'), cursor='hand2')
             close_btn.pack(side=tk.RIGHT, padx=5)
-            close_btn.bind('<Button-1>', lambda e: self.cleanup())
+            close_btn.bind('<Button-1>', self._on_close_button)
             
             # Don't pack title bar initially (starts hidden)
             # Will be shown on mouse hover
@@ -451,7 +474,7 @@ class ThumbnailWindow:
         if not hasattr(self, 'container') or not hasattr(self, 'border_frame'):
             return
         try:
-            border_px = 2 if self._is_active_window else 0
+            border_px = 3 if self._is_active_window else 0
             self.container.configure(bg='#FF9500' if self._is_active_window else 'black')
             self.border_frame.configure(
                 relief=tk.RAISED if self._is_active_window else tk.FLAT,
@@ -483,6 +506,38 @@ class ThumbnailWindow:
 
     def _on_focus_in(self, _event) -> None:
         pass
+
+    def _on_close_button(self, _event=None) -> None:
+        """Handle overlay close click as logical 'close overview' action."""
+        try:
+            self._emit_interaction("overview_closed", {})
+        except Exception:
+            pass
+        self.set_user_visibility(False)
+
+    def set_user_visibility(self, visible: bool) -> None:
+        """Show/hide window per user action without changing monitor enable state."""
+        self._is_user_hidden = not bool(visible)
+        if not self.window:
+            return
+        try:
+            if self._is_user_hidden:
+                self.window.withdraw()
+            else:
+                self._apply_availability_state()
+        except Exception:
+            pass
+
+    def is_visible(self) -> bool:
+        """Return whether the overlay window is currently visible on screen."""
+        if self._is_user_hidden:
+            return False
+        if not self.window:
+            return False
+        try:
+            return self.window.state() != 'withdrawn'
+        except Exception:
+            return not self._is_user_hidden
     
     def _process_image_queue(self) -> None:
         """Process image updates from queue (runs on main thread)"""
@@ -578,6 +633,10 @@ class ThumbnailWindow:
         if not self.window or not hasattr(self, 'label') or not self.label:
             return
         try:
+            if self._is_user_hidden:
+                self.window.withdraw()
+                return
+
             window_state = ""
             try:
                 window_state = self.window.state()

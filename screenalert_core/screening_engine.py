@@ -69,6 +69,7 @@ class ScreenAlertEngine:
         self._diag_monitor_ms = 0.0
         self._diag_alert_count = 0
         self._diag_change_count = 0
+        self._last_foreground_sync_ts = 0.0
         self._reconnect_attempted_once: set[str] = set()
         self._window_lost_notified: set[str] = set()
         logger.info("ScreenAlert engine initialized")
@@ -123,6 +124,12 @@ class ScreenAlertEngine:
                 if not self.renderer.add_thumbnail(thumbnail_id, config):
                     logger.warning(f"Failed to add renderer for {thumbnail_id}")
                     return False
+
+                # Apply persisted overview visibility before availability updates.
+                self.renderer.set_thumbnail_user_visibility(
+                    thumbnail_id,
+                    bool(config.get("overview_visible", True)),
+                )
                 
                 # Immediately capture and display (same as add_thumbnail)
                 window_hwnd = config.get("window_hwnd")
@@ -238,6 +245,12 @@ class ScreenAlertEngine:
             if not self.renderer.add_thumbnail(thumbnail_id, config):
                 self.config.remove_thumbnail(thumbnail_id)
                 return None
+
+            # New windows start with overview visible unless config says otherwise.
+            self.renderer.set_thumbnail_user_visibility(
+                thumbnail_id,
+                bool(config.get("overview_visible", True)),
+            )
             
             # Immediately capture and display the window (don't wait for monitoring to start)
             logger.info(f"[{thumbnail_id}] Capturing initial window image...")
@@ -611,6 +624,14 @@ class ScreenAlertEngine:
                 with self.lock:
                     thumbnails = list(self.config.get_all_thumbnails())
 
+                # Fallback foreground sync (event hooks can occasionally miss transitions).
+                now = time.time()
+                if (now - self._last_foreground_sync_ts) >= 0.25:
+                    foreground_hwnd = self.window_manager.get_foreground_window()
+                    if foreground_hwnd:
+                        self._update_overlay_active_by_foreground_source(thumbnails, foreground_hwnd)
+                    self._last_foreground_sync_ts = now
+
                 # Process each thumbnail
                 for thumbnail_config in thumbnails:
                     if not thumbnail_config.get("enabled", True):
@@ -824,6 +845,10 @@ class ScreenAlertEngine:
             if not foreground_hwnd:
                 return
 
+            foreground_family = self.window_manager.get_window_handle_family(foreground_hwnd)
+            if not foreground_family:
+                foreground_family = {int(foreground_hwnd)}
+
             active_thumbnail_id: Optional[str] = None
             for thumbnail in thumbnails:
                 if not thumbnail.get("enabled", True):
@@ -832,7 +857,12 @@ class ScreenAlertEngine:
                 hwnd = thumbnail.get("window_hwnd")
                 if not thumbnail_id or not hwnd:
                     continue
-                if int(hwnd) == int(foreground_hwnd):
+
+                source_family = self.window_manager.get_window_handle_family(int(hwnd))
+                if not source_family:
+                    source_family = {int(hwnd)}
+
+                if source_family.intersection(foreground_family):
                     active_thumbnail_id = thumbnail_id
                     break
 
@@ -989,6 +1019,13 @@ class ScreenAlertEngine:
             if thumbnail:
                 hwnd = thumbnail["window_hwnd"]
                 self.window_manager.activate_window(hwnd)
+
+        elif action == "overview_closed":
+            # User closed overview window: hide overlay only, keep monitoring active.
+            with self.lock:
+                self.config.update_thumbnail(thumbnail_id, {"overview_visible": False})
+                self.config.save()
+            self.renderer.set_thumbnail_user_visibility(thumbnail_id, False)
         
         elif action == "position_changed":
             thumbnail = self.config.get_thumbnail(thumbnail_id)
