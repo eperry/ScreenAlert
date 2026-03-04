@@ -74,7 +74,7 @@ class SettingsDialog:
 
         ttk.Label(refresh_frame, text="Change Detection:").grid(row=2, column=0, sticky="w")
         self.change_method_var = tk.StringVar(value="ssim")
-        ttk.Combobox(refresh_frame, textvariable=self.change_method_var,
+        ttk.Combobox(refresh_frame, style="App.TCombobox", textvariable=self.change_method_var,
                  values=["ssim", "phash"], state="readonly", width=12).grid(row=2, column=1, sticky="w", padx=10)
 
         ttk.Label(refresh_frame, text="Pause Reminder (sec):").grid(row=3, column=0, sticky="w")
@@ -87,11 +87,18 @@ class SettingsDialog:
 
         appearance_frame.pack(fill=tk.X, pady=(0, 10))
 
-        # High-contrast mode toggle
-        ttk.Label(appearance_frame, text="High-Contrast Mode:").grid(row=3, column=0, sticky="w")
-        self.high_contrast_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(appearance_frame, variable=self.high_contrast_var).grid(
-            row=3, column=1, sticky="w", padx=10)
+        ttk.Label(appearance_frame, text="Theme:").grid(row=3, column=0, sticky="w")
+        self.theme_preset_var = tk.StringVar(value="default")
+        self.theme_preset_combo = ttk.Combobox(
+            appearance_frame,
+            style="App.TCombobox",
+            textvariable=self.theme_preset_var,
+            values=["default", "slate", "midnight", "high-contrast"],
+            state="readonly",
+            width=14,
+        )
+        self.theme_preset_combo.grid(row=3, column=1, sticky="w", padx=10)
+        self.theme_preset_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_live_theme_preview())
 
         appearance_frame.columnconfigure(1, weight=1)
         
@@ -108,17 +115,17 @@ class SettingsDialog:
         
         ttk.Label(appearance_frame, text="Always on Top:").grid(row=1, column=0, sticky="w")
         self.always_on_top_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(appearance_frame, variable=self.always_on_top_var).grid(
+        ttk.Checkbutton(appearance_frame, style="App.TCheckbutton", variable=self.always_on_top_var).grid(
             row=1, column=1, sticky="w", padx=10)
         
         ttk.Label(appearance_frame, text="Show Borders:").grid(row=2, column=0, sticky="w")
         self.show_borders_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(appearance_frame, variable=self.show_borders_var).grid(
+        ttk.Checkbutton(appearance_frame, style="App.TCheckbutton", variable=self.show_borders_var).grid(
             row=2, column=1, sticky="w", padx=10)
 
         ttk.Label(appearance_frame, text="Show Overlay if Unavailable:").grid(row=4, column=0, sticky="w")
         self.show_overlay_unavailable_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(appearance_frame, variable=self.show_overlay_unavailable_var).grid(
+        ttk.Checkbutton(appearance_frame, style="App.TCheckbutton", variable=self.show_overlay_unavailable_var).grid(
             row=4, column=1, sticky="w", padx=10)
         
         appearance_frame.columnconfigure(1, weight=1)
@@ -218,9 +225,10 @@ class SettingsDialog:
         self.refresh_var.set(self.config.get_refresh_rate())
         self.opacity_var.set(self.config.get_opacity())
         self.always_on_top_var.set(self.config.get_always_on_top())
+        self.show_borders_var.set(self.config.get_show_borders())
         self.show_overlay_unavailable_var.set(self.config.get_show_overlay_when_unavailable())
         self.verbose_var.set(self.config.get_verbose_logging())
-        self.high_contrast_var.set(self.config.get_high_contrast())
+        self.theme_preset_var.set(self.config.get_theme_preset())
         self.alert_threshold_var.set(self.config.get_default_alert_threshold())
         self.change_method_var.set(self.config.get_change_detection_method())
         self.enable_sound_var.set(self.config.get_enable_sound())
@@ -265,9 +273,10 @@ class SettingsDialog:
             self.config.set_refresh_rate(self.refresh_var.get())
             self.config.set_opacity(self.opacity_var.get())
             self.config.set_always_on_top(self.always_on_top_var.get())
+            self.config.set_show_borders(self.show_borders_var.get())
             self.config.set_show_overlay_when_unavailable(self.show_overlay_unavailable_var.get())
             self.config.set_verbose_logging(self.verbose_var.get())
-            self.config.set_high_contrast(self.high_contrast_var.get())
+            self.config.set_theme_preset(self.theme_preset_var.get())
             self.config.set_default_alert_threshold(self.alert_threshold_var.get())
             self.config.set_change_detection_method(self.change_method_var.get())
             self.config.set_enable_sound(self.enable_sound_var.get())
@@ -297,9 +306,10 @@ class SettingsDialog:
             "refresh_rate": self.refresh_var.get(),
             "opacity": self.opacity_var.get(),
             "always_on_top": self.always_on_top_var.get(),
+            "show_borders": self.show_borders_var.get(),
             "show_overlay_when_unavailable": self.show_overlay_unavailable_var.get(),
             "verbose_logging": self.verbose_var.get(),
-            "high_contrast": self.high_contrast_var.get(),
+            "theme_preset": self.theme_preset_var.get(),
             "alert_threshold": self.alert_threshold_var.get(),
             "change_detection_method": self.change_method_var.get(),
             "enable_sound": self.enable_sound_var.get(),
@@ -315,6 +325,19 @@ class SettingsDialog:
             "update_check_enabled": self.update_check_var.get(),
             "diagnostics_enabled": self.diagnostics_var.get(),
         }
+
+    def _on_live_theme_preview(self) -> None:
+        """Preview theme updates live while settings dialog is open."""
+        if not self.on_apply_callback:
+            return
+        try:
+            self.on_apply_callback(
+                {
+                    "theme_preset": self.theme_preset_var.get(),
+                }
+            )
+        except Exception as callback_error:
+            logger.debug(f"Live theme preview callback failed: {callback_error}")
 
     def _browse_sound(self) -> None:
         path = filedialog.askopenfilename(

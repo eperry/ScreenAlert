@@ -5,7 +5,7 @@ import platform
 
 # Application Information
 APP_NAME = "ScreenAlert"
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.0.2"
 APP_AUTHOR = "Ed Perry"
 APP_REPO_URL = "https://github.com/eperry/ScreenAlert"
 APP_RELEASE_API_URL = "https://api.github.com/repos/eperry/ScreenAlert/releases/latest"

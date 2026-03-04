@@ -124,6 +124,13 @@ class ThumbnailRenderer:
 
         for thumbnail in thumbnails_snapshot.values():
             thumbnail.set_active_border_threadsafe(False)
+
+    def refresh_thumbnail_titles(self) -> None:
+        """Refresh title-bar labels for all active thumbnails."""
+        with self.lock:
+            thumbnails_snapshot = list(self.thumbnails.values())
+        for thumbnail in thumbnails_snapshot:
+            thumbnail.refresh_title_threadsafe()
     
     def update_thumbnail_image(self, thumbnail_id: str, image: Image.Image) -> bool:
         """Update thumbnail display image"""
@@ -172,6 +179,12 @@ class ThumbnailRenderer:
         with self.lock:
             for thumbnail in self.thumbnails.values():
                 thumbnail.set_topmost(on_top)
+
+    def set_all_thumbnail_borders(self, show_borders: bool) -> None:
+        """Apply border visibility to all active thumbnail windows."""
+        with self.lock:
+            for thumbnail in self.thumbnails.values():
+                thumbnail.set_show_border(show_borders)
 
     def refresh_unavailable_thumbnails(self, show_when_unavailable: bool) -> None:
         """Refresh visibility for currently unavailable thumbnails."""
@@ -333,7 +346,7 @@ class ThumbnailWindow:
             # Custom title bar (hidden by default); placed as overlay so it never affects geometry
             self.title_bar = tk.Frame(self.container, bg='#2e2e2e', height=25)
             self.title_label = tk.Label(self.title_bar, 
-                                       text=self.config.get("window_title", "ScreenAlert")[:30],
+                                       text=self._build_overlay_title(),
                                        bg='#2e2e2e', fg='white', 
                                        font=('Segoe UI', 9))
             self.title_label.pack(side=tk.LEFT, padx=5)
@@ -403,6 +416,32 @@ class ThumbnailWindow:
         except Exception as e:
             logger.error(f"Error creating window: {e}", exc_info=True)
             self.window = None
+
+    def _build_overlay_title(self) -> str:
+        """Build title bar text including slot number when assigned."""
+        title = str(self.config.get("window_title", "ScreenAlert") or "ScreenAlert").strip()
+        slot_value = self.config.get("window_slot")
+        try:
+            slot_num = int(slot_value)
+        except (TypeError, ValueError):
+            slot_num = None
+
+        prefix = f"[{slot_num}] " if slot_num is not None and 1 <= slot_num <= 10 else ""
+        return f"{prefix}{title}"[:48]
+
+    def refresh_title_threadsafe(self) -> None:
+        """Refresh title-bar text on Tk thread."""
+        if not self.window:
+            return
+
+        def _apply() -> None:
+            if hasattr(self, 'title_label') and self.title_label:
+                self.title_label.config(text=self._build_overlay_title())
+
+        try:
+            self.window.after(0, _apply)
+        except Exception:
+            pass
 
     def _set_active_border(self, is_active: bool) -> None:
         """Show border only while this overlay window is active."""
@@ -622,6 +661,30 @@ class ThumbnailWindow:
                 self.window.attributes('-topmost', self.always_on_top)
             except:
                 pass
+
+    def set_show_border(self, enabled: bool) -> None:
+        """Update border visibility for this thumbnail window."""
+        self.show_border = bool(enabled)
+        if not self.window:
+            return
+
+        def _apply() -> None:
+            if not self.show_border:
+                try:
+                    if hasattr(self, 'container'):
+                        self.container.configure(bg='black')
+                    if hasattr(self, 'border_frame'):
+                        self.border_frame.configure(relief=tk.FLAT, bd=0)
+                        self.border_frame.pack_configure(padx=0, pady=0)
+                except Exception:
+                    pass
+                return
+            self._set_active_border(self._is_active_window)
+
+        try:
+            self.window.after(0, _apply)
+        except Exception:
+            pass
     
     def _on_mouse_enter(self, event) -> None:
         """Show title bar when mouse enters"""
