@@ -3,7 +3,6 @@
 import tkinter as tk
 from typing import Tuple, List, Callable, Optional
 import logging
-import win32api
 import win32gui
 
 logger = logging.getLogger(__name__)
@@ -27,19 +26,17 @@ class RegionSelectionOverlay:
         self.start_y = 0
         self.min_region_size = 50
         self.on_complete: Optional[Callable[[List[Tuple[int, int, int, int]]], None]] = None
-        
-        # Get the window's monitor
-        monitor_info = self._get_window_monitor()
-        monitor_x = monitor_info['left']
-        monitor_y = monitor_info['top']
-        monitor_width = monitor_info['right'] - monitor_info['left']
-        monitor_height = monitor_info['bottom'] - monitor_info['top']
-        self.monitor_x = monitor_x
-        self.monitor_y = monitor_y
-        self.monitor_width = monitor_width
-        self.monitor_height = monitor_height
-        
-        logger.info(f"Window on monitor: ({monitor_x}, {monitor_y}), size: {monitor_width}x{monitor_height}")
+
+        # Track the target window client rectangle in screen coordinates.
+        self.window_x, self.window_y, self.window_width, self.window_height = self._get_client_rect_screen()
+
+        logger.info(
+            "Region overlay target window: (%s, %s), size: %sx%s",
+            self.window_x,
+            self.window_y,
+            self.window_width,
+            self.window_height,
+        )
         
         # Create full-screen overlay on the same monitor as the window
         self.overlay = tk.Toplevel(parent_root)
@@ -47,32 +44,25 @@ class RegionSelectionOverlay:
         self.overlay.attributes('-topmost', True)
         self.overlay.overrideredirect(True)
         
-        # Position overlay on the target monitor
-        self.overlay.geometry(f"{monitor_width}x{monitor_height}+{monitor_x}+{monitor_y}")
+        # Position overlay exactly on top of the target app window.
+        self.overlay.geometry(
+            f"{self.window_width}x{self.window_height}+{self.window_x}+{self.window_y}"
+        )
         
         # Dark canvas (semi-transparent so target app remains visible)
         self.canvas = tk.Canvas(self.overlay, bg='#1a1a1a', highlightthickness=0)
         self.canvas.pack(fill=tk.BOTH, expand=True)
 
-        # Highlight the target window area
-        try:
-            rect = win32gui.GetWindowRect(self.window_hwnd)
-            rel_left = max(0, rect[0] - self.monitor_x)
-            rel_top = max(0, rect[1] - self.monitor_y)
-            rel_right = min(self.monitor_width, rect[2] - self.monitor_x)
-            rel_bottom = min(self.monitor_height, rect[3] - self.monitor_y)
-            if rel_right > rel_left and rel_bottom > rel_top:
-                self.canvas.create_rectangle(
-                    rel_left,
-                    rel_top,
-                    rel_right,
-                    rel_bottom,
-                    outline='#00d4ff',
-                    width=3,
-                    tags='target_window'
-                )
-        except Exception:
-            pass
+        # Draw a border around the selectable area (the app window itself).
+        self.canvas.create_rectangle(
+            1,
+            1,
+            self.window_width - 1,
+            self.window_height - 1,
+            outline='#00d4ff',
+            width=2,
+            tags='target_window'
+        )
         
         # Bind mouse events
         self.canvas.bind("<Button-1>", self._on_press)
@@ -83,9 +73,9 @@ class RegionSelectionOverlay:
         # Instructions text
         instruction_text = "Draw a region on the highlighted window. Selection auto-completes on mouse release."
         self.canvas.create_text(
-            monitor_width // 2,
+            self.window_width // 2,
             30,
-            text=instruction_text,
+            text="Draw a region inside this app window. Selection auto-completes on mouse release.",
             fill='#ffff00',
             font=('Arial', 14, 'bold')
         )
@@ -93,55 +83,44 @@ class RegionSelectionOverlay:
         # ESC hint text at bottom
         esc_text = "Press ESC to cancel without saving"
         self.canvas.create_text(
-            monitor_width // 2,
-            monitor_height - 30,
+            self.window_width // 2,
+            self.window_height - 30,
             text=esc_text,
             fill='#ffaa00',
             font=('Arial', 12)
         )
         
         logger.info("Region selection overlay created - draw region with mouse, auto-completes on release")
-    
-    def _get_window_monitor(self) -> dict:
-        """Get monitor info for the window
-        
-        Returns:
-            Dict with 'left', 'top', 'right', 'bottom' keys
-        """
+
+    def _get_client_rect_screen(self) -> Tuple[int, int, int, int]:
+        """Return target window client-area rect as (x, y, width, height) in screen coords."""
         try:
-            # Get window rect
+            client = win32gui.GetClientRect(self.window_hwnd)
+            if not client:
+                raise RuntimeError("GetClientRect returned empty")
+
+            top_left = win32gui.ClientToScreen(self.window_hwnd, (0, 0))
+            bottom_right = win32gui.ClientToScreen(self.window_hwnd, (client[2], client[3]))
+
+            x = int(top_left[0])
+            y = int(top_left[1])
+            width = max(1, int(bottom_right[0] - top_left[0]))
+            height = max(1, int(bottom_right[1] - top_left[1]))
+            return x, y, width, height
+        except Exception as error:
+            logger.warning("Falling back to window rect for region overlay: %s", error)
             rect = win32gui.GetWindowRect(self.window_hwnd)
-            window_center_x = (rect[0] + rect[2]) // 2
-            window_center_y = (rect[1] + rect[3]) // 2
-            
-            # Get monitor handle at that point
-            monitor_handle = win32api.MonitorFromPoint((window_center_x, window_center_y))
-            
-            # Get monitor info
-            monitor_info = win32api.GetMonitorInfo(monitor_handle)
-            work_area = monitor_info['Work']
-            
-            return {
-                'left': work_area[0],
-                'top': work_area[1],
-                'right': work_area[2],
-                'bottom': work_area[3]
-            }
-        except Exception as e:
-            logger.warning(f"Error getting monitor info, using primary: {e}")
-            # Fallback to screen dimensions
-            return {
-                'left': 0,
-                'top': 0,
-                'right': tk.Tk().winfo_screenwidth(),
-                'bottom': tk.Tk().winfo_screenheight()
-            }
+            x = int(rect[0])
+            y = int(rect[1])
+            width = max(1, int(rect[2] - rect[0]))
+            height = max(1, int(rect[3] - rect[1]))
+            return x, y, width, height
     
     def _on_press(self, event: tk.Event) -> None:
         """Handle mouse press"""
         self.is_selecting = True
-        self.start_x = event.x_root
-        self.start_y = event.y_root
+        self.start_x = event.x
+        self.start_y = event.y
     
     def _on_drag(self, event: tk.Event) -> None:
         """Handle mouse drag - draw preview rectangle"""
@@ -150,12 +129,10 @@ class RegionSelectionOverlay:
         
         self.canvas.delete("preview_rect")
 
-        x_screen = min(self.start_x, event.x_root)
-        y_screen = min(self.start_y, event.y_root)
-        width = abs(event.x_root - self.start_x)
-        height = abs(event.y_root - self.start_y)
-        x = x_screen - self.monitor_x
-        y = y_screen - self.monitor_y
+        x = min(self.start_x, event.x)
+        y = min(self.start_y, event.y)
+        width = abs(event.x - self.start_x)
+        height = abs(event.y - self.start_y)
         
         if width > 0 and height > 0:
             self.canvas.create_rectangle(
@@ -168,7 +145,7 @@ class RegionSelectionOverlay:
             dim_text = f"{width}x{height}px"
             self.canvas.delete("dimension_text")
             self.canvas.create_text(
-                event.x_root - self.monitor_x + 10, event.y_root - self.monitor_y - 10,
+                event.x + 10, event.y - 10,
                 text=dim_text,
                 fill='#ffff00',
                 font=('Courier', 10, 'bold'),
@@ -183,14 +160,15 @@ class RegionSelectionOverlay:
         self.is_selecting = False
         self.canvas.delete("preview_rect", "dimension_text")
         
-        x = min(self.start_x, event.x_root)
-        y = min(self.start_y, event.y_root)
-        width = abs(event.x_root - self.start_x)
-        height = abs(event.y_root - self.start_y)
+        x = min(self.start_x, event.x)
+        y = min(self.start_y, event.y)
+        width = abs(event.x - self.start_x)
+        height = abs(event.y - self.start_y)
         
         # Only save if meets minimum size
         if width >= self.min_region_size and height >= self.min_region_size:
-            region = (x, y, width, height)
+            # Convert overlay-local coordinates back to screen coordinates.
+            region = (self.window_x + x, self.window_y + y, width, height)
             self.regions.append(region)
             logger.info(f"Added region: {region}, auto-completing selection")
             
@@ -200,8 +178,8 @@ class RegionSelectionOverlay:
             # Region too small, show message and continue
             self.canvas.delete("too_small_text")
             self.canvas.create_text(
-                event.x_root - self.monitor_x,
-                event.y_root - self.monitor_y - 30,
+                event.x,
+                event.y - 30,
                 text=f"Too small ({width}x{height}). Min: {self.min_region_size}x{self.min_region_size}",
                 fill='#ff4444',
                 font=('Arial', 11, 'bold'),

@@ -1437,15 +1437,28 @@ class ScreenAlertMainWindow:
         logger.info(f"Starting region selection for: {title} (id={thumbnail_id}, hwnd={hwnd})")
         
         try:
-            # Get the window's position on screen to convert coordinates
-            rect = win32gui.GetWindowRect(hwnd)
-            window_x = rect[0]
-            window_y = rect[1]
-            window_width = rect[2] - rect[0]
-            window_height = rect[3] - rect[1]
-            
-            logger.info(f"Window position: ({window_x}, {window_y}), size: {window_width}x{window_height}")
-            
+            def _get_client_rect_screen(target_hwnd: int) -> tuple[int, int, int, int]:
+                """Return client-area rect as (x, y, width, height) in screen coordinates."""
+                try:
+                    client = win32gui.GetClientRect(target_hwnd)
+                    if not client:
+                        raise RuntimeError("GetClientRect returned empty")
+                    top_left = win32gui.ClientToScreen(target_hwnd, (0, 0))
+                    bottom_right = win32gui.ClientToScreen(target_hwnd, (client[2], client[3]))
+                    x = int(top_left[0])
+                    y = int(top_left[1])
+                    width = max(1, int(bottom_right[0] - top_left[0]))
+                    height = max(1, int(bottom_right[1] - top_left[1]))
+                    return x, y, width, height
+                except Exception as error:
+                    logger.warning("Falling back to window rect for region conversion: %s", error)
+                    rect = win32gui.GetWindowRect(target_hwnd)
+                    x = int(rect[0])
+                    y = int(rect[1])
+                    width = max(1, int(rect[2] - rect[0]))
+                    height = max(1, int(rect[3] - rect[1]))
+                    return x, y, width, height
+
             # Activate the window (bring to front)
             self.window_manager.activate_window(hwnd)
 
@@ -1453,6 +1466,10 @@ class ScreenAlertMainWindow:
             self.root.iconify()
             self.root.update_idletasks()
             time.sleep(0.15)
+
+            # Get latest client-area position after activation for accurate conversion.
+            window_x, window_y, window_width, window_height = _get_client_rect_screen(hwnd)
+            logger.info(f"Window position: ({window_x}, {window_y}), size: {window_width}x{window_height}")
             
             # Show region selection overlay
             overlay = RegionSelectionOverlay(hwnd, self.root)
@@ -1464,6 +1481,9 @@ class ScreenAlertMainWindow:
             self.root.focus_force()
             
             if regions_screen:
+                # Position can shift during selection (focus/move), refresh once more.
+                window_x, window_y, window_width, window_height = _get_client_rect_screen(hwnd)
+
                 # Convert screen coordinates to window-relative coordinates
                 last_added_region_id = None
                 for i, (x, y, w, h) in enumerate(regions_screen):

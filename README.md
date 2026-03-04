@@ -1,10 +1,35 @@
-In Beta Testing,
+# ScreenAlert
 
-This is a tool for monitoring applications where you have to watch many different areas for changes on the screen. 
+ScreenAlert is a desktop monitoring tool for tracking visual changes in selected regions of application windows.
 
-Monitoring systems, Websites, etc
+It is designed for situations where you need quick visual awareness across multiple windows and multiple monitored zones.
 
-In conformance with application best practices, this tool does nothing to automate or initiate any functionality. It only observes, logs and reports. 
+ScreenAlert does not automate actions in target applications. It observes, compares, and reports.
+
+## Current Features
+
+- Multi-window monitoring with persistent window identity metadata.
+- Region-based change detection with configurable threshold and detection method.
+- Runtime controls for pause/resume, per-region enable/disable, and focus behavior.
+- Alerting pipeline with status visualization and configurable alert text.
+- Live thumbnail overlays with title/status, opacity, border, and topmost controls.
+- Theme presets (including high-contrast) with saved settings and runtime apply.
+- Region management from the main UI (add/remove/select) with active-region detail view.
+- Configuration persistence for app settings, windows, and monitored regions.
+
+## Screenshots
+
+Settings dialog
+
+![ScreenAlert Settings](docs/images/screenalert-settings.png)
+
+Window selection dialog
+
+![Select Window to Monitor](docs/images/select-window-dialog.png)
+
+Main dashboard with active region
+
+![Main Dashboard](docs/images/main-dashboard.png)
 
 ## 🚀 Building ScreenAlert
 
@@ -14,15 +39,6 @@ ScreenAlert uses **ACT (local GitHub Actions)** for consistent, reproducible bui
 .\run-github-actions.ps1
 ```
 
-This runs the complete build process in a containerized environment. Direct Windows builds are disabled to ensure consistency across all platforms.
+This runs the complete build process in a containerized environment.
 
 📖 See [BUILD.md](BUILD.md) for detailed build instructions.
-
-## Screenshots
-
-Window selection screen
-<img width="705" height="626" alt="image" src="https://github.com/user-attachments/assets/0a47a391-0581-4282-98c7-a1fad2cd80d2" />
-
-Main Screen - I choose something generic to perform a screenshot of
-
-<img width="1189" height="370" alt="image" src="https://github.com/user-attachments/assets/d7116df0-57d6-4ed6-b95f-e820fd54b380" />
