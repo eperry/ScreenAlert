@@ -31,6 +31,27 @@ Main dashboard with active region
 
 ![Main Dashboard](docs/images/main-dashboard.png)
 
+## Installation (Windows)
+
+Run the installer to create a virtual environment and install all dependencies:
+
+```bat
+install.bat
+```
+
+This will:
+- Detect your Python installation (3.9+ required)
+- Create a `.venv` virtual environment in the project directory
+- Install all required packages from `screenalert_requirements.txt`
+
+Once installed, launch the app with:
+
+```bat
+launch_ScreenAlert.bat
+```
+
+The launcher will automatically use the virtual environment.
+
 ## 🚀 Building ScreenAlert
 
 ScreenAlert uses **ACT (local GitHub Actions)** for consistent, reproducible builds:
