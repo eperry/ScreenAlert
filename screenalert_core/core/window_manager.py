@@ -158,15 +158,20 @@ class WindowManager:
             return (abs(window_size[0] - exp_size[0]) <= tolerance and
                     abs(window_size[1] - exp_size[1]) <= tolerance)
         
-        # Exact title + size match
+        # Exact title + size match (case-insensitive, trimmed)
+        title_norm = title.strip().lower() if isinstance(title, str) else title
         for window in windows:
-            if window['title'] == title:
+            try:
+                win_title_norm = str(window.get('title', '')).strip().lower()
+            except Exception:
+                win_title_norm = window.get('title')
+            if win_title_norm == title_norm:
                 if _size_matches(window['size'], expected_size, size_tolerance):
                     return window
         
         # Exact title, largest by area (when no expected_size)
         if expected_size is None:
-            exact_matches = [w for w in windows if w['title'] == title]
+            exact_matches = [w for w in windows if str(w.get('title','')).strip().lower() == title_norm]
             if exact_matches:
                 return max(exact_matches,
                            key=lambda w: w['size'][0] * w['size'][1])
@@ -174,7 +179,7 @@ class WindowManager:
         # Exact title without size validation (window may have resized)
         if not exact:
             for window in windows:
-                if window['title'] == title:
+                if str(window.get('title','')).strip().lower() == title_norm:
                     return window
         
         # Partial / fuzzy matching (only when not exact)
@@ -209,9 +214,10 @@ class WindowManager:
         windows = self.get_window_list(use_cache=False)
         results = []
         
-        # Try exact match first
+        # Try exact match first (case-insensitive, trimmed)
+        title_norm = title.strip().lower() if isinstance(title, str) else title
         for window in windows:
-            if window['title'] == title:
+            if str(window.get('title','')).strip().lower() == title_norm:
                 results.append(window)
         
         if results:
@@ -221,7 +227,7 @@ class WindowManager:
         if not exact:
             title_lower = title.lower()
             for window in windows:
-                if title_lower in window['title'].lower():
+                if title_lower in str(window.get('title','')).lower():
                     results.append(window)
         
         return results
@@ -258,8 +264,9 @@ class WindowManager:
             if filtered:
                 windows = filtered
         
-        # Exact matches
-        matching = [w for w in windows if w['title'] == title]
+        # Exact matches (case-insensitive, trimmed)
+        title_norm = title.strip().lower() if isinstance(title, str) else title
+        matching = [w for w in windows if str(w.get('title','')).strip().lower() == title_norm]
         
         # Partial matches as fallback
         if not matching:
