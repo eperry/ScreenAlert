@@ -1,7 +1,7 @@
 """Lightweight plugin hook registry for ScreenAlert."""
 
 import logging
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ class PluginHooks:
             del self._hooks[event_name]
         return True
 
-    def clear(self, event_name: str | None = None) -> None:
+    def clear(self, event_name: Optional[str] = None) -> None:
         """Clear callbacks for one event or all events."""
         if event_name is None:
             self._hooks.clear()

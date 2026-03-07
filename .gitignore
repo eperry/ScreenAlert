@@ -18,6 +18,9 @@ VENV/
 .vscode/
 .history/
 
+# Claude Code
+.claude/
+
 # OS files
 .DS_Store
 Thumbs.db

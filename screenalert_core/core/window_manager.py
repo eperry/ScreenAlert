@@ -1,6 +1,7 @@
 """Window management and capture"""
 
 import logging
+import threading
 from typing import List, Dict, Optional, Tuple
 import platform
 import time
@@ -24,6 +25,8 @@ class WindowManager:
         self.window_cache = {}
         self.cache_time = 0
         self.cache_lifetime = 2.0  # seconds
+        self._capture_threads: Dict[int, threading.Thread] = {}
+        self._capture_lock = threading.Lock()
     
     def get_window_list(self, use_cache=True) -> List[Dict]:
         """Get list of all visible windows
@@ -669,10 +672,19 @@ class WindowManager:
         Returns:
             PIL Image or None if capture failed
         """
+        # If a capture thread for this hwnd is still running (PrintWindow stalled),
+        # skip spawning another one to avoid unbounded thread accumulation.
+        with self._capture_lock:
+            existing = self._capture_threads.get(hwnd)
+            if existing is not None and existing.is_alive():
+                logger.debug(f"Capture still in-flight for hwnd={hwnd}, skipping")
+                return None
+            # Clean up any completed threads
+            self._capture_threads = {h: t for h, t in self._capture_threads.items() if t.is_alive()}
+
         # Run the capture in a worker thread with a timeout to avoid hangs
         try:
             from PIL import Image
-            import threading
 
             result_container = {"img": None, "error": None}
 
@@ -745,6 +757,8 @@ class WindowManager:
                     out["error"] = str(exc)
 
             thread = threading.Thread(target=_worker_capture, args=(hwnd, result_container), daemon=True)
+            with self._capture_lock:
+                self._capture_threads[hwnd] = thread
             thread.start()
 
             # Timeout: avoid blocking main loop; 2s is conservative for PrintWindow
@@ -752,6 +766,9 @@ class WindowManager:
             if thread.is_alive():
                 logger.warning(f"Timed out capturing window {hwnd}; capture thread still running")
                 return None
+
+            with self._capture_lock:
+                self._capture_threads.pop(hwnd, None)
 
             if result_container.get("img"):
                 return result_container.get("img")
