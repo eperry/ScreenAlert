@@ -662,76 +662,98 @@ class WindowManager:
         Returns:
             PIL Image or None if capture failed
         """
+        # Run the capture in a worker thread with a timeout to avoid hangs
         try:
             from PIL import Image
-            
-            # Validate window
-            if not self.is_window_valid(hwnd):
-                logger.debug(f"Window {hwnd} is not valid")
+            import threading
+
+            result_container = {"img": None, "error": None}
+
+            def _worker_capture(target_hwnd: int, out: dict) -> None:
+                try:
+                    if not self.is_window_valid(target_hwnd):
+                        out["error"] = f"Window {target_hwnd} is not valid"
+                        return
+
+                    rect = self.get_window_rect(target_hwnd)
+                    if not rect:
+                        out["error"] = f"Could not get rect for window {target_hwnd}"
+                        return
+
+                    width = rect[2] - rect[0]
+                    height = rect[3] - rect[1]
+                    if width <= 0 or height <= 0:
+                        out["error"] = f"Invalid window size: {width}x{height}"
+                        return
+
+                    hwndDC = win32gui.GetWindowDC(target_hwnd)
+                    mfcDC = win32ui.CreateDCFromHandle(hwndDC)
+                    saveDC = mfcDC.CreateCompatibleDC()
+
+                    saveBitMap = win32ui.CreateBitmap()
+                    saveBitMap.CreateCompatibleBitmap(mfcDC, width, height)
+                    saveDC.SelectObject(saveBitMap)
+
+                    # PrintWindow can block in some drivers; still run in thread
+                    result = windll.user32.PrintWindow(target_hwnd, saveDC.GetSafeHdc(), 3)
+                    if not result:
+                        out["error"] = f"PrintWindow failed for {target_hwnd}"
+                        try:
+                            saveDC.DeleteDC()
+                            mfcDC.DeleteDC()
+                            win32gui.ReleaseDC(target_hwnd, hwndDC)
+                        except Exception:
+                            pass
+                        return
+
+                    bmpinfo = saveBitMap.GetInfo()
+                    bmpstr = saveBitMap.GetBitmapBits(True)
+
+                    bwidth = bmpinfo.get('bmWidth', width)
+                    bheight = bmpinfo.get('bmHeight', height)
+                    bits_per_pixel = bmpinfo.get('bmBitsPixel', 32)
+
+                    try:
+                        if bits_per_pixel == 32:
+                            img = Image.frombuffer('RGB', (bwidth, bheight), bmpstr,
+                                                  'raw', 'BGRX', 0, 1)
+                        else:
+                            stride = ((bwidth * 3 + 3) // 4) * 4
+                            img = Image.frombytes('RGB', (bwidth, bheight), bmpstr,
+                                                  'raw', 'BGR', stride, -1)
+                        out["img"] = img
+                    except Exception as ie:
+                        out["error"] = f"PIL conversion failed: {ie}"
+
+                    # Cleanup GDI objects
+                    try:
+                        win32gui.DeleteObject(saveBitMap.GetHandle())
+                        saveDC.DeleteDC()
+                        mfcDC.DeleteDC()
+                        win32gui.ReleaseDC(target_hwnd, hwndDC)
+                    except Exception:
+                        pass
+
+                except Exception as exc:
+                    out["error"] = str(exc)
+
+            thread = threading.Thread(target=_worker_capture, args=(hwnd, result_container), daemon=True)
+            thread.start()
+
+            # Timeout: avoid blocking main loop; 2s is conservative for PrintWindow
+            thread.join(2.0)
+            if thread.is_alive():
+                logger.warning(f"Timed out capturing window {hwnd}; capture thread still running")
                 return None
-            
-            # Get window rect
-            rect = self.get_window_rect(hwnd)
-            if not rect:
-                logger.debug(f"Could not get rect for window {hwnd}")
-                return None
-            
-            width = rect[2] - rect[0]
-            height = rect[3] - rect[1]
-            
-            if width <= 0 or height <= 0:
-                logger.debug(f"Invalid window size: {width}x{height}")
-                return None
-            
-            # Get device contexts
-            hwndDC = win32gui.GetWindowDC(hwnd)
-            mfcDC = win32ui.CreateDCFromHandle(hwndDC)
-            saveDC = mfcDC.CreateCompatibleDC()
-            
-            # Create bitmap
-            saveBitMap = win32ui.CreateBitmap()
-            saveBitMap.CreateCompatibleBitmap(mfcDC, width, height)
-            saveDC.SelectObject(saveBitMap)
-            
-            # Capture using PrintWindow
-            result = windll.user32.PrintWindow(hwnd, saveDC.GetSafeHdc(), 3)
-            
-            if not result:
-                logger.debug(f"PrintWindow failed for {hwnd}")
-                saveDC.DeleteDC()
-                mfcDC.DeleteDC()
-                win32gui.ReleaseDC(hwnd, hwndDC)
-                return None
-            
-            # Convert to PIL Image
-            bmpinfo = saveBitMap.GetInfo()
-            bmpstr = saveBitMap.GetBitmapBits(True)
-            
-            width = bmpinfo['bmWidth']
-            height = bmpinfo['bmHeight']
-            bits_per_pixel = bmpinfo.get('bmBitsPixel', 32)
-            
-            logger.debug(f"Bitmap info: {width}x{height}, {bits_per_pixel} bpp")
-            
-            # Handle based on bits per pixel
-            if bits_per_pixel == 32:
-                # 32-bit bitmap (BGRA or BGRX)
-                img = Image.frombuffer('RGB', (width, height), bmpstr, 
-                                      'raw', 'BGRX', 0, 1)
-            else:
-                # 24-bit bitmap with padding
-                stride = ((width * 3 + 3) // 4) * 4
-                img = Image.frombytes('RGB', (width, height), bmpstr, 
-                                     'raw', 'BGR', stride, -1)
-            
-            # Cleanup
-            win32gui.DeleteObject(saveBitMap.GetHandle())
-            saveDC.DeleteDC()
-            mfcDC.DeleteDC()
-            win32gui.ReleaseDC(hwnd, hwndDC)
-            
-            return img
-        
+
+            if result_container.get("img"):
+                return result_container.get("img")
+
+            # Log error reason if available
+            if result_container.get("error"):
+                logger.debug(f"Capture error for {hwnd}: {result_container.get('error')}")
+            return None
+
         except Exception as e:
             logger.debug(f"Error capturing window {hwnd}: {e}")
             return None
