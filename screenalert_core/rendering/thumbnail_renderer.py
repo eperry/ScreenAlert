@@ -32,7 +32,6 @@ class ThumbnailRenderer:
         self.manager_callback = manager_callback
         self.parent_root = parent_root
         self.running = False
-        self.render_thread: Optional[threading.Thread] = None
         self.lock = threading.Lock()
         self._active_thumbnail_id: Optional[str] = None
         logger.info("Thumbnail renderer initialized")
@@ -141,57 +140,33 @@ class ThumbnailRenderer:
             self.thumbnails[thumbnail_id].set_image(image)
             return True
     
-    def update_thumbnail_position(self, thumbnail_id: str, x: int, y: int) -> bool:
-        """Update thumbnail position"""
-        with self.lock:
-            if thumbnail_id not in self.thumbnails:
-                return False
-            
-            self.thumbnails[thumbnail_id].set_position(x, y)
-            return True
-    
-    def update_thumbnail_size(self, thumbnail_id: str, width: int, height: int) -> bool:
-        """Update thumbnail size"""
-        with self.lock:
-            if thumbnail_id not in self.thumbnails:
-                return False
-            
-            self.thumbnails[thumbnail_id].set_size(width, height)
-            return True
-    
-    def update_thumbnail_opacity(self, thumbnail_id: str, opacity: float) -> bool:
-        """Update thumbnail opacity"""
-        with self.lock:
-            if thumbnail_id not in self.thumbnails:
-                return False
-            
-            self.thumbnails[thumbnail_id].set_opacity(opacity)
-            return True
-
     def set_all_thumbnail_opacity(self, opacity: float) -> None:
         """Apply opacity to all active thumbnail windows."""
         with self.lock:
-            for thumbnail in self.thumbnails.values():
-                thumbnail.set_opacity(opacity)
+            thumbnails = list(self.thumbnails.values())
+        for thumbnail in thumbnails:
+            thumbnail.set_opacity(opacity)
 
     def set_all_thumbnail_topmost(self, on_top: bool) -> None:
         """Apply topmost flag to all active thumbnail windows."""
         with self.lock:
-            for thumbnail in self.thumbnails.values():
-                thumbnail.set_topmost(on_top)
+            thumbnails = list(self.thumbnails.values())
+        for thumbnail in thumbnails:
+            thumbnail.set_topmost(on_top)
 
     def set_all_thumbnail_borders(self, show_borders: bool) -> None:
         """Apply border visibility to all active thumbnail windows."""
         with self.lock:
-            for thumbnail in self.thumbnails.values():
-                thumbnail.set_show_border(show_borders)
+            thumbnails = list(self.thumbnails.values())
+        for thumbnail in thumbnails:
+            thumbnail.set_show_border(show_borders)
 
     def refresh_unavailable_thumbnails(self, show_when_unavailable: bool) -> None:
         """Refresh visibility for currently unavailable thumbnails."""
         with self.lock:
-            for thumbnail in self.thumbnails.values():
-                if not thumbnail._is_available:
-                    thumbnail.set_availability(False, show_when_unavailable)
+            unavailable = [t for t in self.thumbnails.values() if not t._is_available]
+        for thumbnail in unavailable:
+            thumbnail.set_availability(False, show_when_unavailable)
     
     def get_thumbnail(self, thumbnail_id: str) -> Optional['ThumbnailWindow']:
         """Get thumbnail window object"""
@@ -221,67 +196,59 @@ class ThumbnailRenderer:
     def set_thumbnail_availability(self, thumbnail_id: str, available: bool,
                                    show_when_unavailable: bool = False) -> bool:
         """Set thumbnail availability state for unavailable-window handling."""
+        # Extract reference under the lock, then call outside it.
+        # set_availability → window.after() needs the Tcl interpreter lock,
+        # which the main thread holds while processing callbacks.  If we hold
+        # self.lock here, the main thread (waiting for self.lock) can never
+        # return to mainloop to release the Tcl lock → deadlock.
         with self.lock:
-            if thumbnail_id not in self.thumbnails:
+            thumbnail = self.thumbnails.get(thumbnail_id)
+            if thumbnail is None:
                 return False
-            self.thumbnails[thumbnail_id].set_availability(
-                available=available,
-                show_when_unavailable=show_when_unavailable,
-            )
-            return True
+        thumbnail.set_availability(
+            available=available,
+            show_when_unavailable=show_when_unavailable,
+        )
+        return True
 
     def set_thumbnail_user_visibility(self, thumbnail_id: str, visible: bool) -> bool:
         """Show or hide a thumbnail window based on user action."""
         with self.lock:
-            if thumbnail_id not in self.thumbnails:
+            thumbnail = self.thumbnails.get(thumbnail_id)
+            if thumbnail is None:
                 return False
-            self.thumbnails[thumbnail_id].set_user_visibility(bool(visible))
-            return True
+        thumbnail.set_user_visibility(bool(visible))
+        return True
 
     def set_all_thumbnail_user_visibility(self, visible: bool) -> None:
         """Apply user-requested visibility to all thumbnail windows."""
         with self.lock:
-            for thumbnail in self.thumbnails.values():
-                thumbnail.set_user_visibility(bool(visible))
+            thumbnails = list(self.thumbnails.values())
+        for thumbnail in thumbnails:
+            thumbnail.set_user_visibility(bool(visible))
     
     def start(self) -> None:
-        """Start render loop"""
+        """Start renderer"""
         if self.running:
             return
-        
         self.running = True
-        self.render_thread = threading.Thread(target=self._render_loop, daemon=True)
-        self.render_thread.start()
         logger.info("Thumbnail renderer started")
-    
+
     def stop(self) -> None:
-        """Stop render loop"""
+        """Stop renderer and clean up all thumbnails"""
         self.running = False
-        if self.render_thread:
-            self.render_thread.join(timeout=2.0)
-        
+
         # Cleanup all thumbnails
         with self.lock:
             for thumbnail in self.thumbnails.values():
                 try:
                     thumbnail.cleanup()
-                except:
+                except Exception:
                     pass
             self.thumbnails.clear()
-        
+
         logger.info("Thumbnail renderer stopped")
-    
-    def _render_loop(self) -> None:
-        """Main render loop (runs in separate thread) - can be simplified"""
-        try:
-            while self.running:
-                # Image queue processing now happens on main thread via window.after()
-                # This loop just keeps the renderer thread alive
-                time.sleep(0.1)
-        
-        except Exception as e:
-            logger.error(f"Error in render loop: {e}", exc_info=True)
-    
+
     def is_running(self) -> bool:
         """Check if renderer is running"""
         return self.running
@@ -343,6 +310,12 @@ class ThumbnailWindow:
         # Thread-safe queue for image updates from worker threads
         self.image_queue: queue.Queue = queue.Queue(maxsize=1)
         
+        # Worker queue + thread: accept raw PIL images from engine/worker threads,
+        # perform resizing off the engine thread, then enqueue resized images
+        # onto `image_queue` for main-thread PhotoImage conversion and display.
+        self._raw_image_queue: queue.Queue = queue.Queue(maxsize=2)
+        self._worker_stop_event = threading.Event()
+        self._image_worker_thread: Optional[threading.Thread] = None
         # Create tkinter window
         self._create_window()
     
@@ -434,6 +407,13 @@ class ThumbnailWindow:
             # Schedule periodic queue processing (use after to ensure window is fully initialized)
             self.window.after(50, self._process_image_queue)
             
+            # Start worker thread after window created
+            try:
+                self._image_worker_thread = threading.Thread(target=self._image_worker, daemon=True)
+                self._image_worker_thread.start()
+            except Exception:
+                logger.exception(f"[{self.thumbnail_id}] Failed to start image worker thread")
+
             logger.debug(f"Created window for thumbnail {self.thumbnail_id}")
         
         except Exception as e:
@@ -521,10 +501,11 @@ class ThumbnailWindow:
         if not self.window:
             return
         try:
+            # Defer tkinter calls to the main thread; window.after() is thread-safe.
             if self._is_user_hidden:
-                self.window.withdraw()
+                self.window.after(0, self.window.withdraw)
             else:
-                self._apply_availability_state()
+                self.window.after(0, self._apply_availability_state)
         except Exception:
             pass
 
@@ -553,17 +534,16 @@ class ThumbnailWindow:
             # Non-blocking check for new images
             try:
                 pil_image = self.image_queue.get_nowait()
-                logger.info(f"[{self.thumbnail_id}] DEQUEUE: image size {pil_image.size}")
-                
+                logger.debug(f"[{self.thumbnail_id}] DEQUEUE: image size {pil_image.size}")
+
                 # Convert and display on main thread
                 photo = ImageTk.PhotoImage(pil_image)
-                logger.info(f"[{self.thumbnail_id}] PHOTOIMAGE: created {photo}")
-                
+
                 if hasattr(self, 'label') and self.label:
                     self.label.config(image=photo)
                     self.label.image = photo
                     self.photo_image = photo
-                    logger.info(f"[{self.thumbnail_id}] DISPLAY_UPDATE: image displayed (label={self.label})")
+                    logger.debug(f"[{self.thumbnail_id}] DISPLAY_UPDATE: image displayed")
                 else:
                     logger.error(f"[{self.thumbnail_id}] DISPLAY_ERROR: No label to update (hasattr={hasattr(self, 'label')})")
             except queue.Empty:
@@ -586,39 +566,118 @@ class ThumbnailWindow:
     def set_image(self, pil_image: Image.Image) -> None:
         """Update displayed image (thread-safe)"""
         try:
+            # Store latest raw image and hand off to worker thread for resizing.
             self.current_image = pil_image
-            logger.info(f"[{self.thumbnail_id}] SET_IMAGE: received image size {pil_image.size}")
-            
-            # Resize to fit thumbnail
-            resized = ImageProcessor.resize_image(
-                pil_image, self.width, self.height, 
-                maintain_aspect=True
-            )
-            logger.info(f"[{self.thumbnail_id}] SET_IMAGE: resized to {resized.size}")
-            
-            # Put in queue for main thread to process
-            # Drop old image if queue is full (non-blocking)
+            logger.debug(f"[{self.thumbnail_id}] SET_IMAGE: received image size {pil_image.size}")
+
+            # Place into raw queue for worker to resize (non-blocking).
             try:
-                self.image_queue.put_nowait(resized)
-                qsize = self.image_queue.qsize()
-                logger.info(f"[{self.thumbnail_id}] QUEUED: queue size now {qsize}")
+                self._raw_image_queue.put_nowait(pil_image)
+                logger.debug(f"[{self.thumbnail_id}] RAW_QUEUED: raw queue size {self._raw_image_queue.qsize()}")
             except queue.Full:
-                # Queue full, try to remove old one and add new
-                logger.debug(f"[{self.thumbnail_id}] Queue full, dropping old image")
+                # If raw queue full, drop the oldest and push new image.
+                logger.debug(f"[{self.thumbnail_id}] Raw queue full, dropping oldest")
                 try:
-                    self.image_queue.get_nowait()
-                    self.image_queue.put_nowait(resized)
+                    self._raw_image_queue.get_nowait()
                 except queue.Empty:
-                    self.image_queue.put_nowait(resized)
+                    pass
+                try:
+                    self._raw_image_queue.put_nowait(pil_image)
+                except Exception:
+                    logger.exception(f"[{self.thumbnail_id}] Failed to enqueue raw image after dropping")
         
         except Exception as e:
             logger.error(f"[{self.thumbnail_id}] SET_IMAGE ERROR: {e}", exc_info=True)
+
+    def _image_worker(self) -> None:
+        """Background worker that resizes raw images and enqueues them for main-thread display."""
+        try:
+            while not self._worker_stop_event.is_set():
+                try:
+                    raw = self._raw_image_queue.get(timeout=0.25)
+                except queue.Empty:
+                    continue
+
+                try:
+                    # Resize off-engine/main threads
+                    resized = ImageProcessor.resize_image(raw, self.width, self.height, maintain_aspect=True)
+                    logger.debug(f"[{self.thumbnail_id}] WORKER_RESIZED: resized to {resized.size}")
+
+                    # Enqueue resized image for main thread display (drop if full)
+                    try:
+                        self.image_queue.put_nowait(resized)
+                        logger.debug(f"[{self.thumbnail_id}] WORKER_QUEUED: image_queue size {self.image_queue.qsize()}")
+                    except queue.Full:
+                        logger.debug(f"[{self.thumbnail_id}] image_queue full, dropping oldest")
+                        try:
+                            self.image_queue.get_nowait()
+                        except queue.Empty:
+                            pass
+                        try:
+                            self.image_queue.put_nowait(resized)
+                        except Exception:
+                            logger.exception(f"[{self.thumbnail_id}] Failed to enqueue resized image")
+
+                except Exception:
+                    logger.exception(f"[{self.thumbnail_id}] Error resizing image in worker")
+                finally:
+                    try:
+                        self._raw_image_queue.task_done()
+                    except Exception:
+                        pass
+
+        except Exception:
+            logger.exception(f"[{self.thumbnail_id}] Image worker exiting due to error")
+
+    def cleanup(self) -> None:
+        """Cleanup worker, queues and destroy window."""
+        try:
+            # Stop worker thread
+            try:
+                self._worker_stop_event.set()
+            except Exception:
+                pass
+
+            if self._image_worker_thread:
+                try:
+                    self._image_worker_thread.join(timeout=1.0)
+                except Exception:
+                    pass
+
+            # Clear queues
+            try:
+                while True:
+                    self._raw_image_queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                while True:
+                    self.image_queue.get_nowait()
+            except queue.Empty:
+                pass
+
+            # Destroy window on main thread if possible
+            if hasattr(self, 'window') and self.window:
+                try:
+                    # Use after to ensure safe destruction on Tk thread
+                    try:
+                        self.window.after(0, self.window.destroy)
+                    except Exception:
+                        self.window.destroy()
+                except Exception:
+                    pass
+
+        except Exception:
+            logger.exception(f"[{self.thumbnail_id}] cleanup failed")
 
     def set_availability(self, available: bool, show_when_unavailable: bool = False) -> None:
         """Set availability state and update overlay presentation."""
         self._is_available = bool(available)
         self._show_when_unavailable = bool(show_when_unavailable)
-        self._apply_availability_state()
+        # Defer tkinter calls to the main thread (this method is called from
+        # non-main threads, e.g. _main_loop).  window.after() is thread-safe.
+        if self.window:
+            self.window.after(0, self._apply_availability_state)
 
     def _clear_image_queue(self) -> None:
         """Clear pending image queue to prevent stale frames."""
@@ -708,8 +767,8 @@ class ThumbnailWindow:
         self.opacity = max(0.2, min(opacity, 1.0))
         if self.window:
             try:
-                self.window.attributes('-alpha', self.opacity)
-            except:
+                self.window.after(0, lambda v=self.opacity: self.window and self.window.attributes('-alpha', v))
+            except Exception:
                 pass
 
     def set_topmost(self, on_top: bool) -> None:
@@ -717,8 +776,8 @@ class ThumbnailWindow:
         self.always_on_top = bool(on_top)
         if self.window:
             try:
-                self.window.attributes('-topmost', self.always_on_top)
-            except:
+                self.window.after(0, lambda v=self.always_on_top: self.window and self.window.attributes('-topmost', v))
+            except Exception:
                 pass
 
     def set_show_border(self, enabled: bool) -> None:
@@ -919,10 +978,3 @@ class ThumbnailWindow:
                 self.interaction_state = "idle"
             return
     
-    def cleanup(self) -> None:
-        """Clean up resources"""
-        try:
-            if self.window:
-                self.window.destroy()
-        except:
-            pass
