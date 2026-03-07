@@ -1,4 +1,4 @@
-# EPerry's Screen Alert System
+# EPerry's Screen Alert Management System
 
 ScreenAlert is a Windows desktop monitoring tool that watches selected regions of application windows for visual changes and alerts you in real time. It is built for situations where you need to track activity across multiple windows simultaneously — without automating or interacting with those windows.
 
