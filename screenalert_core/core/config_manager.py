@@ -120,7 +120,21 @@ class ConfigManager:
 
         data_loaded = self._load_json_file(self.window_region_config_path)
         if data_loaded and isinstance(data_loaded.get("thumbnails"), list):
-            result["thumbnails"] = data_loaded["thumbnails"]
+            # Normalize and dedupe thumbnails by window title (case-insensitive, trimmed)
+            seen = set()
+            deduped = []
+            for thumb in data_loaded["thumbnails"]:
+                title = str(thumb.get("window_title", "") or "").strip().lower()
+                if not title:
+                    deduped.append(thumb)
+                    continue
+                if title in seen:
+                    logger.warning(f"Duplicate thumbnail title in config ignored: {thumb.get('window_title')} (id={thumb.get('id')})")
+                    continue
+                seen.add(title)
+                deduped.append(thumb)
+
+            result["thumbnails"] = deduped
             logger.info(f"Loaded window/region config from {self.window_region_config_path}")
         else:
             logger.info(f"Window/region config not found, using defaults at {self.window_region_config_path}")
@@ -401,6 +415,13 @@ class ConfigManager:
         Returns:
             Thumbnail ID
         """
+        # Normalize title and prevent duplicate titles (case-insensitive)
+        normalized_title = str(window_title or "").strip()
+        for t in self._config.get("thumbnails", []):
+            if str(t.get("window_title", "")).strip().lower() == normalized_title.lower():
+                logger.warning(f"Thumbnail with title already exists, returning existing id: {t.get('id')} ({normalized_title})")
+                return t.get("id")
+
         thumbnail_id = generate_uuid()
         
         position = position or {"x": 0, "y": 0, "monitor": 0}
@@ -408,7 +429,7 @@ class ConfigManager:
         
         thumbnail = {
             "id": thumbnail_id,
-            "window_title": window_title,
+            "window_title": normalized_title,
             "window_hwnd": window_hwnd,
             "window_slot": None,
             "window_class": window_class or "",
@@ -444,7 +465,17 @@ class ConfigManager:
         if not thumbnail:
             logger.warning(f"Thumbnail not found: {thumbnail_id}")
             return False
-        
+        # If updating title, normalize and prevent duplicates
+        if "window_title" in updates:
+            new_title = str(updates.get("window_title") or "").strip()
+            for t in self._config.get("thumbnails", []):
+                if t.get("id") == thumbnail_id:
+                    continue
+                if str(t.get("window_title", "")).strip().lower() == new_title.lower():
+                    logger.warning(f"Rejecting update: another thumbnail already uses title '{new_title}'")
+                    return False
+            updates["window_title"] = new_title
+
         thumbnail.update(updates)
         logger.info(f"Updated thumbnail: {thumbnail_id}")
         return True
