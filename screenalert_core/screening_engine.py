@@ -592,8 +592,8 @@ class ScreenAlertEngine:
             
             with self.lock:
                 self.config.update_thumbnail(thumbnail_id, updates)
-                self.config.save()
-            
+            self.config.save()
+
             return new_window
         
         logger.warning(f"[{thumbnail_id}] Reconnection failed for '{window_title}'")
@@ -1024,9 +1024,9 @@ class ScreenAlertEngine:
             # User closed overview window: hide overlay only, keep monitoring active.
             with self.lock:
                 self.config.update_thumbnail(thumbnail_id, {"overview_visible": False})
-                self.config.save()
+            self.config.save()
             self.renderer.set_thumbnail_user_visibility(thumbnail_id, False)
-        
+
         elif action == "position_changed":
             thumbnail = self.config.get_thumbnail(thumbnail_id)
             if not thumbnail:
@@ -1037,8 +1037,8 @@ class ScreenAlertEngine:
             y = int(payload.get("y", position.get("y", 0)))
             with self.lock:
                 self.config.update_thumbnail_position(thumbnail_id, x, y, monitor)
-                self.config.save()
-        
+            self.config.save()
+
         elif action == "size_changed":
             thumbnail = self.config.get_thumbnail(thumbnail_id)
             if not thumbnail:
@@ -1048,7 +1048,7 @@ class ScreenAlertEngine:
             height = int(payload.get("height", size.get("height", 240)))
             with self.lock:
                 self.config.update_thumbnail_size(thumbnail_id, width, height)
-                self.config.save()
+            self.config.save()
 
         elif action == "bulk_geometry_changed":
             geometries = payload.get("geometries", {})
@@ -1069,7 +1069,7 @@ class ScreenAlertEngine:
                     height = int(geometry.get("height", thumbnail.get("size", {}).get("height", 240)))
                     self.config.update_thumbnail_position(target_id, x, y, monitor)
                     self.config.update_thumbnail_size(target_id, width, height)
-                self.config.save()
+            self.config.save()
     
     def is_running(self) -> bool:
         """Check if engine is running"""

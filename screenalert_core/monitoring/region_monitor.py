@@ -180,10 +180,10 @@ class RegionMonitor:
 
         elif self._state == STATE_WARNING:
             if has_change:
-                # New change during warning – re-enter alert
+                # New change during warning – re-enter alert, but no new sound.
+                # Sound only fires on OK → ALERT; the user was already notified.
                 self._state = STATE_ALERT
                 self._alert_start_time = now
-                should_play_sound = True
             else:
                 if (now - self._warning_start_time) >= alert_hold_seconds:
                     self._state = STATE_OK
