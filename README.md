@@ -58,9 +58,11 @@ The launcher automatically uses the virtual environment and starts the app in th
 - Draw one or more rectangular monitoring regions on any watched window using a visual drag-to-select editor
 - Regions can be moved and resized after creation using drag handles
 - Each region is monitored independently with its own settings
-- Two detection methods available:
+- Four detection methods available (configurable globally and per-region):
   - **SSIM** (Structural Similarity Index) — sensitive to subtle pixel-level changes
   - **pHash** (Perceptual Hash) — robust to minor rendering differences
+  - **Edge Detection** (Canny) — compares edge outlines; ignores color and gradient shifts
+  - **Background Subtraction** (MOG2) — learns the background over time; detects new foreground activity
 - Configurable alert threshold per region (0.10–1.00, default 0.99)
 - Configurable refresh rate (300–5000ms, default 1000ms)
 
@@ -195,7 +197,8 @@ ScreenAlert/
     │   ├── config_manager.py    # Settings persistence
     │   ├── window_manager.py    # Windows API integration
     │   ├── cache_manager.py     # Image capture cache
-    │   └── image_processor.py   # SSIM / pHash processing
+    │   ├── image_processor.py   # Image cropping and comparison
+    │   └── change_detectors.py  # Modular detection framework
     ├── monitoring/
     │   ├── region_monitor.py    # Per-region state machine
     │   └── alert_system.py      # TTS and sound alerts
@@ -204,7 +207,8 @@ ScreenAlert/
     │   └── overlay_adapter.py   # Overlay lifecycle management
     ├── ui/
     │   ├── main_window.py       # Main control window
-    │   ├── settings_dialog.py   # Settings UI
+    │   ├── settings_dialog.py   # Settings UI (regedit-style)
+    │   ├── region_detection_dialog.py  # Per-region detection settings
     │   ├── window_selector_dialog.py
     │   ├── region_editor_dialog.py
     │   ├── region_selection_overlay.py
@@ -216,6 +220,53 @@ ScreenAlert/
         ├── plugin_hooks.py      # Plugin event registry
         └── update_checker.py    # GitHub release checker
 ```
+
+---
+
+## Detection Methods
+
+ScreenAlert supports four change detection algorithms. Each can be set as the global default or overridden per region.
+
+### SSIM (Structural Similarity)
+
+Compares luminance, contrast, and structure between frames. Produces a similarity score from 0.0 (completely different) to 1.0 (identical). An alert fires when the score drops below the configured threshold.
+
+**Best for:** General-purpose monitoring where you need accurate, pixel-aware change detection. Works well for dashboards, chat windows, and static UIs.
+
+**Key parameter:** Alert Threshold (default 0.99). Lower values reduce sensitivity.
+
+### pHash (Perceptual Hash)
+
+Computes a compact visual fingerprint of each frame and compares them. More tolerant of minor rendering differences (anti-aliasing, subpixel shifts) than SSIM.
+
+**Best for:** Monitoring windows where minor rendering jitter causes false positives with SSIM. Good for web content and applications with slight frame-to-frame variation.
+
+**Key parameter:** Alert Threshold (default 0.99). Lower values reduce sensitivity.
+
+### Edge Detection (Canny)
+
+Detects edges (outlines) in each frame using the Canny algorithm and compares the edge maps. Only structural changes in outlines trigger alerts — color shifts, gradient animations, and brightness changes are ignored.
+
+**Best for:** Game UIs and applications with animated or dynamic backgrounds where you only care about text or UI element changes. Enable **Binarize (B&W)** to further strip smooth gradients before edge detection.
+
+**Key parameters:**
+
+- Min Edge Change % (default 0.3%) — percentage of edge pixels that must differ to trigger
+- Canny Low/High — hysteresis thresholds controlling edge sensitivity
+- Binarize — converts to pure black/white before edge detection; strips animated backgrounds
+
+### Background Subtraction (MOG2)
+
+Learns what the "normal" background looks like over time using OpenCV's MOG2 model, then flags sudden foreground activity. Gradual changes are absorbed into the background model.
+
+**Best for:** Scenes with a stable background where you want to detect new objects, movement, or pop-ups. Requires a warmup period to learn the baseline.
+
+**Key parameters:**
+
+- History (default 500) — number of frames the model considers
+- Variance Threshold (default 16) — pixel brightness tolerance before marking as foreground
+- Min FG Change % (default 0.3%) — minimum foreground pixel percentage to trigger
+- Warmup Frames (default 30) — frames to observe before detection starts
 
 ---
 

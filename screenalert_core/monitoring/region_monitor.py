@@ -20,12 +20,16 @@ States:
 """
 
 import logging
+import os
 import time
 from typing import Dict, List, Optional, Tuple
 from PIL import Image
 
 from screenalert_core.core.image_processor import ImageProcessor
-from screenalert_core.utils.constants import DEFAULT_ALERT_THRESHOLD
+from screenalert_core.core.change_detectors import (
+    ChangeDetector, create_detector, VALID_METHODS,
+)
+from screenalert_core.utils.constants import DEFAULT_ALERT_THRESHOLD, BG_MODELS_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +39,61 @@ STATE_ALERT = "alert"
 STATE_WARNING = "warning"
 STATE_PAUSED = "paused"
 STATE_DISABLED = "disabled"
+
+
+def _build_detector_kwargs(region_config: Dict, global_config: Optional[Dict] = None) -> Tuple[str, dict]:
+    """Extract the detection method and kwargs from region config,
+    falling back to global_config when the region doesn't override.
+
+    Returns (method_name, kwargs_dict).
+    """
+    gcfg = global_config or {}
+
+    # Region-level override wins; otherwise use global
+    method = region_config.get("detection_method") or gcfg.get("detection_method", "ssim")
+    if method not in VALID_METHODS:
+        method = "ssim"
+
+    # Build kwargs appropriate for the chosen method
+    kwargs: Dict = {}
+
+    if method in ("ssim", "phash"):
+        kwargs["threshold"] = float(
+            region_config.get("alert_threshold",
+                              gcfg.get("alert_threshold", DEFAULT_ALERT_THRESHOLD))
+        )
+    elif method == "edge_only":
+        kwargs["min_edge_fraction"] = float(
+            region_config.get("min_edge_fraction",
+                              gcfg.get("min_edge_fraction", 0.003))
+        )
+        kwargs["canny_low"] = int(
+            region_config.get("canny_low", gcfg.get("canny_low", 40))
+        )
+        kwargs["canny_high"] = int(
+            region_config.get("canny_high", gcfg.get("canny_high", 120))
+        )
+        kwargs["binarize"] = bool(
+            region_config.get("edge_binarize", gcfg.get("edge_binarize", False))
+        )
+    elif method == "background_subtraction":
+        kwargs["history"] = int(
+            region_config.get("bg_history", gcfg.get("bg_history", 500))
+        )
+        kwargs["var_threshold"] = float(
+            region_config.get("bg_var_threshold", gcfg.get("bg_var_threshold", 16.0))
+        )
+        kwargs["learning_rate"] = float(
+            region_config.get("bg_learning_rate", gcfg.get("bg_learning_rate", -1.0))
+        )
+        kwargs["warmup_frames"] = int(
+            region_config.get("bg_warmup_frames", gcfg.get("bg_warmup_frames", 30))
+        )
+        kwargs["min_fg_fraction"] = float(
+            region_config.get("bg_min_fg_fraction", gcfg.get("bg_min_fg_fraction", 0.003))
+        )
+
+    return method, kwargs
 
 
 class RegionMonitor:
@@ -48,12 +107,15 @@ class RegionMonitor:
         WARNING -> OK (no change for alert_hold_seconds)
     """
 
-    def __init__(self, region_id: str, thumbnail_id: str, region_config: Dict):
+    def __init__(self, region_id: str, thumbnail_id: str, region_config: Dict,
+                 global_config: Optional[Dict] = None):
         self.region_id = region_id
         self.thumbnail_id = thumbnail_id
         self.config = region_config
 
         self.previous_image: Optional[Image.Image] = None
+        self.last_alert_prev_image: Optional[Image.Image] = None
+        self.last_alert_curr_image: Optional[Image.Image] = None
         self.paused = False
         self.disabled = region_config.get("enabled", True) is False
 
@@ -61,6 +123,64 @@ class RegionMonitor:
         self._state: str = STATE_OK
         self._alert_start_time: float = 0.0
         self._warning_start_time: float = 0.0
+
+        # Create detector from config
+        method, kwargs = _build_detector_kwargs(region_config, global_config)
+        self._detector: ChangeDetector = create_detector(method, **kwargs)
+        self._detector_method: str = method
+
+        # Try to load persisted warmup state
+        state_path = self._state_path()
+        if state_path:
+            self._detector.load_state(state_path)
+
+    def _state_path(self) -> str:
+        """Return file path for persisted detector state."""
+        return os.path.join(BG_MODELS_DIR, f"{self.thumbnail_id}_{self.region_id}")
+
+    @property
+    def detector(self) -> ChangeDetector:
+        return self._detector
+
+    @property
+    def detector_method(self) -> str:
+        return self._detector_method
+
+    def set_detector(self, method: str, global_config: Optional[Dict] = None,
+                     **override_kwargs) -> None:
+        """Swap the detection method at runtime.
+
+        Saves state of the old detector (if applicable) before replacing it.
+        """
+        # Save old state
+        self.save_detector_state()
+        self._detector.on_region_removed()
+
+        # Merge override kwargs into region config temporarily
+        cfg = dict(self.config)
+        cfg["detection_method"] = method
+        cfg.update(override_kwargs)
+
+        m, kwargs = _build_detector_kwargs(cfg, global_config)
+        self._detector = create_detector(m, **kwargs)
+        self._detector_method = m
+
+        # Reset baseline so the new detector starts fresh
+        self.previous_image = None
+        self._state = STATE_OK
+
+        # Load persisted state for new detector
+        state_path = self._state_path()
+        if state_path:
+            self._detector.load_state(state_path)
+
+        logger.info("Region %s detector changed to %s", self.region_id, m)
+
+    def save_detector_state(self) -> None:
+        """Persist current detector state to disk."""
+        state_path = self._state_path()
+        if state_path:
+            self._detector.save_state(state_path)
 
     # ── public properties ──────────────────────────────────────────
     @property
@@ -78,14 +198,7 @@ class RegionMonitor:
         return self._state == STATE_ALERT
 
     def get_state_remaining_seconds(self, hold_seconds: float) -> Optional[int]:
-        """Return remaining hold time for ALERT/WARNING states.
-
-        Args:
-            hold_seconds: configured hold duration in seconds
-
-        Returns:
-            Remaining seconds (0+), or None if not in a timed state.
-        """
+        """Return remaining hold time for ALERT/WARNING states."""
         now = time.time()
         hold = max(1.0, float(hold_seconds))
 
@@ -101,18 +214,14 @@ class RegionMonitor:
 
     # ── core update ────────────────────────────────────────────────
     def update(self, window_image: Image.Image,
-               alert_hold_seconds: float = 10.0) -> Tuple[str, bool]:
+               alert_hold_seconds: float = 10.0,
+               # Legacy params kept for back-compat but ignored when
+               # the region has its own detector instance.
+               **_kwargs) -> Tuple[str, bool]:
         """Update region state with new window image.
-
-        Args:
-            window_image: Full window capture.
-            alert_hold_seconds: How long (seconds) to hold Alert/Warning
-                                states before transitioning.
 
         Returns:
             (state, should_play_sound)
-                state            - current state after this update
-                should_play_sound - True only on first entry into ALERT
         """
         if self.disabled:
             return STATE_DISABLED, False
@@ -137,25 +246,20 @@ class RegionMonitor:
             self._state = STATE_OK
             return STATE_OK, False
 
-        # Size changed – reset baseline
+        # Size changed – reset baseline and detector
         if self.previous_image.size != region_image.size:
             self.previous_image = region_image
+            self._detector.reset()
             return self._state, False
 
-        # Detect change
-        threshold = self.config.get("alert_threshold", DEFAULT_ALERT_THRESHOLD)
-        method = self.config.get("change_detection_method", "ssim")
-        has_change = ImageProcessor.detect_change(
-            self.previous_image,
-            region_image,
-            threshold,
-            method=method,
-        )
+        # Detect change using the region's detector
+        has_change = self._detector.detect(self.previous_image, region_image)
         if has_change:
             logger.info(
-                "Region %s change DETECTED (method=%s threshold=%.4f state=%s)",
-                self.region_id, method, threshold, self._state,
+                "Region %s change DETECTED (method=%s state=%s)",
+                self.region_id, self._detector_method, self._state,
             )
+        pre_update_image = self.previous_image
         self.previous_image = region_image
 
         # ── state machine transitions ──────────────────────────────
@@ -167,21 +271,19 @@ class RegionMonitor:
                 self._state = STATE_ALERT
                 self._alert_start_time = now
                 should_play_sound = True
+                self.last_alert_prev_image = pre_update_image
+                self.last_alert_curr_image = region_image
 
         elif self._state == STATE_ALERT:
             if has_change:
-                # Still changing – reset hold timer (no new sound)
                 self._alert_start_time = now
             else:
-                # No change – check if hold period expired
                 if (now - self._alert_start_time) >= alert_hold_seconds:
                     self._state = STATE_WARNING
                     self._warning_start_time = now
 
         elif self._state == STATE_WARNING:
             if has_change:
-                # New change during warning – re-enter alert, but no new sound.
-                # Sound only fires on OK → ALERT; the user was already notified.
                 self._state = STATE_ALERT
                 self._alert_start_time = now
             else:
@@ -215,57 +317,66 @@ class RegionMonitor:
         self._state = STATE_OK
         self._alert_start_time = 0.0
         self._warning_start_time = 0.0
+        self._detector.reset()
 
 
 class MonitoringEngine:
     """Manages multiple region monitors"""
-    
+
     def __init__(self):
         """Initialize monitoring engine"""
         self.monitors: Dict[str, RegionMonitor] = {}  # region_id -> RegionMonitor
         self.thumbnail_monitors: Dict[str, List[str]] = {}  # thumbnail_id -> [region_ids]
-    
-    def add_region(self, region_id: str, thumbnail_id: str, 
-                  region_config: Dict) -> RegionMonitor:
+
+    def add_region(self, region_id: str, thumbnail_id: str,
+                  region_config: Dict,
+                  global_config: Optional[Dict] = None) -> RegionMonitor:
         """Register a new region monitor"""
-        monitor = RegionMonitor(region_id, thumbnail_id, region_config)
+        monitor = RegionMonitor(region_id, thumbnail_id, region_config,
+                                global_config=global_config)
         self.monitors[region_id] = monitor
-        
+
         if thumbnail_id not in self.thumbnail_monitors:
             self.thumbnail_monitors[thumbnail_id] = []
         self.thumbnail_monitors[thumbnail_id].append(region_id)
-        
+
         logger.info(f"Added monitor for region {region_id}")
         return monitor
-    
+
     def remove_region(self, region_id: str) -> bool:
         """Remove region monitor"""
         if region_id not in self.monitors:
             return False
-        
+
         monitor = self.monitors[region_id]
+        monitor.save_detector_state()
+        monitor.detector.on_region_removed()
         thumbnail_id = monitor.thumbnail_id
-        
+
         del self.monitors[region_id]
         if thumbnail_id in self.thumbnail_monitors:
             if region_id in self.thumbnail_monitors[thumbnail_id]:
                 self.thumbnail_monitors[thumbnail_id].remove(region_id)
-        
+
         logger.info(f"Removed monitor for region {region_id}")
         return True
-    
+
     def get_monitor(self, region_id: str) -> Optional[RegionMonitor]:
         """Get specific region monitor"""
         return self.monitors.get(region_id)
-    
+
     def get_thumbnail_monitors(self, thumbnail_id: str) -> List[RegionMonitor]:
         """Get all monitors for a thumbnail"""
         region_ids = self.thumbnail_monitors.get(thumbnail_id, [])
         return [self.monitors[rid] for rid in region_ids if rid in self.monitors]
-    
+
     def update_regions(self, thumbnail_id: str, window_image: Image.Image,
-                      alert_hold_seconds: float = 10.0) -> List[Tuple[str, str, bool]]:
+                      alert_hold_seconds: float = 10.0,
+                      **kwargs) -> List[Tuple[str, str, bool]]:
         """Update all regions for a thumbnail.
+
+        Detection params are now held per-region on each monitor's detector
+        instance, so only alert_hold_seconds is passed through.
 
         Returns:
             List of (region_id, state, should_play_sound) tuples.
@@ -274,7 +385,22 @@ class MonitoringEngine:
         monitors = self.get_thumbnail_monitors(thumbnail_id)
 
         for monitor in monitors:
-            state, should_play_sound = monitor.update(window_image, alert_hold_seconds)
+            state, should_play_sound = monitor.update(
+                window_image, alert_hold_seconds,
+            )
             results.append((monitor.region_id, state, should_play_sound))
 
         return results
+
+    def save_all_detector_states(self) -> None:
+        """Persist all detector states (call on shutdown)."""
+        for monitor in self.monitors.values():
+            try:
+                monitor.save_detector_state()
+            except Exception as exc:
+                logger.warning("Failed to save state for region %s: %s",
+                               monitor.region_id, exc)
+
+    def shutdown(self) -> None:
+        """Cleanup (no-op, reserved for future use)."""
+        pass

@@ -1,9 +1,15 @@
-"""Settings dialog for ScreenAlert configuration"""
+"""Settings dialog for ScreenAlert configuration.
+
+Regedit-style layout:
+  - Left pane: tree of setting categories
+  - Right pane: table of settings (Name | Value | Description)
+  - Double-click a row to edit via a type-appropriate dialog
+"""
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import logging
-from typing import Optional, Dict, Callable
+from typing import Optional, Dict, Callable, List, Any, Tuple
 
 from screenalert_core.core.config_manager import ConfigManager
 from screenalert_core.utils.constants import (
@@ -13,349 +19,574 @@ from screenalert_core.utils.constants import (
 logger = logging.getLogger(__name__)
 
 
+# ── Setting metadata ──────────────────────────────────────────────────
+# Each setting: (key, display_name, type, description, extra)
+#   type: "bool", "int", "float", "string", "choice", "file", "dir"
+#   extra: dict with type-specific info (min, max, increment, choices, filetypes)
+
+# Tree structure: (id, label, parent_id_or_None, settings_list)
+# parent_id=None means root node.  Nodes with children can also have settings.
+_CATEGORIES: List[Tuple[str, str, Optional[str], List[dict]]] = [
+    ("monitoring", "Monitoring", None, [
+        {
+            "key": "refresh_rate", "name": "Refresh Rate (ms)", "type": "int",
+            "desc": "How often each window is captured and checked for changes. "
+                    "Lower = faster detection but more CPU. 300ms is fastest, 1000ms is a good default.",
+            "min": 300, "max": 5000, "increment": 100,
+        },
+        {
+            "key": "pause_reminder_interval_sec", "name": "Pause Reminder (sec)", "type": "int",
+            "desc": "When a region is paused, flash a reminder after this many seconds "
+                    "so you don't forget to unpause.",
+            "min": 10, "max": 3600, "increment": 10,
+        },
+    ]),
+    ("detection", "Detection", None, [
+        {
+            "key": "change_detection_method", "name": "Detection Method", "type": "choice",
+            "desc": "The global default algorithm used to detect changes between frames. "
+                    "Individual regions can override this via their Detect button.\n\n"
+                    "ssim = Structural Similarity (accurate, compares luminance/contrast/structure)\n"
+                    "phash = Perceptual Hash (faster, compares visual fingerprints)\n"
+                    "edge_only = Canny Edge diff (compares outlines; ignores color/gradient shifts)\n"
+                    "background_subtraction = MOG2 (learns background over time; detects new foreground)",
+            "choices": ["ssim", "phash", "edge_only", "background_subtraction"],
+        },
+        {
+            "key": "alert_threshold", "name": "Alert Threshold (SSIM/pHash)", "type": "float",
+            "desc": "Used by SSIM and pHash methods. How similar two frames must be to count as "
+                    "'no change'. 0.99 = very sensitive (tiny pixel shifts trigger). "
+                    "0.90 = only significant visual changes trigger.",
+            "min": 0.10, "max": 1.0, "increment": 0.01, "format": "%.2f",
+        },
+    ]),
+    ("detection_edge", "Edge", "detection", [
+        {
+            "key": "min_edge_fraction", "name": "Min Edge Change %", "type": "float",
+            "desc": "Minimum percentage of edge pixels that must differ between frames to trigger an alert. "
+                    "0 = any edge change triggers. Higher = less sensitive. "
+                    "For windows with animated backgrounds, try 1.5-4.0%.",
+            "min": 0.0, "max": 10.0, "increment": 0.1, "format": "%.1f",
+            "scale": 100,  # stored as fraction, displayed as %
+        },
+        {
+            "key": "canny_low", "name": "Canny Low Threshold", "type": "int",
+            "desc": "Lower boundary for Canny edge detection hysteresis. "
+                    "Lower values detect more/weaker edges. Default 40.",
+            "min": 1, "max": 500, "increment": 5,
+        },
+        {
+            "key": "canny_high", "name": "Canny High Threshold", "type": "int",
+            "desc": "Upper boundary for Canny hysteresis. Only strong gradients above this "
+                    "value are kept as definite edges. Default 120.",
+            "min": 1, "max": 500, "increment": 10,
+        },
+        {
+            "key": "edge_binarize", "name": "Binarize (B&W)", "type": "bool",
+            "desc": "Converts the image to pure black & white using adaptive thresholding before "
+                    "edge detection. Strips smooth gradients and animated backgrounds "
+                    "while preserving text and UI outlines. Recommended ON for game UIs "
+                    "with animated backgrounds.",
+        },
+    ]),
+    ("detection_bg", "Background Sub.", "detection", [
+        {
+            "key": "bg_history", "name": "History (frames)", "type": "int",
+            "desc": "Number of recent frames the background model considers. Higher = slower "
+                    "adaptation to gradual changes. Lower = faster adaptation but more false "
+                    "positives from slow animations.",
+            "min": 10, "max": 5000, "increment": 50,
+        },
+        {
+            "key": "bg_var_threshold", "name": "Variance Threshold", "type": "float",
+            "desc": "How much a pixel's brightness can vary before it's classified as 'foreground'. "
+                    "Higher = more tolerant of noise/flickering. Default 16. "
+                    "Increase to 30-50 for noisy or animated scenes.",
+            "min": 1.0, "max": 100.0, "increment": 1.0, "format": "%.1f",
+        },
+        {
+            "key": "bg_min_fg_fraction", "name": "Min FG Change %", "type": "float",
+            "desc": "Minimum percentage of pixels that must be classified as foreground to trigger "
+                    "an alert. Filters out small scattered noise. 0.3% is sensitive; increase to "
+                    "1-5% for noisy scenes.",
+            "min": 0.0, "max": 20.0, "increment": 0.1, "format": "%.1f",
+            "scale": 100,
+        },
+        {
+            "key": "bg_warmup_frames", "name": "Warmup Frames", "type": "int",
+            "desc": "Number of frames to observe silently before detection starts, allowing the "
+                    "model to learn the baseline. Set to 0 if a saved warmup file exists from a "
+                    "previous session.",
+            "min": 0, "max": 500, "increment": 5,
+        },
+    ]),
+    ("appearance", "Appearance", None, [
+        {
+            "key": "theme_preset", "name": "Theme", "type": "choice",
+            "desc": "Color theme for the main window and overlays. Changes apply as a live preview.",
+            "choices": ["default", "slate", "midnight", "high-contrast"],
+        },
+        {
+            "key": "opacity", "name": "Thumbnail Opacity", "type": "float",
+            "desc": "Transparency of the floating thumbnail overlays. "
+                    "0.2 = nearly invisible, 1.0 = fully opaque.",
+            "min": 0.2, "max": 1.0, "increment": 0.05, "format": "%.2f",
+        },
+        {
+            "key": "always_on_top", "name": "Always on Top", "type": "bool",
+            "desc": "Keep thumbnail overlays above all other windows. "
+                    "Disable if they interfere with fullscreen apps.",
+        },
+        {
+            "key": "show_borders", "name": "Show Borders", "type": "bool",
+            "desc": "Draw a colored border around each thumbnail overlay. "
+                    "The border color reflects the region's alert state (green/red/orange).",
+        },
+        {
+            "key": "show_overlay_when_unavailable", "name": "Show Overlay if Unavailable", "type": "bool",
+            "desc": "Keep showing the thumbnail overlay even when the monitored window is closed or not found. "
+                    "When off, overlays auto-hide for missing windows.",
+        },
+    ]),
+    ("alerts", "Alerts", None, [
+        {
+            "key": "enable_sound", "name": "Enable Sound", "type": "bool",
+            "desc": "Play an audio file when a change is detected. "
+                    "Requires a sound file to be configured below.",
+        },
+        {
+            "key": "enable_tts", "name": "Enable TTS", "type": "bool",
+            "desc": "Speak the alert message aloud using text-to-speech when a change is detected.",
+        },
+        {
+            "key": "default_sound_file", "name": "Default Sound File", "type": "file",
+            "desc": "Path to a .wav/.mp3/.ogg file played on alert. Leave empty for no sound.",
+            "filetypes": [("Audio files", "*.wav *.mp3 *.ogg"), ("All files", "*.*")],
+        },
+        {
+            "key": "default_tts_message", "name": "Default TTS Message", "type": "string",
+            "desc": "Template for the spoken alert. Variables: {window} = window title, "
+                    "{region_name} = region name. Each region can override this.",
+        },
+        {
+            "key": "alert_hold_seconds", "name": "Alert Hold Time (sec)", "type": "int",
+            "desc": "How long a region stays in ALERT (red) or WARNING (orange) state after a "
+                    "change is detected, before returning to OK (green). During this hold, the "
+                    "sound won't re-trigger for the same region.",
+            "min": 1, "max": 120, "increment": 1,
+        },
+    ]),
+    ("captures", "Captures", None, [
+        {
+            "key": "capture_on_alert", "name": "Capture on Alert", "type": "bool",
+            "desc": "Automatically save a screenshot of the region when an alert triggers.",
+        },
+        {
+            "key": "save_alert_diagnostics", "name": "Save Alert Diagnostics", "type": "bool",
+            "desc": "Save detailed diagnostic images on each alert: previous frame, current frame, "
+                    "edge maps, and diff. Useful for tuning detection parameters.",
+        },
+        {
+            "key": "capture_on_green", "name": "Capture on Green", "type": "bool",
+            "desc": "Save a screenshot when a region returns to OK (green) state after an "
+                    "alert/warning cycle.",
+        },
+        {
+            "key": "capture_dir", "name": "Capture Directory", "type": "dir",
+            "desc": "Folder where captured screenshots are saved. "
+                    "Defaults to AppData/ScreenAlert/captures if empty.",
+        },
+        {
+            "key": "capture_filename_format", "name": "Capture Filename", "type": "string",
+            "desc": "Filename template for captures. Variables: {timestamp}, {window}, "
+                    "{region}, {status}.",
+        },
+    ]),
+    ("advanced", "Advanced", None, [
+        {
+            "key": "verbose_logging", "name": "Verbose Logging", "type": "bool",
+            "desc": "Enable DEBUG-level logging to the log file. Produces much more output; "
+                    "useful for troubleshooting.",
+        },
+        {
+            "key": "anonymize_logs", "name": "Anonymize Logs", "type": "bool",
+            "desc": "Replace window titles and character names in log output with generic "
+                    "placeholders. Use when sharing logs publicly.",
+        },
+        {
+            "key": "suppress_fullscreen", "name": "Suppress in Fullscreen", "type": "bool",
+            "desc": "Automatically hide thumbnail overlays when a fullscreen application "
+                    "is detected in the foreground.",
+        },
+        {
+            "key": "update_check_enabled", "name": "Check for Updates", "type": "bool",
+            "desc": "Check for new versions of ScreenAlert on startup.",
+        },
+        {
+            "key": "diagnostics_enabled", "name": "Diagnostics Mode", "type": "bool",
+            "desc": "Enable diagnostics overlay and extra runtime metrics. "
+                    "Shows frame timing, detection scores, and thread health.",
+        },
+    ]),
+]
+
+# Config getter/setter mapping: key -> (getter_name, setter_name)
+# Most follow the pattern get_<key> / set_<key>, but some differ.
+_CONFIG_MAP = {
+    "refresh_rate": ("get_refresh_rate", "set_refresh_rate"),
+    "pause_reminder_interval_sec": ("get_pause_reminder_interval_sec", "set_pause_reminder_interval_sec"),
+    "change_detection_method": ("get_change_detection_method", "set_change_detection_method"),
+    "alert_threshold": ("get_default_alert_threshold", "set_default_alert_threshold"),
+    "min_edge_fraction": ("get_min_edge_fraction", "set_min_edge_fraction"),
+    "canny_low": ("get_canny_low", "set_canny_low"),
+    "canny_high": ("get_canny_high", "set_canny_high"),
+    "edge_binarize": ("get_edge_binarize", "set_edge_binarize"),
+    "bg_history": ("get_bg_history", "set_bg_history"),
+    "bg_var_threshold": ("get_bg_var_threshold", "set_bg_var_threshold"),
+    "bg_min_fg_fraction": ("get_bg_min_fg_fraction", "set_bg_min_fg_fraction"),
+    "bg_warmup_frames": ("get_bg_warmup_frames", "set_bg_warmup_frames"),
+    "theme_preset": ("get_theme_preset", "set_theme_preset"),
+    "opacity": ("get_opacity", "set_opacity"),
+    "always_on_top": ("get_always_on_top", "set_always_on_top"),
+    "show_borders": ("get_show_borders", "set_show_borders"),
+    "show_overlay_when_unavailable": ("get_show_overlay_when_unavailable", "set_show_overlay_when_unavailable"),
+    "enable_sound": ("get_enable_sound", "set_enable_sound"),
+    "enable_tts": ("get_enable_tts", "set_enable_tts"),
+    "default_sound_file": ("get_default_sound_file", "set_default_sound_file"),
+    "default_tts_message": ("get_default_tts_message", "set_default_tts_message"),
+    "alert_hold_seconds": ("get_alert_hold_seconds", "set_alert_hold_seconds"),
+    "capture_on_alert": ("get_capture_on_alert", "set_capture_on_alert"),
+    "save_alert_diagnostics": ("get_save_alert_diagnostics", "set_save_alert_diagnostics"),
+    "capture_on_green": ("get_capture_on_green", "set_capture_on_green"),
+    "capture_dir": ("get_capture_dir", "set_capture_dir"),
+    "capture_filename_format": ("get_capture_filename_format", "set_capture_filename_format"),
+    "verbose_logging": ("get_verbose_logging", "set_verbose_logging"),
+    "anonymize_logs": ("get_anonymize_logs", "set_anonymize_logs"),
+    "suppress_fullscreen": ("get_suppress_fullscreen", "set_suppress_fullscreen"),
+    "update_check_enabled": ("get_update_check_enabled", "set_update_check_enabled"),
+    "diagnostics_enabled": ("get_diagnostics_enabled", "set_diagnostics_enabled"),
+}
+
+
 class SettingsDialog:
-    """Dialog for application settings"""
-    
+    """Regedit-style settings dialog."""
+
     def __init__(self, parent: tk.Widget, config: ConfigManager,
                  on_apply_callback: Optional[Callable[[Dict], None]] = None):
-        """Initialize settings dialog
-        
-        Args:
-            parent: Parent window
-            config: ConfigManager instance
-        """
         self.config = config
         self.on_apply_callback = on_apply_callback
         self.result: Optional[Dict] = None
-        
-        # Create dialog
+        self._parent = parent
+
+        # Flat lookup: key -> setting metadata dict
+        self._setting_meta: Dict[str, dict] = {}
+        for _cid, _clabel, _parent, settings in _CATEGORIES:
+            for s in settings:
+                self._setting_meta[s["key"]] = s
+
+        # Current values cached for display
+        self._values: Dict[str, Any] = {}
+
         self.dialog = tk.Toplevel(parent)
         self.dialog.title("ScreenAlert Settings")
-        self.dialog.geometry("500x400")
+        self.dialog.geometry("780x520")
+        self.dialog.minsize(680, 400)
         self.dialog.transient(parent)
         self.dialog.grab_set()
-        
+
         self._build_ui()
-        self._load_settings()
-    
+        self._load_all_values()
+        # Select first category
+        self._cat_tree.selection_set(_CATEGORIES[0][0])
+        self._show_category(_CATEGORIES[0][0])
+
+    # ── UI ────────────────────────────────────────────────────────────
+
     def _build_ui(self) -> None:
-        """Build dialog UI"""
-        main_frame = ttk.Frame(self.dialog, padding=15)
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        outer = ttk.Frame(self.dialog, padding=8)
+        outer.pack(fill=tk.BOTH, expand=True)
 
-        notebook = ttk.Notebook(main_frame)
-        notebook.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        # Paned window: left tree | right table
+        pane = ttk.PanedWindow(outer, orient=tk.HORIZONTAL)
+        pane.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
 
-        monitor_tab = ttk.Frame(notebook, padding=10)
-        appearance_tab = ttk.Frame(notebook, padding=10)
-        alert_tab = ttk.Frame(notebook, padding=10)
-        diagnostics_tab = ttk.Frame(notebook, padding=10)
+        # Left: category tree
+        left = ttk.Frame(pane, width=180)
+        self._cat_tree = ttk.Treeview(left, show="tree", selectmode="browse",
+                                       style="App.Treeview")
+        self._cat_tree.pack(fill=tk.BOTH, expand=True)
+        for cid, clabel, parent, _settings in _CATEGORIES:
+            parent_iid = parent if parent else ""
+            self._cat_tree.insert(parent_iid, tk.END, iid=cid, text=clabel, open=True)
+        self._cat_tree.bind("<<TreeviewSelect>>", self._on_cat_select)
+        pane.add(left, weight=0)
 
-        notebook.add(monitor_tab, text="Monitoring")
-        notebook.add(appearance_tab, text="Appearance")
-        notebook.add(alert_tab, text="Alerts")
-        notebook.add(diagnostics_tab, text="Advanced")
-        
-        # Monitoring
-        refresh_frame = ttk.LabelFrame(monitor_tab, text="Monitoring", padding=10)
-        refresh_frame.pack(fill=tk.X, pady=(0, 10))
-        
-        ttk.Label(refresh_frame, text="Refresh Rate (ms):").grid(row=0, column=0, sticky="w")
-        self.refresh_var = tk.IntVar(value=DEFAULT_REFRESH_RATE_MS)
-        refresh_spin = ttk.Spinbox(refresh_frame, from_=300, to=5000, increment=100,
-                                   textvariable=self.refresh_var, width=10)
-        refresh_spin.grid(row=0, column=1, sticky="w", padx=10)
-        ttk.Label(refresh_frame, text="(300-5000ms)").grid(row=0, column=2, sticky="w")
+        # Right: value table
+        right = ttk.Frame(pane)
+        cols = ("value", "description")
+        self._val_tree = ttk.Treeview(right, columns=cols, show="headings tree",
+                                       selectmode="browse", style="App.Treeview")
+        self._val_tree.heading("#0", text="Name", anchor="w")
+        self._val_tree.heading("value", text="Value", anchor="w")
+        self._val_tree.heading("description", text="Description", anchor="w")
+        self._val_tree.column("#0", width=180, minwidth=120)
+        self._val_tree.column("value", width=160, minwidth=80)
+        self._val_tree.column("description", width=320, minwidth=150)
 
-        ttk.Label(refresh_frame, text="Default Alert Threshold:").grid(row=1, column=0, sticky="w")
-        self.alert_threshold_var = tk.DoubleVar(value=0.99)
-        ttk.Spinbox(refresh_frame, from_=0.10, to=1.0, increment=0.01,
-                textvariable=self.alert_threshold_var, width=10).grid(row=1, column=1, sticky="w", padx=10)
+        vsb = ttk.Scrollbar(right, orient="vertical", command=self._val_tree.yview)
+        self._val_tree.configure(yscrollcommand=vsb.set)
+        self._val_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
 
-        ttk.Label(refresh_frame, text="Change Detection:").grid(row=2, column=0, sticky="w")
-        self.change_method_var = tk.StringVar(value="ssim")
-        ttk.Combobox(refresh_frame, style="App.TCombobox", textvariable=self.change_method_var,
-                 values=["ssim", "phash"], state="readonly", width=12).grid(row=2, column=1, sticky="w", padx=10)
+        self._val_tree.bind("<Double-1>", self._on_double_click)
+        self._val_tree.bind("<Return>", self._on_double_click)
+        pane.add(right, weight=1)
 
-        ttk.Label(refresh_frame, text="Pause Reminder (sec):").grid(row=3, column=0, sticky="w")
-        self.pause_reminder_var = tk.IntVar(value=60)
-        ttk.Spinbox(refresh_frame, from_=10, to=3600, increment=10,
-                textvariable=self.pause_reminder_var, width=10).grid(row=3, column=1, sticky="w", padx=10)
-        
-        # Appearance
-        appearance_frame = ttk.LabelFrame(appearance_tab, text="Appearance", padding=10)
-
-        appearance_frame.pack(fill=tk.X, pady=(0, 10))
-
-        ttk.Label(appearance_frame, text="Theme:").grid(row=3, column=0, sticky="w")
-        self.theme_preset_var = tk.StringVar(value="default")
-        self.theme_preset_combo = ttk.Combobox(
-            appearance_frame,
-            style="App.TCombobox",
-            textvariable=self.theme_preset_var,
-            values=["default", "slate", "midnight", "high-contrast"],
-            state="readonly",
-            width=14,
-        )
-        self.theme_preset_combo.grid(row=3, column=1, sticky="w", padx=10)
-        self.theme_preset_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_live_theme_preview())
-
-        appearance_frame.columnconfigure(1, weight=1)
-        
-        ttk.Label(appearance_frame, text="Thumbnail Opacity:").grid(row=0, column=0, sticky="w")
-        self.opacity_var = tk.DoubleVar(value=DEFAULT_OPACITY)
-        opacity_scale = ttk.Scale(appearance_frame, from_=0.2, to=1.0,
-                                 variable=self.opacity_var, orient=tk.HORIZONTAL)
-        opacity_scale.grid(row=0, column=1, sticky="ew", padx=10)
-        
-        self.opacity_label = ttk.Label(appearance_frame, text="0.8")
-        self.opacity_label.grid(row=0, column=2, sticky="w")
-        opacity_scale.config(command=lambda x: self.opacity_label.config(
-            text=f"{float(x):.2f}"))
-        
-        ttk.Label(appearance_frame, text="Always on Top:").grid(row=1, column=0, sticky="w")
-        self.always_on_top_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(appearance_frame, style="App.TCheckbutton", variable=self.always_on_top_var).grid(
-            row=1, column=1, sticky="w", padx=10)
-        
-        ttk.Label(appearance_frame, text="Show Borders:").grid(row=2, column=0, sticky="w")
-        self.show_borders_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(appearance_frame, style="App.TCheckbutton", variable=self.show_borders_var).grid(
-            row=2, column=1, sticky="w", padx=10)
-
-        ttk.Label(appearance_frame, text="Show Overlay if Unavailable:").grid(row=4, column=0, sticky="w")
-        self.show_overlay_unavailable_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(appearance_frame, style="App.TCheckbutton", variable=self.show_overlay_unavailable_var).grid(
-            row=4, column=1, sticky="w", padx=10)
-        
-        appearance_frame.columnconfigure(1, weight=1)
-        
-        # Alerts
-        alert_frame = ttk.LabelFrame(alert_tab, text="Alerts", padding=10)
-        alert_frame.pack(fill=tk.X, pady=(0, 10))
-
-        ttk.Label(alert_frame, text="Enable Sound:").grid(row=0, column=0, sticky="w")
-        self.enable_sound_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(alert_frame, variable=self.enable_sound_var).grid(row=0, column=1, sticky="w", padx=10)
-
-        ttk.Label(alert_frame, text="Enable TTS:").grid(row=1, column=0, sticky="w")
-        self.enable_tts_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(alert_frame, variable=self.enable_tts_var).grid(row=1, column=1, sticky="w", padx=10)
-        
-        ttk.Label(alert_frame, text="Default Sound:").grid(row=2, column=0, sticky="w")
-        self.sound_var = tk.StringVar(value="")
-        sound_entry = ttk.Entry(alert_frame, textvariable=self.sound_var)
-        sound_entry.grid(row=2, column=1, sticky="ew", padx=10)
-        ttk.Button(alert_frame, text="Browse", command=self._browse_sound).grid(row=2, column=2)
-        
-        ttk.Label(alert_frame, text="Default TTS Message:").grid(row=3, column=0, sticky="w")
-        self.tts_var = tk.StringVar(value="Alert {window} {region_name}")
-        tts_entry = ttk.Entry(alert_frame, textvariable=self.tts_var)
-        tts_entry.grid(row=3, column=1, columnspan=2, sticky="ew", padx=10)
-
-        ttk.Label(alert_frame, text="Capture on Alert:").grid(row=4, column=0, sticky="w")
-        self.capture_on_alert_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(alert_frame, variable=self.capture_on_alert_var).grid(row=4, column=1, sticky="w", padx=10)
-
-        ttk.Label(alert_frame, text="Alert Hold Time (sec):").grid(row=5, column=0, sticky="w")
-        self.alert_hold_var = tk.IntVar(value=10)
-        ttk.Spinbox(alert_frame, from_=1, to=120, increment=1,
-                     textvariable=self.alert_hold_var, width=10).grid(row=5, column=1, sticky="w", padx=10)
-        ttk.Label(alert_frame, text="(1-120s, Alert & Warning hold)").grid(row=5, column=2, sticky="w")
-
-        ttk.Label(alert_frame, text="Capture on Green:").grid(row=6, column=0, sticky="w")
-        self.capture_on_green_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(alert_frame, variable=self.capture_on_green_var).grid(row=6, column=1, sticky="w", padx=10)
-
-        ttk.Label(alert_frame, text="Capture Directory:").grid(row=7, column=0, sticky="w")
-        self.capture_dir_var = tk.StringVar(value="")
-        ttk.Entry(alert_frame, textvariable=self.capture_dir_var).grid(row=7, column=1, sticky="ew", padx=10)
-        ttk.Button(alert_frame, text="Browse", command=self._browse_capture_dir).grid(row=7, column=2)
-
-        ttk.Label(alert_frame, text="Capture Filename:").grid(row=8, column=0, sticky="w")
-        self.capture_filename_var = tk.StringVar(value="{timestamp}_{window}_{region}_{status}.png")
-        ttk.Entry(alert_frame, textvariable=self.capture_filename_var).grid(row=8, column=1, columnspan=2, sticky="ew", padx=10)
-        
-        alert_frame.columnconfigure(1, weight=1)
-        
-        # Advanced
-        logging_frame = ttk.LabelFrame(diagnostics_tab, text="Diagnostics & Safety", padding=10)
-        logging_frame.pack(fill=tk.X, pady=(0, 10))
-        
-        ttk.Label(logging_frame, text="Verbose Logging:").grid(row=0, column=0, sticky="w")
-        self.verbose_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(logging_frame, variable=self.verbose_var).grid(
-            row=0, column=1, sticky="w", padx=10)
-        
-        ttk.Label(logging_frame, text="(Enable for debugging)", 
-                 foreground="gray").grid(row=0, column=2, sticky="w")
-
-        ttk.Label(logging_frame, text="Anonymize Logs:").grid(row=1, column=0, sticky="w")
-        self.anonymize_logs_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(logging_frame, variable=self.anonymize_logs_var).grid(row=1, column=1, sticky="w", padx=10)
-
-        ttk.Label(logging_frame, text="Suppress in Fullscreen:").grid(row=2, column=0, sticky="w")
-        self.suppress_fullscreen_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(logging_frame, variable=self.suppress_fullscreen_var).grid(row=2, column=1, sticky="w", padx=10)
-
-        ttk.Label(logging_frame, text="Check for Updates:").grid(row=3, column=0, sticky="w")
-        self.update_check_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(logging_frame, variable=self.update_check_var).grid(row=3, column=1, sticky="w", padx=10)
-
-        ttk.Label(logging_frame, text="Diagnostics Mode:").grid(row=4, column=0, sticky="w")
-        self.diagnostics_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(logging_frame, variable=self.diagnostics_var).grid(row=4, column=1, sticky="w", padx=10)
-
-        config_ops_frame = ttk.LabelFrame(diagnostics_tab, text="Configuration", padding=10)
-        config_ops_frame.pack(fill=tk.X, pady=(0, 10))
-        ttk.Button(config_ops_frame, text="Export Config", command=self._export_config).pack(side=tk.LEFT, padx=4)
-        ttk.Button(config_ops_frame, text="Import Config", command=self._import_config).pack(side=tk.LEFT, padx=4)
-        ttk.Button(config_ops_frame, text="Reset to Defaults", command=self._reset_defaults).pack(side=tk.LEFT, padx=4)
-        
         # Buttons
-        btn_frame = ttk.Frame(main_frame)
+        btn_frame = ttk.Frame(outer)
         btn_frame.pack(fill=tk.X)
-        
         ttk.Button(btn_frame, text="OK", command=self._on_ok).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Apply", command=self._on_apply).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Cancel", command=self.dialog.destroy).pack(side=tk.RIGHT, padx=5)
-    
-    def _load_settings(self) -> None:
-        """Load settings from config"""
-        self.refresh_var.set(self.config.get_refresh_rate())
-        self.opacity_var.set(self.config.get_opacity())
-        self.always_on_top_var.set(self.config.get_always_on_top())
-        self.show_borders_var.set(self.config.get_show_borders())
-        self.show_overlay_unavailable_var.set(self.config.get_show_overlay_when_unavailable())
-        self.verbose_var.set(self.config.get_verbose_logging())
-        self.theme_preset_var.set(self.config.get_theme_preset())
-        self.alert_threshold_var.set(self.config.get_default_alert_threshold())
-        self.change_method_var.set(self.config.get_change_detection_method())
-        self.enable_sound_var.set(self.config.get_enable_sound())
-        self.enable_tts_var.set(self.config.get_enable_tts())
-        self.sound_var.set(self.config.get_default_sound_file())
-        self.tts_var.set(self.config.get_default_tts_message())
-        self.pause_reminder_var.set(self.config.get_pause_reminder_interval_sec())
-        self.capture_on_alert_var.set(self.config.get_capture_on_alert())
-        self.alert_hold_var.set(self.config.get_alert_hold_seconds())
-        self.capture_on_green_var.set(self.config.get_capture_on_green())
-        self.capture_dir_var.set(self.config.get_capture_dir())
-        self.capture_filename_var.set(self.config.get_capture_filename_format())
-        self.anonymize_logs_var.set(self.config.get_anonymize_logs())
-        self.suppress_fullscreen_var.set(self.config.get_suppress_fullscreen())
-        self.update_check_var.set(self.config.get_update_check_enabled())
-        self.diagnostics_var.set(self.config.get_diagnostics_enabled())
-    
-    def _on_apply(self) -> None:
-        """Apply settings without closing"""
-        settings = self._save_settings()
-        if settings and self.on_apply_callback:
+        ttk.Button(btn_frame, text="Reset to Defaults", command=self._reset_defaults).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(btn_frame, text="Import", command=self._import_config).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(btn_frame, text="Export", command=self._export_config).pack(side=tk.RIGHT, padx=5)
+
+    # ── Category selection ────────────────────────────────────────────
+
+    def _on_cat_select(self, _event=None) -> None:
+        sel = self._cat_tree.selection()
+        if sel:
+            self._show_category(sel[0])
+
+    def _show_category(self, cat_id: str) -> None:
+        # Clear table
+        for item in self._val_tree.get_children():
+            self._val_tree.delete(item)
+
+        # Find category
+        for cid, _clabel, _parent, settings in _CATEGORIES:
+            if cid == cat_id:
+                for s in settings:
+                    key = s["key"]
+                    val = self._values.get(key, "")
+                    disp = self._format_value(s, val)
+                    # Truncate description for table (first sentence)
+                    desc_short = s.get("desc", "")
+                    if ". " in desc_short:
+                        desc_short = desc_short[:desc_short.index(". ") + 1]
+                    if len(desc_short) > 100:
+                        desc_short = desc_short[:97] + "..."
+                    self._val_tree.insert("", tk.END, iid=key, text=s["name"],
+                                          values=(disp, desc_short))
+                break
+
+    def _format_value(self, meta: dict, val: Any) -> str:
+        """Format a value for display in the table."""
+        vtype = meta.get("type", "string")
+        if vtype == "bool":
+            return "True" if val else "False"
+        if vtype == "float":
+            scale = meta.get("scale", 1)
+            fmt = meta.get("format", "%.2f")
+            return fmt % (val * scale if scale != 1 else val)
+        return str(val)
+
+    # ── Load / Save ───────────────────────────────────────────────────
+
+    def _load_all_values(self) -> None:
+        """Read all settings from config into self._values."""
+        for key, (getter, _setter) in _CONFIG_MAP.items():
             try:
-                self.on_apply_callback(settings)
-            except Exception as callback_error:
-                logger.error(f"Error applying runtime settings: {callback_error}")
-        logger.info("Settings applied")
-    
-    def _on_ok(self) -> None:
-        """Apply settings and close"""
-        settings = self._save_settings()
-        if settings and self.on_apply_callback:
-            try:
-                self.on_apply_callback(settings)
-            except Exception as callback_error:
-                logger.error(f"Error applying runtime settings: {callback_error}")
-        self.result = settings
-        self.dialog.destroy()
-    
-    def _save_settings(self) -> Optional[Dict]:
-        """Save settings to config"""
+                self._values[key] = getattr(self.config, getter)()
+            except Exception:
+                self._values[key] = ""
+
+    def _save_all_values(self) -> Optional[Dict]:
+        """Write all cached values back to config."""
         try:
-            self.config.set_refresh_rate(self.refresh_var.get())
-            self.config.set_opacity(self.opacity_var.get())
-            self.config.set_always_on_top(self.always_on_top_var.get())
-            self.config.set_show_borders(self.show_borders_var.get())
-            self.config.set_show_overlay_when_unavailable(self.show_overlay_unavailable_var.get())
-            self.config.set_verbose_logging(self.verbose_var.get())
-            self.config.set_theme_preset(self.theme_preset_var.get())
-            self.config.set_default_alert_threshold(self.alert_threshold_var.get())
-            self.config.set_change_detection_method(self.change_method_var.get())
-            self.config.set_enable_sound(self.enable_sound_var.get())
-            self.config.set_enable_tts(self.enable_tts_var.get())
-            self.config.set_default_sound_file(self.sound_var.get())
-            self.config.set_default_tts_message(self.tts_var.get())
-            self.config.set_pause_reminder_interval_sec(self.pause_reminder_var.get())
-            self.config.set_capture_on_alert(self.capture_on_alert_var.get())
-            self.config.set_alert_hold_seconds(self.alert_hold_var.get())
-            self.config.set_capture_on_green(self.capture_on_green_var.get())
-            self.config.set_capture_dir(self.capture_dir_var.get())
-            self.config.set_capture_filename_format(self.capture_filename_var.get())
-            self.config.set_anonymize_logs(self.anonymize_logs_var.get())
-            self.config.set_suppress_fullscreen(self.suppress_fullscreen_var.get())
-            self.config.set_update_check_enabled(self.update_check_var.get())
-            self.config.set_diagnostics_enabled(self.diagnostics_var.get())
+            for key, (_getter, setter) in _CONFIG_MAP.items():
+                val = self._values.get(key)
+                if val is not None:
+                    getattr(self.config, setter)(val)
             self.config.save()
             logger.info("Settings saved")
-            return self._get_settings()
+            return self._get_settings_dict()
         except Exception as e:
             logger.error(f"Error saving settings: {e}")
             return None
-    
-    def _get_settings(self) -> Dict:
-        """Get current settings as dict"""
-        return {
-            "refresh_rate": self.refresh_var.get(),
-            "opacity": self.opacity_var.get(),
-            "always_on_top": self.always_on_top_var.get(),
-            "show_borders": self.show_borders_var.get(),
-            "show_overlay_when_unavailable": self.show_overlay_unavailable_var.get(),
-            "verbose_logging": self.verbose_var.get(),
-            "theme_preset": self.theme_preset_var.get(),
-            "alert_threshold": self.alert_threshold_var.get(),
-            "change_detection_method": self.change_method_var.get(),
-            "enable_sound": self.enable_sound_var.get(),
-            "enable_tts": self.enable_tts_var.get(),
-            "pause_reminder_interval_sec": self.pause_reminder_var.get(),
-            "capture_on_alert": self.capture_on_alert_var.get(),
-            "alert_hold_seconds": self.alert_hold_var.get(),
-            "capture_on_green": self.capture_on_green_var.get(),
-            "capture_dir": self.capture_dir_var.get(),
-            "capture_filename_format": self.capture_filename_var.get(),
-            "anonymize_logs": self.anonymize_logs_var.get(),
-            "suppress_fullscreen": self.suppress_fullscreen_var.get(),
-            "update_check_enabled": self.update_check_var.get(),
-            "diagnostics_enabled": self.diagnostics_var.get(),
-        }
 
-    def _on_live_theme_preview(self) -> None:
-        """Preview theme updates live while settings dialog is open."""
-        if not self.on_apply_callback:
+    def _get_settings_dict(self) -> Dict:
+        """Build a settings dict for the on_apply callback."""
+        return dict(self._values)
+
+    # ── Edit dialog ───────────────────────────────────────────────────
+
+    def _on_double_click(self, _event=None) -> None:
+        sel = self._val_tree.selection()
+        if not sel:
             return
-        try:
-            self.on_apply_callback(
-                {
-                    "theme_preset": self.theme_preset_var.get(),
-                }
-            )
-        except Exception as callback_error:
-            logger.debug(f"Live theme preview callback failed: {callback_error}")
+        key = sel[0]
+        meta = self._setting_meta.get(key)
+        if not meta:
+            return
+        self._open_edit_dialog(key, meta)
 
-    def _browse_sound(self) -> None:
-        path = filedialog.askopenfilename(
-            title="Select alert sound",
-            filetypes=[("Audio files", "*.wav *.mp3 *.ogg"), ("All files", "*.*")]
-        )
-        if path:
-            self.sound_var.set(path)
+    def _open_edit_dialog(self, key: str, meta: dict) -> None:
+        """Open a type-appropriate edit dialog for the setting."""
+        vtype = meta.get("type", "string")
+        current = self._values.get(key, "")
 
-    def _browse_capture_dir(self) -> None:
-        path = filedialog.askdirectory(title="Select capture directory")
-        if path:
-            self.capture_dir_var.set(path)
+        dlg = tk.Toplevel(self.dialog)
+        dlg.title(f"Edit — {meta['name']}")
+        dlg.transient(self.dialog)
+        dlg.grab_set()
+        dlg.resizable(False, False)
+
+        main = ttk.Frame(dlg, padding=16)
+        main.pack(fill=tk.BOTH, expand=True)
+
+        # Name
+        ttk.Label(main, text="Setting:", font=("", 9, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Label(main, text=meta["name"]).grid(row=0, column=1, sticky="w", padx=(8, 0))
+
+        # Description (full text, wrapped)
+        ttk.Label(main, text="Description:", font=("", 9, "bold")).grid(row=1, column=0, sticky="nw", pady=(8, 0))
+        desc_label = ttk.Label(main, text=meta.get("desc", ""), wraplength=380,
+                               justify="left", foreground="gray")
+        desc_label.grid(row=1, column=1, sticky="w", padx=(8, 0), pady=(8, 0))
+
+        # Value editor
+        ttk.Label(main, text="Value:", font=("", 9, "bold")).grid(row=2, column=0, sticky="w", pady=(12, 0))
+
+        result_var = tk.StringVar()
+        editor_frame = ttk.Frame(main)
+        editor_frame.grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=(12, 0))
+
+        if vtype == "bool":
+            bool_var = tk.BooleanVar(value=bool(current))
+            ttk.Checkbutton(editor_frame, variable=bool_var, text="Enabled",
+                            style="App.TCheckbutton").pack(anchor="w")
+            def get_val():
+                return bool_var.get()
+
+        elif vtype == "choice":
+            choices = meta.get("choices", [])
+            choice_var = tk.StringVar(value=str(current))
+            ttk.Combobox(editor_frame, textvariable=choice_var, values=choices,
+                         state="readonly", width=30, style="App.TCombobox").pack(anchor="w")
+            def get_val():
+                return choice_var.get()
+
+        elif vtype == "int":
+            int_var = tk.IntVar(value=int(current))
+            ttk.Spinbox(editor_frame, from_=meta.get("min", 0), to=meta.get("max", 99999),
+                         increment=meta.get("increment", 1),
+                         textvariable=int_var, width=12).pack(anchor="w")
+            def get_val():
+                return int_var.get()
+
+        elif vtype == "float":
+            scale = meta.get("scale", 1)
+            display_val = current * scale if scale != 1 else current
+            float_var = tk.DoubleVar(value=display_val)
+            fmt = meta.get("format", "%.2f")
+            spinbox_min = meta.get("min", 0.0)
+            spinbox_max = meta.get("max", 999.0)
+            if scale != 1:
+                spinbox_min *= scale
+                spinbox_max *= scale
+            ttk.Spinbox(editor_frame, from_=spinbox_min, to=spinbox_max,
+                         increment=meta.get("increment", 0.01) * (scale if scale != 1 else 1),
+                         format=fmt,
+                         textvariable=float_var, width=12).pack(anchor="w")
+            def get_val():
+                v = float_var.get()
+                if scale != 1:
+                    return v / scale
+                return v
+
+        elif vtype == "file":
+            file_var = tk.StringVar(value=str(current))
+            entry = ttk.Entry(editor_frame, textvariable=file_var, width=36)
+            entry.pack(side=tk.LEFT)
+            def _browse():
+                ft = meta.get("filetypes", [("All files", "*.*")])
+                p = filedialog.askopenfilename(title=f"Select {meta['name']}", filetypes=ft)
+                if p:
+                    file_var.set(p)
+            ttk.Button(editor_frame, text="Browse", command=_browse).pack(side=tk.LEFT, padx=4)
+            def get_val():
+                return file_var.get()
+
+        elif vtype == "dir":
+            dir_var = tk.StringVar(value=str(current))
+            ttk.Entry(editor_frame, textvariable=dir_var, width=36).pack(side=tk.LEFT)
+            def _browse_dir():
+                p = filedialog.askdirectory(title=f"Select {meta['name']}")
+                if p:
+                    dir_var.set(p)
+            ttk.Button(editor_frame, text="Browse", command=_browse_dir).pack(side=tk.LEFT, padx=4)
+            def get_val():
+                return dir_var.get()
+
+        else:  # string
+            str_var = tk.StringVar(value=str(current))
+            ttk.Entry(editor_frame, textvariable=str_var, width=36).pack(anchor="w")
+            def get_val():
+                return str_var.get()
+
+        # OK / Cancel
+        btn_frame = ttk.Frame(main)
+        btn_frame.grid(row=3, column=0, columnspan=2, pady=(16, 0))
+
+        def _ok():
+            new_val = get_val()
+            self._values[key] = new_val
+            # Update table display
+            disp = self._format_value(meta, new_val)
+            self._val_tree.set(key, "value", disp)
+            # Live preview for theme
+            if key == "theme_preset" and self.on_apply_callback:
+                try:
+                    self.on_apply_callback({"theme_preset": new_val})
+                except Exception:
+                    pass
+            dlg.destroy()
+
+        ttk.Button(btn_frame, text="OK", command=_ok, width=10).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Cancel", command=dlg.destroy, width=10).pack(side=tk.LEFT, padx=5)
+
+        # Size and center
+        dlg.update_idletasks()
+        w = max(480, dlg.winfo_reqwidth())
+        h = dlg.winfo_reqheight()
+        dlg.geometry(f"{w}x{h}")
+
+    # ── Actions ───────────────────────────────────────────────────────
+
+    def _on_apply(self) -> None:
+        settings = self._save_all_values()
+        if settings and self.on_apply_callback:
+            try:
+                self.on_apply_callback(settings)
+            except Exception as e:
+                logger.error(f"Error applying settings: {e}")
+        logger.info("Settings applied")
+
+    def _on_ok(self) -> None:
+        settings = self._save_all_values()
+        if settings and self.on_apply_callback:
+            try:
+                self.on_apply_callback(settings)
+            except Exception as e:
+                logger.error(f"Error applying settings: {e}")
+        self.result = settings
+        self.dialog.destroy()
 
     def _export_config(self) -> None:
         path = filedialog.asksaveasfilename(
-            title="Export configuration",
-            defaultextension=".json",
+            title="Export configuration", defaultextension=".json",
             filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
         )
         if path and self.config.export_config(path):
@@ -368,7 +599,11 @@ class SettingsDialog:
         )
         if path:
             if self.config.import_config(path):
-                self._load_settings()
+                self._load_all_values()
+                # Refresh current category view
+                sel = self._cat_tree.selection()
+                if sel:
+                    self._show_category(sel[0])
                 messagebox.showinfo("Import", "Configuration imported successfully")
             else:
                 messagebox.showerror("Import", "Failed to import configuration")
@@ -377,14 +612,12 @@ class SettingsDialog:
         if not messagebox.askyesno("Reset", "Reset all settings to defaults?"):
             return
         if self.config.reset_to_defaults():
-            self._load_settings()
+            self._load_all_values()
+            sel = self._cat_tree.selection()
+            if sel:
+                self._show_category(sel[0])
             messagebox.showinfo("Reset", "Settings reset to defaults")
-    
+
     def show(self) -> Optional[Dict]:
-        """Show dialog and return settings
-        
-        Returns:
-            Settings dict or None if cancelled
-        """
         self.dialog.wait_window()
         return self.result

@@ -53,6 +53,15 @@ class ConfigManager:
                 "last_window_size_filter_value": "",
                 "default_alert_threshold": DEFAULT_ALERT_THRESHOLD,
                 "change_detection_method": "ssim",
+                "min_edge_fraction": 0.003,
+                "canny_low": 40,
+                "canny_high": 120,
+                "edge_binarize": False,
+                "bg_history": 500,
+                "bg_var_threshold": 16.0,
+                "bg_learning_rate": -1.0,
+                "bg_warmup_frames": 30,
+                "bg_min_fg_fraction": 0.003,
                 "alert_hold_seconds": 10,
                 "enable_sound": False,
                 "enable_tts": True,
@@ -69,6 +78,7 @@ class ConfigManager:
                 "update_check_enabled": False,
                 "headless": False,
                 "diagnostics_enabled": False,
+                "save_alert_diagnostics": False,
             },
             "thumbnails": [],
             "ui": {
@@ -262,6 +272,36 @@ class ConfigManager:
             if current == "high-contrast":
                 self._config.setdefault("ui", {})["theme_preset"] = "default"
 
+    def get_region_state_filters(self) -> dict:
+        """Return persisted region state filter map (state -> bool).
+
+        Defaults to showing all states when not present in config.
+        """
+        ui = self._config.get("ui", {})
+        defaults = {
+            "alert": True,
+            "warning": True,
+            "paused": True,
+            "ok": True,
+            "disabled": True,
+            "unavailable": True,
+        }
+        stored = ui.get("region_state_filters")
+        if not isinstance(stored, dict):
+            return defaults
+        # Merge stored values with defaults to ensure keys exist
+        result = defaults.copy()
+        for k, v in stored.items():
+            result[str(k)] = bool(v)
+        return result
+
+    def set_region_state_filters(self, mapping: dict) -> None:
+        """Persist the mapping of region state -> visible (bool) into UI config."""
+        safe_map = {}
+        for k, v in (mapping or {}).items():
+            safe_map[str(k)] = bool(v)
+        self._config.setdefault("ui", {})["region_state_filters"] = safe_map
+
     def get_default_alert_threshold(self) -> float:
         return float(self._config.get("app", {}).get("default_alert_threshold", DEFAULT_ALERT_THRESHOLD))
 
@@ -270,10 +310,64 @@ class ConfigManager:
 
     def get_change_detection_method(self) -> str:
         method = self._config.get("app", {}).get("change_detection_method", "ssim")
-        return method if method in ("ssim", "phash") else "ssim"
+        return method if method in ("ssim", "phash", "edge_only", "background_subtraction") else "ssim"
 
     def set_change_detection_method(self, method: str) -> None:
-        self._config["app"]["change_detection_method"] = method if method in ("ssim", "phash") else "ssim"
+        self._config["app"]["change_detection_method"] = method if method in ("ssim", "phash", "edge_only", "background_subtraction") else "ssim"
+
+    def get_min_edge_fraction(self) -> float:
+        return float(self._config.get("app", {}).get("min_edge_fraction", 0.003))
+
+    def set_min_edge_fraction(self, value: float) -> None:
+        self._config["app"]["min_edge_fraction"] = max(0.0, min(float(value), 1.0))
+
+    def get_canny_low(self) -> int:
+        return int(self._config.get("app", {}).get("canny_low", 40))
+
+    def set_canny_low(self, value: int) -> None:
+        self._config["app"]["canny_low"] = max(1, min(int(value), 500))
+
+    def get_canny_high(self) -> int:
+        return int(self._config.get("app", {}).get("canny_high", 120))
+
+    def set_canny_high(self, value: int) -> None:
+        self._config["app"]["canny_high"] = max(1, min(int(value), 500))
+
+    def get_edge_binarize(self) -> bool:
+        return bool(self._config.get("app", {}).get("edge_binarize", False))
+
+    def set_edge_binarize(self, enabled: bool) -> None:
+        self._config["app"]["edge_binarize"] = bool(enabled)
+
+    def get_bg_history(self) -> int:
+        return int(self._config.get("app", {}).get("bg_history", 500))
+
+    def set_bg_history(self, value: int) -> None:
+        self._config["app"]["bg_history"] = max(10, min(int(value), 5000))
+
+    def get_bg_var_threshold(self) -> float:
+        return float(self._config.get("app", {}).get("bg_var_threshold", 16.0))
+
+    def set_bg_var_threshold(self, value: float) -> None:
+        self._config["app"]["bg_var_threshold"] = max(1.0, min(float(value), 100.0))
+
+    def get_bg_learning_rate(self) -> float:
+        return float(self._config.get("app", {}).get("bg_learning_rate", -1.0))
+
+    def set_bg_learning_rate(self, value: float) -> None:
+        self._config["app"]["bg_learning_rate"] = max(-1.0, min(float(value), 1.0))
+
+    def get_bg_warmup_frames(self) -> int:
+        return int(self._config.get("app", {}).get("bg_warmup_frames", 30))
+
+    def set_bg_warmup_frames(self, value: int) -> None:
+        self._config["app"]["bg_warmup_frames"] = max(0, min(int(value), 500))
+
+    def get_bg_min_fg_fraction(self) -> float:
+        return float(self._config.get("app", {}).get("bg_min_fg_fraction", 0.003))
+
+    def set_bg_min_fg_fraction(self, value: float) -> None:
+        self._config["app"]["bg_min_fg_fraction"] = max(0.0, min(float(value), 1.0))
 
     def get_alert_hold_seconds(self) -> int:
         return int(self._config.get("app", {}).get("alert_hold_seconds", 10))
@@ -364,6 +458,12 @@ class ConfigManager:
 
     def set_diagnostics_enabled(self, enabled: bool) -> None:
         self._config["app"]["diagnostics_enabled"] = bool(enabled)
+
+    def get_save_alert_diagnostics(self) -> bool:
+        return bool(self._config.get("app", {}).get("save_alert_diagnostics", False))
+
+    def set_save_alert_diagnostics(self, enabled: bool) -> None:
+        self._config["app"]["save_alert_diagnostics"] = bool(enabled)
 
     def get_headless(self) -> bool:
         return bool(self._config.get("app", {}).get("headless", False))

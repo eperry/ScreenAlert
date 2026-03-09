@@ -72,6 +72,8 @@ class ScreenAlertEngine:
         self._last_foreground_sync_ts = 0.0
         self._reconnect_attempted_once: set[str] = set()
         self._window_lost_notified: set[str] = set()
+        self._thumbnail_connected: Dict[str, bool] = {}
+        self._prev_window_images: Dict[str, Image.Image] = {}
         logger.info("ScreenAlert engine initialized")
         logger.debug(f"Config path: {config_path}")
         logger.debug("WindowManager, CacheManager, MonitoringEngine, AlertSystem, ThumbnailRenderer initialized")
@@ -87,6 +89,26 @@ class ScreenAlertEngine:
     def list_plugin_events(self) -> List[str]:
         """Return currently registered plugin event names."""
         return self.plugin_hooks.list_events()
+
+    def is_thumbnail_connected(self, thumbnail_id: str) -> bool:
+        """Return cached connection status for a thumbnail (non-blocking)."""
+        return self._thumbnail_connected.get(thumbnail_id, False)
+
+    def _get_global_detection_config(self) -> Dict:
+        """Build a flat dict of global detection settings for detector creation."""
+        return {
+            "detection_method": self.config.get_change_detection_method(),
+            "alert_threshold": self.config.get_default_alert_threshold(),
+            "min_edge_fraction": self.config.get_min_edge_fraction(),
+            "canny_low": self.config.get_canny_low(),
+            "canny_high": self.config.get_canny_high(),
+            "edge_binarize": self.config.get_edge_binarize(),
+            "bg_history": self.config.get_bg_history(),
+            "bg_var_threshold": self.config.get_bg_var_threshold(),
+            "bg_learning_rate": self.config.get_bg_learning_rate(),
+            "bg_min_fg_fraction": self.config.get_bg_min_fg_fraction(),
+            "bg_warmup_frames": self.config.get_bg_warmup_frames(),
+        }
     
     def set_tkinter_root(self, root: 'tk.Tk') -> None:
         """Set the main tkinter root for overlay windows
@@ -145,6 +167,7 @@ class ScreenAlertEngine:
                         expected_monitor_id=expected_monitor,
                         expected_size=expected_size,
                     ):
+                        self._thumbnail_connected[thumbnail_id] = True
                         window_image = self.window_manager.capture_window(window_hwnd)
                         if window_image:
                             logger.info(f"[{thumbnail_id}] Initial capture from config: {window_image.size}")
@@ -157,6 +180,7 @@ class ScreenAlertEngine:
                                 self.config.get_show_overlay_when_unavailable(),
                             )
                     else:
+                        self._thumbnail_connected[thumbnail_id] = False
                         self.renderer.set_thumbnail_availability(
                             thumbnail_id,
                             False,
@@ -167,7 +191,10 @@ class ScreenAlertEngine:
             for region_config in config.get("monitored_regions", []):
                 region_id = region_config.get("id")
                 if region_id:
-                    self.monitoring_engine.add_region(region_id, thumbnail_id, region_config)
+                    self.monitoring_engine.add_region(
+                        region_id, thumbnail_id, region_config,
+                        global_config=self._get_global_detection_config(),
+                    )
             
             logger.info(f"Loaded thumbnail from config: {thumbnail_id}")
             return True
@@ -326,7 +353,10 @@ class ScreenAlertEngine:
             
             region_id = self.config.add_region_to_thumbnail(thumbnail_id, region_config)
             if region_id:
-                self.monitoring_engine.add_region(region_id, thumbnail_id, region_config)
+                self.monitoring_engine.add_region(
+                    region_id, thumbnail_id, region_config,
+                    global_config=self._get_global_detection_config(),
+                )
                 self.config.save()
                 logger.info(f"Added region: {region_id}")
                 self.plugin_hooks.emit("region.added", thumbnail_id=thumbnail_id, region_id=region_id, name=name)
@@ -404,6 +434,16 @@ class ScreenAlertEngine:
                 logger.error(f"Error joining loop thread: {error}")
 
         self._stop_foreground_event_hook()
+
+        try:
+            self.monitoring_engine.save_all_detector_states()
+        except Exception as error:
+            logger.error(f"Error saving detector states: {error}")
+
+        try:
+            self.monitoring_engine.shutdown()
+        except Exception as error:
+            logger.error(f"Error shutting down monitoring thread pool: {error}")
 
         try:
             self.config.save()
@@ -657,8 +697,10 @@ class ScreenAlertEngine:
                     if window_ok:
                         self._reconnect_attempted_once.discard(thumbnail_id)
                         self._window_lost_notified.discard(thumbnail_id)
-                    
+                        self._thumbnail_connected[thumbnail_id] = True
+
                     if not window_ok:
+                        self._thumbnail_connected[thumbnail_id] = False
                         if thumbnail_id in self._reconnect_attempted_once:
                             self.renderer.set_thumbnail_availability(
                                 thumbnail_id,
@@ -680,6 +722,7 @@ class ScreenAlertEngine:
                             window_hwnd = new_window['hwnd']
                             self._reconnect_attempted_once.discard(thumbnail_id)
                             self._window_lost_notified.discard(thumbnail_id)
+                            self._thumbnail_connected[thumbnail_id] = True
                         else:
                             self._reconnect_attempted_once.add(thumbnail_id)
                             self.renderer.set_thumbnail_availability(
@@ -731,9 +774,11 @@ class ScreenAlertEngine:
                         monitor_start = time.perf_counter()
                         alert_hold_seconds = self.config.get_alert_hold_seconds()
                         region_results = self.monitoring_engine.update_regions(
-                            thumbnail_id, window_image, alert_hold_seconds
+                            thumbnail_id, window_image, alert_hold_seconds,
                         )
                         self._diag_monitor_ms += (time.perf_counter() - monitor_start) * 1000.0
+                        # Store window image for next iteration's diagnostics
+                        self._prev_window_images[thumbnail_id] = window_image
                         
                         for region_id, state, should_play_sound in region_results:
                             # Fire state-change callback when state transitions
@@ -781,6 +826,14 @@ class ScreenAlertEngine:
                                     # Optional: capture screenshot on alert
                                     if self.config.get_capture_on_alert():
                                         self._capture_region_snapshot(thumbnail_config, config, window_image, status="alert")
+
+                                    # Optional: save diagnostic images (background thread to avoid blocking loop)
+                                    if self.config.get_save_alert_diagnostics():
+                                        threading.Thread(
+                                            target=self._save_alert_diagnostics,
+                                            args=(thumbnail_config.copy(), config.copy(), window_image.copy(), region),
+                                            daemon=True,
+                                        ).start()
 
                                     # Alert history
                                     self.config.add_alert_history({
@@ -1008,6 +1061,79 @@ class ScreenAlertEngine:
         except Exception as e:
             logger.warning(f"Failed to save snapshot: {e}")
     
+    def _save_alert_diagnostics(self, thumbnail_config: Dict, region_config: Dict,
+                                window_image: Image.Image, region_monitor) -> None:
+        """Save diagnostic images when an alert fires (prev/current window, region, edge maps)."""
+        try:
+            import numpy as np
+            capture_dir = self.config.get_capture_dir()
+            diag_dir = os.path.join(capture_dir, "diagnostics")
+            os.makedirs(diag_dir, exist_ok=True)
+
+            window_title = thumbnail_config.get("window_title", "window")
+            region_name = region_config.get("name", "region")
+
+            def safe(text: str) -> str:
+                text = re.sub(r'[^a-zA-Z0-9._-]+', '_', text or "")
+                return text[:64] or "item"
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            prefix = f"{timestamp}_{safe(window_title)}_{safe(region_name)}_alert"
+
+            # Previous window image (stored per-thumbnail)
+            prev_window = self._prev_window_images.get(
+                thumbnail_config.get("id", ""), None
+            )
+            if prev_window is not None:
+                prev_window.save(
+                    os.path.join(diag_dir, f"{prefix}_window_prev.png"), format="PNG"
+                )
+
+            # Current window image
+            window_image.save(
+                os.path.join(diag_dir, f"{prefix}_window_curr.png"), format="PNG"
+            )
+
+            # Region crops (from monitor's stored alert images)
+            prev_region = region_monitor.last_alert_prev_image
+            curr_region = region_monitor.last_alert_curr_image
+            if prev_region is not None:
+                prev_region.save(
+                    os.path.join(diag_dir, f"{prefix}_region_prev.png"), format="PNG"
+                )
+            if curr_region is not None:
+                curr_region.save(
+                    os.path.join(diag_dir, f"{prefix}_region_curr.png"), format="PNG"
+                )
+
+            # Edge detection maps
+            if prev_region is not None and curr_region is not None:
+                canny_low = self.config.get_canny_low()
+                canny_high = self.config.get_canny_high()
+                binarize = self.config.get_edge_binarize()
+
+                g1 = np.array(prev_region.convert('L'), dtype=np.uint8)
+                g2 = np.array(curr_region.convert('L'), dtype=np.uint8)
+                edges1 = ImageProcessor._canny_edges(g1, canny_low, canny_high, binarize=binarize)
+                edges2 = ImageProcessor._canny_edges(g2, canny_low, canny_high, binarize=binarize)
+
+                Image.fromarray(edges1).save(
+                    os.path.join(diag_dir, f"{prefix}_edges_prev.png"), format="PNG"
+                )
+                Image.fromarray(edges2).save(
+                    os.path.join(diag_dir, f"{prefix}_edges_curr.png"), format="PNG"
+                )
+
+                # Edge diff: pixels where edges changed
+                edge_diff = np.abs(edges1.astype(np.int16) - edges2.astype(np.int16)).astype(np.uint8)
+                Image.fromarray(edge_diff).save(
+                    os.path.join(diag_dir, f"{prefix}_edges_diff.png"), format="PNG"
+                )
+
+            logger.info(f"Saved alert diagnostics: {diag_dir}/{prefix}_*")
+        except Exception as e:
+            logger.warning(f"Failed to save alert diagnostics: {e}")
+
     def _on_thumbnail_interaction(self, thumbnail_id: str, action: str, payload: Optional[Dict] = None) -> None:
         """Handle thumbnail user interactions"""
         payload = payload or {}

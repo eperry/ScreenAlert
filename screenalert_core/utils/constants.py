@@ -22,11 +22,13 @@ else:
 CONFIG_FILE = os.path.join(CONFIG_DIR, "screenalert_config.json")
 WINDOW_REGION_CONFIG_FILE = os.path.join(CONFIG_DIR, "screenalert_windows_regions.json")
 TEMP_DIR = os.path.join(CONFIG_DIR, "temp")
+BG_MODELS_DIR = os.path.join(CONFIG_DIR, "bg_models")
 
 # Create directories if they don't exist
 os.makedirs(CONFIG_DIR, exist_ok=True)
 os.makedirs(LOGS_DIR, exist_ok=True)
 os.makedirs(TEMP_DIR, exist_ok=True)
+os.makedirs(BG_MODELS_DIR, exist_ok=True)
 
 # Default Settings
 DEFAULT_REFRESH_RATE_MS = 1000

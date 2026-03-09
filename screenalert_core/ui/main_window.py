@@ -19,6 +19,7 @@ from screenalert_core.screening_engine import ScreenAlertEngine
 from screenalert_core.ui.window_selector_dialog import WindowSelectorDialog
 from screenalert_core.ui.region_selection_overlay import RegionSelectionOverlay
 from screenalert_core.ui.settings_dialog import SettingsDialog
+from screenalert_core.ui.region_detection_dialog import RegionDetectionDialog
 from screenalert_core.ui.tooltip import ToolTip
 from screenalert_core.ui.auto_hide_scrollbar import AutoHideScrollbar
 from screenalert_core.core.image_processor import ImageProcessor
@@ -45,6 +46,16 @@ class ScreenAlertMainWindow:
         self.window_preview_photo: Optional[ImageTk.PhotoImage] = None
         self.region_to_thumbnail: Dict[str, str] = {}
         self.show_all_regions = True
+        # Region state visibility filters (persisted in config.ui.region_state_filters)
+        self.region_state_filters = self.config.get_region_state_filters() if hasattr(self.config, 'get_region_state_filters') else {
+            "alert": True,
+            "warning": True,
+            "paused": True,
+            "ok": True,
+            "disabled": True,
+            "unavailable": True,
+        }
+        self._region_state_vars: Dict[str, tk.BooleanVar] = {}
         # Dirty flag system - track what needs updating
         self.dirty_regions: Dict[str, Dict[str, bool]] = {}  # region_id -> {'status': bool, 'thumbnail': bool}
         self.pending_status_changes: Dict[str, str] = {}  # region_id -> new_status
@@ -73,6 +84,7 @@ class ScreenAlertMainWindow:
         self._add_window_last_added_thumbnail_id: Optional[str] = None
         self._ui_heartbeat_ts = time.time()
         self._ui_heartbeat_after_id = None
+        self._filter_refresh_after_id: Optional[str] = None
         self._watchdog_stop_event = threading.Event()
         self._watchdog_thread: Optional[threading.Thread] = None
         self._watchdog_last_dump_ts = 0.0
@@ -561,6 +573,7 @@ class ScreenAlertMainWindow:
         tree_frame.rowconfigure(1, weight=1)
         tree_frame.columnconfigure(0, weight=1)
 
+        # Row for text filter
         filter_row = ttk.Frame(tree_frame)
         filter_row.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
         filter_row.columnconfigure(1, weight=1)
@@ -659,11 +672,25 @@ class ScreenAlertMainWindow:
         
         self.regions_frame = ttk.LabelFrame(self.detail_frame, text="Regions (0/0)", padding=8)
         self.regions_frame.grid(row=1, column=0, sticky="nsew")
-        self.regions_frame.rowconfigure(0, weight=1)
+        # Row 0: controls, Row 1: canvas (scrollable)
+        self.regions_frame.rowconfigure(1, weight=1)
         self.regions_frame.columnconfigure(0, weight=1)
-        
+
+        # Region-state filter controls moved here
+        state_controls = ttk.Frame(self.regions_frame)
+        state_controls.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        states = [("Warning", "warning"), ("Paused", "paused"), ("OK", "ok"), ("Disabled", "disabled"), ("N/A", "unavailable"), ("Alert", "alert")]
+        # keep a compact left-to-right ordering; use stored filter values
+        col = 0
+        for label_text, state_key in states:
+            var = tk.BooleanVar(value=bool(self.region_state_filters.get(state_key, True)))
+            cb = ttk.Checkbutton(state_controls, text=label_text, style="App.TCheckbutton", variable=var, command=self._on_region_state_filter_changed)
+            cb.grid(row=0, column=col, sticky="w", padx=(0, 6))
+            self._region_state_vars[state_key] = var
+            col += 1
+
         self.region_canvas = tk.Canvas(self.regions_frame, bg=self._palette["panel"], highlightthickness=0)
-        self.region_canvas.grid(row=0, column=0, sticky="nsew")
+        self.region_canvas.grid(row=1, column=0, sticky="nsew")
         self.region_scroll = AutoHideScrollbar(self.regions_frame, orient=tk.VERTICAL, command=self.region_canvas.yview)
         self.region_scroll.grid(row=0, column=1, sticky="ns")
         self.region_canvas.configure(yscrollcommand=self.region_scroll.set)
@@ -742,6 +769,33 @@ class ScreenAlertMainWindow:
         if not self.tree_filter_var:
             return ""
         return (self.tree_filter_var.get() or "").strip().casefold()
+
+    def _on_region_state_filter_changed(self) -> None:
+        """Persist region state filter changes and refresh the tree."""
+        try:
+            for state, var in self._region_state_vars.items():
+                self.region_state_filters[state] = bool(var.get())
+            if hasattr(self.config, 'set_region_state_filters'):
+                try:
+                    self.config.set_region_state_filters(self.region_state_filters)
+                    # Persist immediately
+                    self.config.save()
+                except Exception:
+                    # Fallback to using _save_config which shows status
+                    try:
+                        self._save_config()
+                    except Exception:
+                        pass
+            # Update visible tree
+            self._update_thumbnail_list()
+        except Exception as e:
+            logger.debug(f"Error updating region state filters: {e}")
+
+    def _region_status_visible(self, status: str) -> bool:
+        """Return whether regions with the given status should be visible per current filters."""
+        if not status:
+            return True
+        return bool(self.region_state_filters.get(status, True))
 
     def _schedule_ui_heartbeat(self) -> None:
         """Update heartbeat timestamp from Tk thread to detect UI stalls."""
@@ -2040,6 +2094,9 @@ class ScreenAlertMainWindow:
                 if not region_id:
                     continue
                 region_status = self._get_region_effective_status(thumbnail, region, window_status)
+                # Respect user-selected visibility filters for region states
+                if not self._region_status_visible(region_status):
+                    continue
                 self.window_tree.insert(
                     thumbnail_id,
                     "end",
@@ -2177,17 +2234,7 @@ class ScreenAlertMainWindow:
             return None
 
         if thumbnail:
-            expected_title = thumbnail.get("window_title")
-            expected_class = thumbnail.get("window_class") or None
-            expected_size = tuple(thumbnail.get("window_size")) if thumbnail.get("window_size") else None
-            expected_monitor = thumbnail.get("monitor_id")
-            if not self.window_manager.validate_window_identity(
-                hwnd,
-                expected_title=expected_title,
-                expected_class=expected_class,
-                expected_monitor_id=expected_monitor,
-                expected_size=expected_size,
-            ):
+            if not self._is_thumbnail_connected(thumbnail):
                 return None
 
         window_image = self.engine.cache_manager.get(hwnd)
@@ -2284,7 +2331,7 @@ class ScreenAlertMainWindow:
             self._mark_dirty(thumbnail_id, region_id, status="alert", thumbnail=True)
             
             # Update status bar
-            self.status_var.set(f"🚨 ALERT: {title} - {region_name} changed!")
+            self.status_var.set(f"🚨 ALERT: {title} - {region_name}")
             
             logger.info(f"Alert in {title}: {region_name}")
 
@@ -2311,13 +2358,21 @@ class ScreenAlertMainWindow:
 
     
     def _on_window_lost(self, thumbnail_id: str, window_title: str) -> None:
-        """Handle lost window"""
+        """Handle lost window — mark all its regions as unavailable."""
         if threading.current_thread() is not threading.main_thread():
             self._enqueue_engine_event("window_lost", thumbnail_id, window_title)
             return
 
         logger.warning(f"Window lost: {window_title}")
         self.status_var.set(f"Window lost: {window_title}")
+
+        # Set all regions for this thumbnail to unavailable/N/A
+        thumbnail = self.config.get_thumbnail(thumbnail_id)
+        if thumbnail:
+            for region in thumbnail.get("monitored_regions", []):
+                region_id = region.get("id", "")
+                if region_id:
+                    self._mark_dirty(thumbnail_id, region_id, status="unavailable", thumbnail=True)
 
     def _render_window_detail(self, thumbnail: Optional[Dict]) -> None:
         """Render window info and region cards"""
@@ -2367,9 +2422,13 @@ class ScreenAlertMainWindow:
                     continue
                 hwnd = thumb.get("window_hwnd")
                 window_image = self._get_window_image_for_ui(hwnd, thumb)
+                window_status = self._get_thumbnail_window_status(thumb)
                 for region in thumb.get("monitored_regions", []):
                     region_id = region.get("id")
                     if not region_id:
+                        continue
+                    region_status = self._get_region_effective_status(thumb, region, window_status)
+                    if not self._region_status_visible(region_status):
                         continue
                     self._create_region_card(thumb_id, region_id, region, window_image, row,
                                              window_title=thumb.get("window_title", "Unknown"))
@@ -2428,6 +2487,10 @@ class ScreenAlertMainWindow:
             for idx, region in enumerate(regions_to_render):
                 region_id = region.get("id")
                 if not region_id:
+                    continue
+                window_status = self._get_thumbnail_window_status(thumbnail)
+                region_status = self._get_region_effective_status(thumbnail, region, window_status)
+                if not self._region_status_visible(region_status):
                     continue
                 self._create_region_card(thumbnail_id, region_id, region, window_image, idx)
                 displayed_regions += 1
@@ -2529,7 +2592,11 @@ class ScreenAlertMainWindow:
         alert_text_entry.grid(row=row_offset + 1, column=1, sticky="w", pady=(3, 0))
         alert_text_entry.bind("<Return>", lambda e: self._save_region_alert_text(thumbnail_id, region_id, alert_text_var))
         alert_text_entry.bind("<FocusOut>", lambda e: self._save_region_alert_text(thumbnail_id, region_id, alert_text_var))
-        
+
+        # Live detection metrics (updated each tick)
+        detect_info_label = ttk.Label(form_frame, text="", style="App.Muted.TLabel")
+        detect_info_label.grid(row=row_offset + 2, column=0, columnspan=2, sticky="w", pady=(2, 0))
+
         # Right control panel
         controls_panel = ttk.Frame(card, style="App.Controls.TFrame")
         controls_panel.grid(row=content_row, column=3, rowspan=2, sticky="ne", padx=(0, 6), pady=4)
@@ -2546,23 +2613,58 @@ class ScreenAlertMainWindow:
             command=lambda: self._toggle_region_enabled(thumbnail_id, region_id)
         )
         disable_btn.pack(padx=2, pady=0)
-        
+
+        detect_btn = ttk.Button(
+            controls_panel,
+            style="App.RegionAction.TButton",
+            text="Detect",
+            width=8,
+            command=lambda tid=thumbnail_id, rid=region_id: self._open_region_detection_dialog(tid, rid),
+        )
+        detect_btn.pack(padx=2, pady=(4, 0))
+
         self.region_widgets[region_id] = {
             "status_pill": status_pill,
             "pause_btn": pause_btn,
             "disable_btn": disable_btn,
+            "detect_btn": detect_btn,
             "name_entry": name_entry,
             "alert_text_entry": alert_text_entry,
+            "detect_info_label": detect_info_label,
             "image_label": image_label,
         }
         
         if not window_image:
-            self._set_region_status(thumbnail_id, region_id, "unavailable")
-            self._apply_region_status(thumbnail_id, region_id)
-        elif not enabled_now:
-            self._set_region_status(thumbnail_id, region_id, "disabled")
+            # Do not treat a transient preview/capture miss as the canonical
+            # region availability state. Resolve the region status from the
+            # monitoring engine and window connectivity instead. Only fall
+            # back to 'unavailable' when the thumbnail/window is not connected
+            # or no monitor exists for the region.
+            thumbnail = self.config.get_thumbnail(thumbnail_id)
+            try:
+                window_status = self._get_thumbnail_window_status(thumbnail) if thumbnail else None
+                region_status = self._get_region_effective_status(thumbnail or {}, region, window_status)
+            except Exception:
+                region_status = "unavailable"
+            # If region is explicitly disabled, prefer that state
+            if not enabled_now:
+                region_status = "disabled"
+
+            self._set_region_status(thumbnail_id, region_id, region_status)
             self._apply_region_status(thumbnail_id, region_id)
         else:
+            # Normal case: a preview image exists; still compute canonical
+            # region status via monitoring/window state to avoid brief N/A
+            # flicker due to capture failures.
+            thumbnail = self.config.get_thumbnail(thumbnail_id)
+            try:
+                window_status = self._get_thumbnail_window_status(thumbnail) if thumbnail else None
+                region_status = self._get_region_effective_status(thumbnail or {}, region, window_status)
+            except Exception:
+                region_status = "ok"
+            if not enabled_now:
+                region_status = "disabled"
+            self._set_region_status(thumbnail_id, region_id, region_status)
             self._apply_region_status(thumbnail_id, region_id)
 
     def _toggle_region_enabled(self, thumbnail_id: str, region_id: str) -> None:
@@ -2590,6 +2692,41 @@ class ScreenAlertMainWindow:
             else:
                 self._mark_dirty(thumbnail_id, region_id, status="disabled")
                 self.status_var.set("Region disabled")
+
+    def _open_region_detection_dialog(self, thumbnail_id: str, region_id: str) -> None:
+        """Open per-region detection settings dialog."""
+        region = self.config.get_region(thumbnail_id, region_id)
+        if not region:
+            return
+
+        # Build a flat global config dict for fallback values
+        global_cfg = {
+            "change_detection_method": self.config.get_change_detection_method(),
+            "default_alert_threshold": self.config.get_default_alert_threshold(),
+            "min_edge_fraction": self.config.get_min_edge_fraction(),
+            "canny_low": self.config.get_canny_low(),
+            "canny_high": self.config.get_canny_high(),
+            "edge_binarize": self.config.get_edge_binarize(),
+            "bg_history": self.config.get_bg_history(),
+            "bg_var_threshold": self.config.get_bg_var_threshold(),
+            "bg_min_fg_fraction": self.config.get_bg_min_fg_fraction(),
+            "bg_warmup_frames": self.config.get_bg_warmup_frames(),
+        }
+
+        def on_apply(updates: Dict) -> None:
+            # Persist detection overrides to the region config
+            if self.config.update_region(thumbnail_id, region_id, updates):
+                self.config.save()
+
+            # Update the live monitor's detector
+            monitor = self.engine.monitoring_engine.get_monitor(region_id)
+            if monitor:
+                method = updates.get("detection_method") or global_cfg.get("change_detection_method", "ssim")
+                monitor.set_detector(method, global_config=global_cfg, **updates)
+
+            self.status_var.set(f"Detection settings updated for region")
+
+        RegionDetectionDialog(self.root, region, global_config=global_cfg, on_apply=on_apply)
 
     def _save_region_name(self, thumbnail_id: str, region_id: str, name_var: tk.StringVar) -> None:
         """Persist region name changes"""
@@ -2659,13 +2796,23 @@ class ScreenAlertMainWindow:
         else:
             pill.config(text=status_text, style="App.Status.Ok.TLabel")
 
+        # Update live detection metrics label (only if changed)
+        info_label = widgets.get("detect_info_label")
+        if info_label:
+            info_text = self._format_detect_info(region_id)
+            try:
+                if str(info_label.cget("text")) != info_text:
+                    info_label.config(text=info_text)
+            except tk.TclError:
+                pass
+
     def _format_region_status_text(self, region_id: str, status: str) -> str:
         """Build region status text, including countdown for timed states."""
         base_map = {
             "alert": "ALERT",
             "warning": "WARNING",
             "paused": "PAUSED",
-            "disabled": "N/A",
+            "disabled": "Disabled",
             "unavailable": "N/A",
             "ok": "OK",
         }
@@ -2683,6 +2830,33 @@ class ScreenAlertMainWindow:
             return base
         return f"{base}\n{remaining:02d}s"
 
+    def _format_detect_info(self, region_id: str) -> str:
+        """Build a short string showing live detection metrics for a region."""
+        monitor = self.engine.monitoring_engine.get_monitor(region_id)
+        if not monitor:
+            return ""
+        info = monitor.detector.last_detect_info
+        if not info:
+            return ""
+        method = monitor.detector_method
+        if method in ("ssim", "phash"):
+            sim = info.get("similarity", 0)
+            thr = info.get("threshold", 0)
+            return f"Similarity: {sim:.4f}  (threshold: {thr})"
+        elif method == "edge_only":
+            pct = info.get("edge_change_pct", 0)
+            mn = info.get("min_edge_pct", 0)
+            return f"Edge change: {pct:.3f}%  (min: {mn:.3f}%)"
+        elif method == "background_subtraction":
+            fg = info.get("fg_pct", 0)
+            mn = info.get("min_fg_pct", 0)
+            warmup = info.get("warmed_up", False)
+            fc = info.get("frame_count", 0)
+            if not warmup:
+                return f"Warmup: frame {fc}"
+            return f"FG: {fg:.3f}%  (min: {mn:.3f}%)"
+        return ""
+
     def _get_thumbnail_window_status(self, thumbnail: Dict) -> str:
         """Return effective window status for thumbnail tree/detail rendering."""
         if not bool(thumbnail.get("enabled", True)):
@@ -2692,22 +2866,15 @@ class ScreenAlertMainWindow:
         return "unavailable"
 
     def _is_thumbnail_connected(self, thumbnail: Dict) -> bool:
-        """Return True when thumbnail is currently connected to the expected window."""
-        hwnd = thumbnail.get("window_hwnd")
-        if not hwnd:
-            return False
+        """Return True when thumbnail is currently connected to the expected window.
 
-        title = thumbnail.get("window_title")
-        expected_class = thumbnail.get("window_class") or None
-        expected_size = tuple(thumbnail["window_size"]) if thumbnail.get("window_size") else None
-        expected_monitor = thumbnail.get("monitor_id")
-        return self.window_manager.validate_window_identity(
-            hwnd,
-            expected_title=title,
-            expected_class=expected_class,
-            expected_monitor_id=expected_monitor,
-            expected_size=expected_size,
-        )
+        Uses the engine's cached connection status (updated every main-loop tick)
+        to avoid blocking Win32 API calls on the UI thread.
+        """
+        thumbnail_id = thumbnail.get("id")
+        if not thumbnail_id:
+            return False
+        return self.engine.is_thumbnail_connected(thumbnail_id)
 
     def _get_region_effective_status(self, thumbnail: Dict, region: Dict, window_status: Optional[str] = None) -> str:
         """Return effective region status used for tree node coloring."""
@@ -3115,7 +3282,14 @@ class ScreenAlertMainWindow:
         return f"{icon} {region_name} [{suffix}]"
 
     def _refresh_tree_node_statuses(self) -> None:
-        """Refresh tree node tags to reflect live window/region statuses."""
+        """Refresh tree node tags to reflect live window/region statuses.
+
+        Only updates tree items whose state actually changed to avoid
+        unnecessary repaints/flicker.
+        """
+        if not hasattr(self, '_tree_last_state'):
+            self._tree_last_state: Dict[str, str] = {}
+
         primary_cleared = False
         for thumbnail in self.config.get_all_thumbnails():
             thumbnail_id = thumbnail.get("id")
@@ -3129,12 +3303,17 @@ class ScreenAlertMainWindow:
                 primary_cleared = True
             self._tree_window_icon_meta[thumbnail_id] = self._window_tree_suffix_icons(thumbnail, window_status)
             window_tree_state = self._get_window_tree_state(thumbnail, window_status)
-            self.window_tree.item(
-                thumbnail_id,
-                text="",
-                image=self._get_window_tree_icon_image(thumbnail, window_status, window_tree_state),
-                tags=(self._window_tree_tag(window_tree_state),),
-            )
+
+            # Only update tree item if state changed
+            state_key = f"win:{thumbnail_id}"
+            if self._tree_last_state.get(state_key) != window_tree_state:
+                self._tree_last_state[state_key] = window_tree_state
+                self.window_tree.item(
+                    thumbnail_id,
+                    text="",
+                    image=self._get_window_tree_icon_image(thumbnail, window_status, window_tree_state),
+                    tags=(self._window_tree_tag(window_tree_state),),
+                )
 
             for region in thumbnail.get("monitored_regions", []):
                 region_id = region.get("id")
@@ -3142,11 +3321,29 @@ class ScreenAlertMainWindow:
                     continue
                 region_status = self._get_region_effective_status(thumbnail, region, window_status)
                 region_name = region.get("name", "Region")
-                self.window_tree.item(
-                    region_id,
-                    text=self._format_region_tree_text(region_name, region_status),
-                    tags=(self._region_tree_tag(region_status),),
-                )
+
+                state_key = f"reg:{region_id}"
+                new_state = f"{region_status}:{region_name}"
+                if self._tree_last_state.get(state_key) != new_state:
+                    self._tree_last_state[state_key] = new_state
+                    self.window_tree.item(
+                        region_id,
+                        text=self._format_region_tree_text(region_name, region_status),
+                        tags=(self._region_tree_tag(region_status),),
+                    )
+
+        # Re-sort tree: connected windows first, then alphabetical by title
+        # Only move children if the order actually changed
+        if self.window_tree.exists("__all__"):
+            children = list(self.window_tree.get_children("__all__"))
+            thumb_map = {t.get("id"): t for t in self.config.get_all_thumbnails()}
+            sorted_children = sorted(children, key=lambda tid: (
+                0 if tid in thumb_map and self._is_thumbnail_connected(thumb_map[tid]) else 1,
+                (thumb_map.get(tid, {}).get("window_title") or "").casefold(),
+            ))
+            if sorted_children != children:
+                for idx, child_id in enumerate(sorted_children):
+                    self.window_tree.move(child_id, "__all__", idx)
 
         if primary_cleared:
             self.config.save()
@@ -3156,35 +3353,30 @@ class ScreenAlertMainWindow:
                     self.window_primary_var.set(False)
 
     def _refresh_dynamic_status_texts(self) -> None:
-        """Refresh dynamic text portions (countdown) without changing colors."""
+        """Refresh dynamic text portions (countdown) without changing colors.
+
+        Only reconfigures pills whose text actually changed to avoid flicker.
+        """
         for region_id, widgets in self.region_widgets.items():
             pill = widgets.get("status_pill")
             if not pill:
                 continue
             thumbnail_id = self.region_to_thumbnail.get(region_id)
             status = self.region_statuses.get(thumbnail_id, {}).get(region_id, "ok")
-            pill.config(text=self._format_region_status_text(region_id, status))
+            new_text = self._format_region_status_text(region_id, status)
+            try:
+                if str(pill.cget("text")) != new_text:
+                    pill.config(text=new_text)
+            except tk.TclError:
+                pass
 
     def _collect_all_region_states(self) -> List[str]:
         """Collect current states across all configured regions."""
         states: List[str] = []
         for thumbnail in self.config.get_all_thumbnails():
             thumb_enabled = bool(thumbnail.get("enabled", True))
-            hwnd = thumbnail.get("window_hwnd")
-            title = thumbnail.get("window_title")
-            expected_class = thumbnail.get("window_class") or None
-            expected_size = tuple(thumbnail["window_size"]) if thumbnail.get("window_size") else None
-            expected_monitor = thumbnail.get("monitor_id")
-            window_available = (
-                bool(hwnd)
-                and self.window_manager.validate_window_identity(
-                    hwnd,
-                    expected_title=title,
-                    expected_class=expected_class,
-                    expected_monitor_id=expected_monitor,
-                    expected_size=expected_size,
-                )
-            )
+            thumbnail_id = thumbnail.get("id")
+            window_available = bool(thumbnail_id) and self._is_thumbnail_connected(thumbnail)
             for region in thumbnail.get("monitored_regions", []):
                 region_id = region.get("id")
                 if not region_id:
@@ -3217,6 +3409,13 @@ class ScreenAlertMainWindow:
             aggregate = "paused"
         else:
             aggregate = "unavailable"
+
+        # Only update badge when aggregate state actually changes
+        if not hasattr(self, '_last_aggregate'):
+            self._last_aggregate = None
+        if aggregate == self._last_aggregate:
+            return
+        self._last_aggregate = aggregate
 
         if aggregate == "alert":
             self.aggregate_status_var.set("Overall: ALERT")
@@ -3282,22 +3481,70 @@ class ScreenAlertMainWindow:
         except Exception as e:
             logger.error(f"Error updating region image {region_id}: {e}", exc_info=True)
 
+    def _update_region_thumbnail_soft(self, thumbnail_id: str, region_id: str) -> None:
+        """Like _update_region_thumbnail but never flips status to N/A.
+
+        Used by the periodic force-refresh.  If the capture temporarily fails
+        (cache just invalidated, PrintWindow blocked, etc.) the previous image
+        and status are kept instead of showing a brief N/A flash.
+        """
+        thumbnail = self.config.get_thumbnail(thumbnail_id)
+        if not thumbnail:
+            return
+        region = self.config.get_region(thumbnail_id, region_id)
+        if not region:
+            return
+        widgets = self.region_widgets.get(region_id, {})
+        image_label = widgets.get("image_label")
+        if not image_label:
+            return
+        hwnd = thumbnail.get("window_hwnd")
+        if not hwnd:
+            return
+        window_image = self._get_window_image_for_ui(hwnd, thumbnail)
+        if not window_image:
+            # Key difference: keep previous image & status instead of N/A
+            return
+        try:
+            region_image = ImageProcessor.crop_region(window_image, region.get("rect", (0, 0, 0, 0)))
+            region_image.thumbnail((220, 96), Image.Resampling.LANCZOS)
+            photo = ImageTk.PhotoImage(region_image)
+            self.region_photos[region_id] = photo
+            image_label.config(image=photo, text="", style="App.Image.TLabel")
+            # If was previously unavailable, recover
+            current_status = self.region_statuses.get(thumbnail_id, {}).get(region_id)
+            if current_status == "unavailable":
+                monitor = self.engine.monitoring_engine.get_monitor(region_id)
+                region_cfg = self.config.get_region(thumbnail_id, region_id) or {}
+                if not bool(region_cfg.get("enabled", True)):
+                    self._set_region_status(thumbnail_id, region_id, "disabled")
+                elif monitor:
+                    self._set_region_status(thumbnail_id, region_id, monitor.state)
+                else:
+                    self._set_region_status(thumbnail_id, region_id, "ok")
+                self._apply_region_status(thumbnail_id, region_id)
+        except Exception as e:
+            logger.debug(f"Soft refresh failed for region {region_id}: {e}")
+
     def _force_refresh_all_thumbnails(self) -> None:
         """Force refresh all visible region cards and window preview (every ~5s).
 
         Invalidates the image cache so the next capture is fresh, then updates
         every region card that currently has widgets on screen plus the window
-        preview image.
+        preview image.  If a fresh capture fails, the old image is kept to
+        avoid N/A flicker.
         """
         try:
             # Invalidate cache so we get a fresh capture
             self.engine.cache_manager.invalidate_all()
 
-            # Refresh each region card that is currently displayed
+            # Refresh each region card that is currently displayed.
+            # Use _update_region_thumbnail_soft which won't set N/A on
+            # transient capture failures.
             for region_id, widgets in list(self.region_widgets.items()):
                 thumbnail_id = self.region_to_thumbnail.get(region_id)
                 if thumbnail_id:
-                    self._update_region_thumbnail(thumbnail_id, region_id)
+                    self._update_region_thumbnail_soft(thumbnail_id, region_id)
 
             # Refresh window preview image
             self._refresh_window_preview()
@@ -3359,10 +3606,20 @@ class ScreenAlertMainWindow:
                     self.region_statuses[thumbnail_id] = {}
                 self.region_statuses[thumbnail_id][region_id] = status
                 logger.debug(f"[MARK DIRTY] Region {region_id}: status {current_status} -> {status}")
+                # Schedule a throttled filter/UI refresh so filters update promptly
+                try:
+                    self._schedule_filter_refresh()
+                except Exception:
+                    pass
         
         if thumbnail:
             self.dirty_regions[region_id]['thumbnail'] = True
             logger.debug(f"[MARK DIRTY] Region {region_id}: thumbnail needs update")
+            # Thumbnail changes can also affect whether a region is visible
+            try:
+                self._schedule_filter_refresh()
+            except Exception:
+                pass
 
     def _periodic_ui_update(self) -> None:
         """Periodic update loop - SINGLE point where UI updates happen every 1000ms"""
@@ -3457,25 +3714,60 @@ class ScreenAlertMainWindow:
             except Exception:
                 pass
 
-        # Cancel periodic update timer
         if self.update_timer_id:
             try:
                 self.root.after_cancel(self.update_timer_id)
                 self.update_timer_id = None
             except Exception:
                 pass
-        
+
         try:
             self.engine.stop()
         except Exception as e:
             logger.error(f"Error stopping engine: {str(e)}")
-        
+
         try:
             self.config.save()
         except Exception as e:
             logger.error(f"Error saving config: {str(e)}")
-        
+
         self.root.quit()
+
+    def _schedule_filter_refresh(self, delay_ms: int = 200) -> None:
+        """Schedule a throttled refresh of the tree and regions panel.
+
+        Ensures updates do not occur more frequently than `delay_ms`.
+        Subsequent requests while a refresh is pending are coalesced.
+        """
+        try:
+            if getattr(self, '_filter_refresh_after_id', None):
+                return
+            self._filter_refresh_after_id = self.root.after(delay_ms, self._do_filter_refresh)
+        except Exception as e:
+            logger.debug(f"Failed scheduling filter refresh: {e}")
+
+    def _do_filter_refresh(self) -> None:
+        """Perform the actual refresh of the tree and current region detail view."""
+        try:
+            self._filter_refresh_after_id = None
+            # Update tree first so selection iteration uses up-to-date nodes
+            try:
+                self._update_thumbnail_list()
+            except Exception as e:
+                logger.debug(f"Filter refresh: _update_thumbnail_list failed: {e}")
+
+            # Re-render detail panel for currently selected thumbnail (or all)
+            try:
+                if self.selected_thumbnail_id:
+                    thumb = self.config.get_thumbnail(self.selected_thumbnail_id)
+                    self._render_window_detail(thumb)
+                else:
+                    # render all regions view
+                    self._render_window_detail(None)
+            except Exception as e:
+                logger.debug(f"Filter refresh: _render_window_detail failed: {e}")
+        except Exception as e:
+            logger.debug(f"Error during filter refresh: {e}")
     
     def run(self) -> None:
         """Run main window"""
