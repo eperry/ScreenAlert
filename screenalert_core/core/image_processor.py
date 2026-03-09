@@ -1,6 +1,7 @@
 """Image processing and comparison utilities"""
 
 import logging
+import cv2
 import numpy as np
 from typing import Tuple, Optional
 from PIL import Image
@@ -58,44 +59,98 @@ class ImageProcessor:
             return 0.0
     
     @staticmethod
-    def detect_change(img1: Image.Image, img2: Image.Image, 
-                     threshold: float = 0.99,
-                     method: str = "ssim") -> bool:
-        """Detect if there's significant change between images.
+    def _canny_edges(gray_arr: np.ndarray,
+                     canny_low: int = 40,
+                     canny_high: int = 120,
+                     binarize: bool = False) -> np.ndarray:
+        """Return a Canny edge map for a uint8 grayscale array.
 
-        A supplementary raw-pixel check runs first to catch tiny changes
-        (e.g. a few characters changing in a large region) that SSIM or
-        pHash would miss because their global scores barely move.
+        A bilateral filter is applied first — it smooths out background
+        gradients and colour shifts while preserving sharp edges (text,
+        borders, icons).  This prevents animated backgrounds from
+        producing spurious edge flicker.
+
+        When *binarize* is True an additional adaptive threshold step
+        converts the image to pure black/white before edge detection,
+        for maximum gradient rejection.
+        """
+        # Bilateral filter: smooths gradients, preserves text edges
+        gray_arr = cv2.bilateralFilter(gray_arr, 9, 75, 75)
+        if binarize:
+            gray_arr = cv2.adaptiveThreshold(
+                gray_arr, 255,
+                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY,
+                blockSize=11, C=2,
+            )
+        blurred = cv2.GaussianBlur(gray_arr, (3, 3), 0)
+        return cv2.Canny(blurred, threshold1=canny_low, threshold2=canny_high)
+
+    @staticmethod
+    def detect_change(img1: Image.Image, img2: Image.Image,
+                      threshold: float = 0.99,
+                      method: str = "ssim",
+                      min_edge_fraction: float = 0.003,
+                      canny_low: int = 40,
+                      canny_high: int = 120,
+                      binarize: bool = False) -> bool:
+        """Detect if there's a significant structural change between images.
+
+        Uses Canny edge detection on greyscale frames as the primary check.
+        Edge maps are invariant to minor colour/brightness shifts and
+        anti-aliasing noise, so only real structural changes (new text,
+        UI elements appearing, state transitions) trigger an alert.
+
+        Falls back to SSIM / pHash for subtle changes that don't produce
+        clear edges (e.g. a uniform block changing colour).
 
         Args:
-            img1: First PIL Image
-            img2: Second PIL Image
-            threshold: Similarity threshold (higher = more sensitive)
+            img1: Previous frame (PIL Image).
+            img2: Current frame (PIL Image).
+            threshold: SSIM/pHash similarity threshold for the fallback
+                       check (higher = more sensitive).
+            method: Fallback method – ``"ssim"`` or ``"phash"``.
+            min_edge_fraction: Fraction of total pixels whose edge state
+                               must change to count as a real change
+                               (default 0.3 %).  Raise to reduce
+                               sensitivity; lower to catch subtler changes.
 
         Returns:
-            True if change detected
+            True if a change is detected.
         """
-        # ── Fast pixel-diff pre-check ──────────────────────────────────
-        # Win32 screenshots are pixel-exact when unchanged, so ANY
-        # non-zero pixel difference is a real change.  We use a minimal
-        # threshold (>0 intensity, >=1 pixel) to catch even single-
-        # character text changes in large regions that SSIM would miss.
+        # ── Canny edge-diff ────────────────────────────────────────────
+        # Convert to grayscale, extract structural edge maps, and compare
+        # them.  Only fire if enough edge pixels changed – this eliminates
+        # false positives from rendering jitter, cursor blink, and
+        # compression artefacts while still catching real UI changes.
         try:
-            arr1 = np.array(img1.convert('L'), dtype=np.int16)
-            arr2 = np.array(img2.convert('L'), dtype=np.int16)
-            diff = np.abs(arr1 - arr2)
-            any_diff_px = int(np.count_nonzero(diff > 0))
-            if any_diff_px > 0:
-                max_diff = int(diff.max())
-                logger.debug(
-                    "pixel-diff: %d pixels differ (max_intensity_delta=%d)",
-                    any_diff_px, max_diff,
-                )
+            g1 = np.array(img1.convert('L'), dtype=np.uint8)
+            g2 = np.array(img2.convert('L'), dtype=np.uint8)
+
+            edges1 = ImageProcessor._canny_edges(g1, canny_low, canny_high, binarize=binarize)
+            edges2 = ImageProcessor._canny_edges(g2, canny_low, canny_high, binarize=binarize)
+
+            changed_px = int(np.count_nonzero(edges1 != edges2))
+            total_px = g1.size
+            fraction = changed_px / max(1, total_px)
+
+            logger.debug(
+                "edge-diff: %d/%d px changed (%.3f%%) min=%.3f%%",
+                changed_px, total_px, fraction * 100, min_edge_fraction * 100,
+            )
+
+            if fraction >= min_edge_fraction:
                 return True
         except Exception:
             pass  # fall through to soft comparison
 
         # ── Soft comparison (SSIM / pHash) ─────────────────────────────
+        # Catches subtle changes that don't manifest as new edges, e.g.
+        # a uniform region changing colour.  Skipped when method is
+        # "edge_only" – useful for apps with animated backgrounds.
+        if method == "edge_only":
+            return False
+
         if method == "phash":
             similarity = ImageProcessor.calculate_phash_similarity(img1, img2)
         else:

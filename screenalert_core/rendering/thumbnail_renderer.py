@@ -310,6 +310,9 @@ class ThumbnailWindow:
         # Thread-safe queue for image updates from worker threads
         self.image_queue: queue.Queue = queue.Queue(maxsize=1)
         
+        # Thread-safe queue for callbacks that must run on the Tk main thread
+        self._callback_queue: queue.Queue = queue.Queue()
+
         # Worker queue + thread: accept raw PIL images from engine/worker threads,
         # perform resizing off the engine thread, then enqueue resized images
         # onto `image_queue` for main-thread PhotoImage conversion and display.
@@ -330,10 +333,25 @@ class ThumbnailWindow:
             
             # Remove window decorations (no title bar)
             self.window.overrideredirect(True)
-            
+
             self.window.geometry(f"{self.width}x{self.height}+{self.x}+{self.y}")
             self.window.attributes('-topmost', self.always_on_top)
             self.window.attributes('-alpha', self.opacity)  # Set opacity
+
+            # Prevent overlay from stealing keyboard focus on click.
+            # WS_EX_NOACTIVATE keeps the previously-focused app active.
+            try:
+                import ctypes
+                self.window.update_idletasks()
+                hwnd = ctypes.windll.user32.GetParent(self.window.winfo_id()) or self.window.winfo_id()
+                GWL_EXSTYLE = -20
+                WS_EX_NOACTIVATE = 0x08000000
+                WS_EX_TOOLWINDOW = 0x00000080
+                user32 = ctypes.windll.user32
+                style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+                user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
+            except Exception as e:
+                logger.debug("Could not set WS_EX_NOACTIVATE: %s", e)
             
             # Main container
             self.container = tk.Frame(self.window, bg='black')
@@ -442,7 +460,7 @@ class ThumbnailWindow:
                 self.title_label.config(text=self._build_overlay_title())
 
         try:
-            self.window.after(0, _apply)
+            self._call_soon_threadsafe(_apply)
         except Exception:
             pass
 
@@ -471,7 +489,7 @@ class ThumbnailWindow:
         if not self.window:
             return
         try:
-            self.window.after(0, lambda: self._set_active_border(is_active))
+            self._call_soon_threadsafe(lambda: self._set_active_border(is_active))
         except Exception:
             pass
 
@@ -480,7 +498,7 @@ class ThumbnailWindow:
         if not self.window:
             return
         try:
-            self.window.after(0, self.window.lift)
+            self._call_soon_threadsafe(self.window.lift)
         except Exception:
             pass
 
@@ -503,9 +521,9 @@ class ThumbnailWindow:
         try:
             # Defer tkinter calls to the main thread; window.after() is thread-safe.
             if self._is_user_hidden:
-                self.window.after(0, self.window.withdraw)
+                self._call_soon_threadsafe(self.window.withdraw)
             else:
-                self.window.after(0, self._apply_availability_state)
+                self._call_soon_threadsafe(self._apply_availability_state)
         except Exception:
             pass
 
@@ -531,6 +549,17 @@ class ThumbnailWindow:
             return
         
         try:
+            # Run any pending callbacks scheduled from worker threads
+            try:
+                while True:
+                    cb = self._callback_queue.get_nowait()
+                    try:
+                        cb()
+                    except Exception:
+                        logger.exception(f"[{self.thumbnail_id}] callback execution failed")
+            except queue.Empty:
+                pass
+
             # Non-blocking check for new images
             try:
                 pil_image = self.image_queue.get_nowait()
@@ -661,9 +690,12 @@ class ThumbnailWindow:
                 try:
                     # Use after to ensure safe destruction on Tk thread
                     try:
-                        self.window.after(0, self.window.destroy)
+                        self._call_soon_threadsafe(self.window.destroy)
                     except Exception:
-                        self.window.destroy()
+                        try:
+                            self.window.destroy()
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 
@@ -677,7 +709,32 @@ class ThumbnailWindow:
         # Defer tkinter calls to the main thread (this method is called from
         # non-main threads, e.g. _main_loop).  window.after() is thread-safe.
         if self.window:
-            self.window.after(0, self._apply_availability_state)
+            self._call_soon_threadsafe(self._apply_availability_state)
+
+    def _call_soon_threadsafe(self, func: Callable, *args, **kwargs) -> None:
+        """Schedule `func` to run on the Tk main thread. If already on the
+        main thread, call directly; otherwise enqueue for the main loop to
+        execute during regular `_process_image_queue` ticks.
+        """
+        try:
+            if threading.current_thread() is threading.main_thread():
+                func(*args, **kwargs)
+                return
+        except Exception:
+            # If threading isn't available or fails, fall back to enqueue
+            pass
+
+        try:
+            self._callback_queue.put_nowait(lambda: func(*args, **kwargs))
+        except Exception:
+            try:
+                self._callback_queue.put(func)
+            except Exception:
+                # As a last resort, try calling directly (may be unsafe)
+                try:
+                    func(*args, **kwargs)
+                except Exception:
+                    pass
 
     def _clear_image_queue(self) -> None:
         """Clear pending image queue to prevent stale frames."""
