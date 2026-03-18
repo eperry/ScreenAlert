@@ -228,6 +228,22 @@ _CATEGORIES: List[Tuple[str, str, Optional[str], List[dict]]] = [
                     "Shows frame timing, detection scores, and thread health.",
         },
     ]),
+    ("reconnect", "Reconnect", None, [
+        {
+            "key": "reconnect_size_tolerance", "name": "Size Tolerance (px)", "type": "int",
+            "desc": "How many pixels a window's width or height may differ from the saved size "
+                    "before it is considered a different window. 0 = exact match required, "
+                    "20 = a few pixels of resize are tolerated. Applies to identity validation "
+                    "and automatic reconnection.",
+            "min": 0, "max": 500, "increment": 5,
+        },
+        {
+            "key": "prompt_on_reconnect_fail", "name": "Prompt on Reconnect Fail", "type": "bool",
+            "desc": "When a manual single-window reconnect fails, show a dialog offering to "
+                    "pick a replacement window from the window selector. Does not apply to "
+                    "Reconnect All or automatic startup reconnection.",
+        },
+    ]),
 ]
 
 # Config getter/setter mapping: key -> (getter_name, setter_name)
@@ -265,6 +281,8 @@ _CONFIG_MAP = {
     "suppress_fullscreen": ("get_suppress_fullscreen", "set_suppress_fullscreen"),
     "update_check_enabled": ("get_update_check_enabled", "set_update_check_enabled"),
     "diagnostics_enabled": ("get_diagnostics_enabled", "set_diagnostics_enabled"),
+    "reconnect_size_tolerance": ("get_reconnect_size_tolerance", "set_reconnect_size_tolerance"),
+    "prompt_on_reconnect_fail": ("get_prompt_on_reconnect_fail", "set_prompt_on_reconnect_fail"),
 }
 
 

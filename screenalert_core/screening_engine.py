@@ -264,7 +264,11 @@ class ScreenAlertEngine:
                 window_size=resolved_window_size,
                 monitor_id=resolved_monitor_id
             )
-            
+
+            if not thumbnail_id:
+                logger.warning(f"Duplicate title rejected by config: '{window_title}'")
+                return None
+
             # Get config
             config = self.config.get_thumbnail(thumbnail_id)
             
@@ -505,12 +509,14 @@ class ScreenAlertEngine:
             self._reconnect_attempted_once.discard(thumbnail_id)
             self._window_lost_notified.discard(thumbnail_id)
 
+            size_tolerance = self.config.get_reconnect_size_tolerance()
             is_valid = self.window_manager.validate_window_identity(
                 window_hwnd,
                 expected_title=window_title,
                 expected_class=expected_class,
                 expected_monitor_id=expected_monitor,
                 expected_size=expected_size,
+                size_tolerance=size_tolerance,
             )
 
             if is_valid:
@@ -560,12 +566,14 @@ class ScreenAlertEngine:
         self._reconnect_attempted_once.discard(thumbnail_id)
         self._window_lost_notified.discard(thumbnail_id)
 
+        size_tolerance = self.config.get_reconnect_size_tolerance()
         is_valid = self.window_manager.validate_window_identity(
             window_hwnd,
             expected_title=window_title,
             expected_class=expected_class,
             expected_monitor_id=expected_monitor,
             expected_size=expected_size,
+            size_tolerance=size_tolerance,
         )
         if is_valid:
             self.renderer.set_thumbnail_availability(thumbnail_id, True)
@@ -591,6 +599,53 @@ class ScreenAlertEngine:
         )
         return "failed"
     
+    def scale_regions_for_new_size(self, thumbnail_id: str,
+                                   old_size: tuple, new_size: tuple) -> int:
+        """Scale all region rects proportionally when the window size changes.
+
+        Args:
+            thumbnail_id: Thumbnail whose regions to scale.
+            old_size: Previous (width, height).
+            new_size: New (width, height).
+
+        Returns:
+            Number of regions scaled.
+        """
+        if not old_size or not new_size:
+            return 0
+        old_w, old_h = old_size
+        new_w, new_h = new_size
+        if old_w <= 0 or old_h <= 0 or (old_w == new_w and old_h == new_h):
+            return 0
+
+        sx = new_w / old_w
+        sy = new_h / old_h
+
+        thumbnail = self.config.get_thumbnail(thumbnail_id)
+        if not thumbnail:
+            return 0
+
+        count = 0
+        for region in thumbnail.get("monitored_regions", []):
+            rect = region.get("rect")
+            if not rect or len(rect) != 4:
+                continue
+            x, y, w, h = rect
+            region["rect"] = [
+                int(round(x * sx)),
+                int(round(y * sy)),
+                int(round(w * sx)),
+                int(round(h * sy)),
+            ]
+            count += 1
+
+        if count:
+            self.config.save()
+            logger.info(f"[{thumbnail_id}] Scaled {count} region(s): "
+                        f"ratio {sx:.3f}x{sy:.3f} "
+                        f"({old_w}x{old_h} -> {new_w}x{new_h})")
+        return count
+
     def _try_reconnect(self, thumbnail_id: str, window_title: str,
                        expected_class: str = None,
                        expected_size=None,
@@ -602,26 +657,26 @@ class ScreenAlertEngine:
         """
         logger.info(f"[{thumbnail_id}] Attempting reconnection for '{window_title}'")
         
-        # Strict reconnect: exact title + exact size (+ optional class/monitor).
-        # No fallback matching is allowed.
-        if not expected_size:
-            logger.warning(
-                f"[{thumbnail_id}] Reconnection aborted: missing expected size for strict matching"
-            )
-            return None
-
+        # Reconnect by exact title match, with optional class/monitor filtering.
+        # Size is NOT used as a filter — windows may have been resized or
+        # restarted at a different resolution.  The stored size is updated
+        # after a successful reconnect so future validation cycles pass.
         new_window = self.window_manager.find_window_by_title(
             window_title, exact=True,
-            expected_size=expected_size, size_tolerance=0,
+            expected_size=None,
             expected_monitor_id=expected_monitor_id,
             expected_class_name=expected_class,
         )
         
         if new_window:
             new_hwnd = new_window['hwnd']
+            new_size = new_window.get('size')
+            if expected_size and new_size and tuple(new_size) != tuple(expected_size):
+                logger.info(f"[{thumbnail_id}] Reconnected with size change: "
+                            f"{list(expected_size)} -> {list(new_size)}")
             logger.info(f"[{thumbnail_id}] Reconnected: "
-                        f"new hwnd={new_hwnd}, size={new_window.get('size')}")
-            
+                        f"new hwnd={new_hwnd}, size={new_size}")
+
             # Update config with new handle and refreshed metadata
             metadata = self.window_manager.get_window_metadata(new_hwnd)
             updates = {"window_hwnd": new_hwnd}
@@ -632,10 +687,16 @@ class ScreenAlertEngine:
             
             with self.lock:
                 self.config.update_thumbnail(thumbnail_id, updates)
+
+            # Scale regions if the window size changed
+            if expected_size and new_size and tuple(new_size) != tuple(expected_size):
+                self.scale_regions_for_new_size(
+                    thumbnail_id, tuple(expected_size), tuple(new_size))
+
             self.config.save()
 
             return new_window
-        
+
         logger.warning(f"[{thumbnail_id}] Reconnection failed for '{window_title}'")
         return None
     
@@ -686,12 +747,14 @@ class ScreenAlertEngine:
                     expected_size = tuple(thumbnail_config["window_size"]) if thumbnail_config.get("window_size") else None
                     expected_monitor = thumbnail_config.get("monitor_id")
                     
+                    size_tolerance = self.config.get_reconnect_size_tolerance()
                     window_ok = self.window_manager.validate_window_identity(
                         window_hwnd,
                         expected_title=window_title,
                         expected_class=expected_class,
                         expected_monitor_id=expected_monitor,
-                        expected_size=expected_size
+                        expected_size=expected_size,
+                        size_tolerance=size_tolerance
                     )
 
                     if window_ok:

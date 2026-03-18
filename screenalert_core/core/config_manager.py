@@ -79,6 +79,8 @@ class ConfigManager:
                 "headless": False,
                 "diagnostics_enabled": False,
                 "save_alert_diagnostics": False,
+                "reconnect_size_tolerance": 20,
+                "prompt_on_reconnect_fail": True,
             },
             "thumbnails": [],
             "ui": {
@@ -470,7 +472,19 @@ class ConfigManager:
 
     def set_headless(self, enabled: bool) -> None:
         self._config["app"]["headless"] = bool(enabled)
-    
+
+    def get_reconnect_size_tolerance(self) -> int:
+        return max(0, min(500, int(self._config.get("app", {}).get("reconnect_size_tolerance", 20))))
+
+    def set_reconnect_size_tolerance(self, value: int) -> None:
+        self._config["app"]["reconnect_size_tolerance"] = max(0, min(500, int(value)))
+
+    def get_prompt_on_reconnect_fail(self) -> bool:
+        return bool(self._config.get("app", {}).get("prompt_on_reconnect_fail", True))
+
+    def set_prompt_on_reconnect_fail(self, enabled: bool) -> None:
+        self._config["app"]["prompt_on_reconnect_fail"] = bool(enabled)
+
     def get_last_window_filter(self) -> str:
         """Get last used window filter"""
         return self._config.get("app", {}).get("last_window_filter", "")
@@ -515,12 +529,12 @@ class ConfigManager:
         Returns:
             Thumbnail ID
         """
-        # Normalize title and prevent duplicate titles (case-insensitive)
+        # Normalize title and reject duplicate titles (case-insensitive)
         normalized_title = str(window_title or "").strip()
         for t in self._config.get("thumbnails", []):
             if str(t.get("window_title", "")).strip().lower() == normalized_title.lower():
-                logger.warning(f"Thumbnail with title already exists, returning existing id: {t.get('id')} ({normalized_title})")
-                return t.get("id")
+                logger.warning(f"Thumbnail with title already exists (id={t.get('id')}), rejecting add for '{normalized_title}'")
+                return None
 
         thumbnail_id = generate_uuid()
         

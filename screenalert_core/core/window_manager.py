@@ -599,21 +599,22 @@ class WindowManager:
                                   expected_title: str = None,
                                   expected_class: str = None,
                                   expected_monitor_id: int = None,
-                                  expected_size=None) -> bool:
+                                  expected_size=None,
+                                  size_tolerance: int = 20) -> bool:
         """Validate that a window handle still corresponds to the expected window.
-        
+
         Returns True if the window is valid and its identity matches expectations.
         Returns False if the window is gone or its metadata doesn't match
         (indicating HWND reuse or monitor migration).
-        
-        Title and size matching are strict:
-        - title must match exactly (case-insensitive, trimmed)
-        - size must match exactly (width and height)
+
+        Title matching is strict (case-insensitive, trimmed).
+        Size matching allows a configurable pixel tolerance (default 20px)
+        to avoid unnecessary reconnect cycles from minor fluctuations.
         """
         metadata = self.get_window_metadata(hwnd)
         if metadata is None:
             return False
-        
+
         if expected_title:
             live_title = metadata['title'].strip().lower()
             saved_title = expected_title.strip().lower()
@@ -621,25 +622,27 @@ class WindowManager:
                 logger.debug(f"Window {hwnd} title mismatch: "
                              f"'{metadata['title']}' vs '{expected_title}'")
                 return False
-        
+
         if expected_class and metadata['class'] != expected_class:
             logger.debug(f"Window {hwnd} class mismatch: "
                          f"'{metadata['class']}' != '{expected_class}'")
             return False
-        
+
         if expected_monitor_id is not None and metadata['monitor_id'] != expected_monitor_id:
             logger.debug(f"Window {hwnd} monitor mismatch: "
                          f"{metadata['monitor_id']} != {expected_monitor_id}")
             return False
-        
+
         if expected_size:
             live_size = tuple(metadata['size'])
             wanted_size = tuple(expected_size)
-            if live_size != wanted_size:
+            if (abs(live_size[0] - wanted_size[0]) > size_tolerance or
+                    abs(live_size[1] - wanted_size[1]) > size_tolerance):
                 logger.debug(f"Window {hwnd} size mismatch: "
-                             f"{metadata['size']} vs expected {expected_size}")
+                             f"{metadata['size']} vs expected {expected_size} "
+                             f"(tolerance={size_tolerance})")
                 return False
-        
+
         return True
 
     def is_foreground_fullscreen(self) -> bool:

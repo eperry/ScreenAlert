@@ -1917,10 +1917,20 @@ class ScreenAlertMainWindow:
         self._update_thumbnail_list()
         self.status_var.set(f"Removed all regions from {title}")
 
+    def _rebuild_thumbnail_map(self) -> None:
+        """Rebuild thumbnail_map from config so HWND keys stay in sync."""
+        self.thumbnail_map.clear()
+        for thumbnail in self.config.get_all_thumbnails():
+            hwnd = thumbnail.get('window_hwnd')
+            thumbnail_id = thumbnail.get('id')
+            if hwnd and thumbnail_id:
+                self.thumbnail_map[hwnd] = thumbnail_id
+
     def _reconnect_all_windows(self) -> None:
         """Manually trigger strict reconnect attempts for all windows."""
         try:
             result = self.engine.reconnect_all_windows()
+            self._rebuild_thumbnail_map()
             self.engine.cache_manager.invalidate_all()
             self._update_thumbnail_list()
 
@@ -1949,6 +1959,7 @@ class ScreenAlertMainWindow:
         title = thumbnail.get("window_title", "Unknown")
         try:
             state = self.engine.reconnect_window(thumbnail_id)
+            self._rebuild_thumbnail_map()
             self.engine.cache_manager.invalidate_all()
             self._update_thumbnail_list()
 
@@ -1956,13 +1967,70 @@ class ScreenAlertMainWindow:
                 self.status_var.set(f"Reconnected: {title}")
             elif state == "already_valid":
                 self.status_var.set(f"Already connected: {title}")
-            elif state == "failed":
+            elif state in ("failed", "missing"):
                 self.status_var.set(f"Reconnect failed: {title}")
-            else:
-                self.status_var.set(f"Window not found: {title}")
+                if self.config.get_prompt_on_reconnect_fail():
+                    self._prompt_reconnect_replacement(thumbnail_id, title)
         except Exception as error:
             logger.error(f"Error reconnecting window '{title}': {error}", exc_info=True)
             msgbox.showerror("Reconnect", f"Reconnect failed: {error}")
+
+    def _prompt_reconnect_replacement(self, thumbnail_id: str, title: str) -> None:
+        """After a failed manual reconnect, offer to pick a replacement window."""
+        answer = msgbox.askyesno(
+            "Reconnect Failed",
+            f"Could not reconnect to '{title}'.\n\n"
+            "Would you like to select a replacement window?\n"
+            "The existing regions and settings will be preserved.",
+        )
+        if not answer:
+            return
+
+        dialog = WindowSelectorDialog(self.root, self.window_manager, self.config)
+        windows_info = dialog.show()
+        if not windows_info or len(windows_info) == 0:
+            return
+
+        window_info = windows_info[0]
+        new_hwnd = window_info.get('hwnd')
+        if not new_hwnd:
+            return
+
+        # Capture old size before updating so regions can be scaled
+        thumbnail = self.config.get_thumbnail(thumbnail_id)
+        old_size = tuple(thumbnail.get("window_size") or []) if thumbnail else ()
+
+        metadata = self.window_manager.get_window_metadata(new_hwnd)
+        new_size = window_info.get('size') or (metadata.get('size') if metadata else None)
+        updates = {
+            "window_hwnd": new_hwnd,
+            "window_title": window_info.get('title', title),
+            "window_class": window_info.get('class') or (metadata.get('class', '') if metadata else ''),
+            "window_size": list(new_size) if new_size else [],
+            "monitor_id": window_info.get('monitor_id', metadata.get('monitor_id') if metadata else None),
+        }
+
+        self.config.update_thumbnail(thumbnail_id, updates)
+
+        # Scale regions proportionally if window size changed
+        if old_size and new_size and len(old_size) == 2 and tuple(new_size) != old_size:
+            self.engine.scale_regions_for_new_size(
+                thumbnail_id, old_size, tuple(new_size))
+
+        self.config.save()
+        self._rebuild_thumbnail_map()
+
+        # Reset engine state so it treats this as a fresh connection
+        self.engine._reconnect_attempted_once.discard(thumbnail_id)
+        self.engine._window_lost_notified.discard(thumbnail_id)
+        self.engine._thumbnail_connected[thumbnail_id] = True
+        self.engine.cache_manager.invalidate_all()
+        self.engine.renderer.set_thumbnail_availability(thumbnail_id, True)
+
+        self._update_thumbnail_list()
+        new_title = updates["window_title"]
+        self.status_var.set(f"Replaced with: {new_title}")
+        logger.info(f"[RECONNECT] Manual replacement for {thumbnail_id}: '{title}' -> '{new_title}' hwnd={new_hwnd}")
 
     def _set_overview_enabled(self, thumbnail_id: str, enabled: bool) -> bool:
         """Show/hide a single overview window without changing monitor state."""
@@ -3659,6 +3727,10 @@ class ScreenAlertMainWindow:
                 logger.debug(f"[PERIODIC UPDATE] Batch complete")
             else:
                 logger.debug(f"[PERIODIC UPDATE] No dirty regions")
+
+            # Keep thumbnail_map in sync with config (engine may update
+            # HWNDs via automatic reconnect on the background thread).
+            self._rebuild_thumbnail_map()
 
             self._refresh_dynamic_status_texts()
             self._refresh_aggregate_status()
