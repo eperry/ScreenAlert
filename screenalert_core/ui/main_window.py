@@ -25,11 +25,14 @@ from screenalert_core.ui.auto_hide_scrollbar import AutoHideScrollbar
 from screenalert_core.core.image_processor import ImageProcessor
 from screenalert_core.utils.update_checker import check_for_updates
 from screenalert_core.utils.constants import LOGS_DIR
+from screenalert_core.ui.window_slot_mixin import WindowSlotMixin
+from screenalert_core.ui.engine_event_mixin import EngineEventMixin
+from screenalert_core.ui.settings_mixin import SettingsMixin
 
 logger = logging.getLogger(__name__)
 
 
-class ScreenAlertMainWindow:
+class ScreenAlertMainWindow(WindowSlotMixin, EngineEventMixin, SettingsMixin):
     """Main control window for ScreenAlert"""
     
     def __init__(self, engine: ScreenAlertEngine):
@@ -540,8 +543,8 @@ class ScreenAlertMainWindow:
         menubar.add_cascade(label="Windows", menu=self.windows_menu)
         self.windows_menu.add_command(label="Add Window", command=self._add_window)
         self.windows_menu.add_command(label="Reconnect All Windows", command=self._reconnect_all_windows)
-        self.windows_menu.add_command(label="Enable All Overviews", command=self._enable_all_overviews)
-        self.windows_menu.add_command(label="Close All Overviews", command=self._close_all_overviews)
+        self.windows_menu.add_command(label="Enable All Overlays", command=self._enable_all_overlays)
+        self.windows_menu.add_command(label="Close All Overlays", command=self._close_all_overlays)
         
         help_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Help", menu=help_menu)
@@ -862,7 +865,9 @@ class ScreenAlertMainWindow:
             self.status_var.set("Add windows already in progress...")
             return
 
-        dialog = WindowSelectorDialog(self.root, self.window_manager, self.config)
+        attached_hwnds = self.engine.get_attached_hwnds()
+        dialog = WindowSelectorDialog(self.root, self.window_manager, self.config,
+                                      attached_hwnds=attached_hwnds)
         windows_info = dialog.show()
 
         if windows_info:
@@ -1085,237 +1090,14 @@ class ScreenAlertMainWindow:
 
         self.status_var.set("Primary window set" if is_primary else "Primary window cleared")
 
-    def _is_overview_visible_live(self, thumbnail_id: str, thumbnail: Optional[Dict] = None) -> bool:
-        """Return overview visibility from config state."""
+    def _is_overlay_visible_live(self, thumbnail_id: str, thumbnail: Optional[Dict] = None) -> bool:
+        """Return overlay visibility from config state."""
         source = thumbnail if thumbnail is not None else self.config.get_thumbnail(thumbnail_id)
-        return bool((source or {}).get("overview_visible", True))
+        if not source:
+            return True
+        return bool(source.get("overlay_visible", source.get("overview_visible", True)))
 
-    def _normalize_window_slot(self, value) -> Optional[int]:
-        """Return a valid 1-10 slot number or None."""
-        try:
-            slot = int(value)
-        except (TypeError, ValueError):
-            return None
-        return slot if 1 <= slot <= 10 else None
-
-    def _get_window_slot(self, thumbnail: Optional[Dict]) -> Optional[int]:
-        """Get normalized slot number from thumbnail config."""
-        if not thumbnail:
-            return None
-        return self._normalize_window_slot(thumbnail.get("window_slot"))
-
-    def _get_slot_owner_id(self, slot: int) -> Optional[str]:
-        """Return thumbnail id currently owning a slot, if any."""
-        for thumbnail in self.config.get_all_thumbnails():
-            thumbnail_id = thumbnail.get("id")
-            if not thumbnail_id:
-                continue
-            if self._get_window_slot(thumbnail) == slot:
-                return thumbnail_id
-        return None
-
-    def _swap_or_assign_window_slot(self, target_thumbnail_id: str, new_slot: int) -> bool:
-        """Assign a slot to target, swapping with current owner when needed."""
-        target = self.config.get_thumbnail(target_thumbnail_id)
-        if not target:
-            return False
-
-        normalized_slot = self._normalize_window_slot(new_slot)
-        if normalized_slot is None:
-            return False
-
-        current_slot = self._get_window_slot(target)
-        if current_slot == normalized_slot:
-            return False
-
-        owner_id = self._get_slot_owner_id(normalized_slot)
-        changed = False
-
-        if owner_id and owner_id != target_thumbnail_id:
-            owner = self.config.get_thumbnail(owner_id)
-            if owner:
-                owner_updates = {"window_slot": current_slot if current_slot is not None else None}
-                if owner.get("window_slot") != owner_updates["window_slot"]:
-                    self.config.update_thumbnail(owner_id, owner_updates)
-                    changed = True
-
-        if target.get("window_slot") != normalized_slot:
-            self.config.update_thumbnail(target_thumbnail_id, {"window_slot": normalized_slot})
-            changed = True
-
-        return changed
-
-    def _get_first_available_slot(self) -> Optional[int]:
-        """Return first free slot in range 1..10."""
-        used = {
-            slot for slot in (self._get_window_slot(thumb) for thumb in self.config.get_all_thumbnails())
-            if slot is not None
-        }
-        for slot in range(1, 11):
-            if slot not in used:
-                return slot
-        return None
-
-    def _assign_default_slot_if_missing(self, thumbnail_id: str) -> None:
-        """Assign the next available slot to a window when unassigned."""
-        thumbnail = self.config.get_thumbnail(thumbnail_id)
-        if not thumbnail or self._get_window_slot(thumbnail) is not None:
-            return
-
-        if bool(thumbnail.get("is_primary", False)):
-            desired = 1
-        else:
-            desired = self._get_first_available_slot()
-
-        if desired is None:
-            return
-
-        if self._swap_or_assign_window_slot(thumbnail_id, desired):
-            self.config.save()
-            self.engine.refresh_thumbnail_titles()
-
-    def _ensure_window_slot_consistency(self) -> None:
-        """Ensure windows have unique slots and Primary remains on slot 1."""
-        changed = False
-
-        primary_owner_id, _ = self._get_focus_owner_ids()
-        slot_one_owner_id = self._get_slot_owner_id(1)
-        if primary_owner_id:
-            if slot_one_owner_id and slot_one_owner_id != primary_owner_id:
-                # Slot 1 is non-swappable: keep slot owner at 1 and align Primary to it.
-                for thumbnail in self.config.get_all_thumbnails():
-                    thumbnail_id = thumbnail.get("id")
-                    if not thumbnail_id:
-                        continue
-                    should_be_primary = thumbnail_id == slot_one_owner_id
-                    if bool(thumbnail.get("is_primary", False)) != should_be_primary:
-                        self.config.update_thumbnail(thumbnail_id, {"is_primary": should_be_primary})
-                        changed = True
-            else:
-                changed = self._swap_or_assign_window_slot(primary_owner_id, 1) or changed
-
-        for thumbnail in self.config.get_all_thumbnails():
-            thumbnail_id = thumbnail.get("id")
-            if not thumbnail_id:
-                continue
-            if self._get_window_slot(thumbnail) is not None:
-                continue
-            desired = self._get_first_available_slot()
-            if desired is None:
-                continue
-            self.config.update_thumbnail(thumbnail_id, {"window_slot": desired})
-            changed = True
-
-        if changed:
-            self.config.save()
-            self.engine.refresh_thumbnail_titles()
-
-    def _on_window_slot_changed(self, _event=None) -> None:
-        """Handle slot change from Window Info UI with swap behavior."""
-        selected_id = self.selected_thumbnail_id
-        if not selected_id:
-            return
-
-        selected_thumbnail = self.config.get_thumbnail(selected_id)
-        if not selected_thumbnail:
-            return
-
-        new_slot = self._normalize_window_slot(self.window_slot_var.get())
-        if new_slot is None:
-            return
-
-        primary_owner_id, _ = self._get_focus_owner_ids()
-        is_selected_primary = bool(selected_thumbnail.get("is_primary", False))
-        previous_slot = self._get_window_slot(selected_thumbnail)
-        slot_one_owner_id = self._get_slot_owner_id(1)
-        requested_owner_id = self._get_slot_owner_id(new_slot)
-
-        if is_selected_primary and new_slot != 1:
-            self.window_slot_var.set("1")
-            self.status_var.set("Primary window must use slot 1")
-            return
-
-        if not is_selected_primary and primary_owner_id and primary_owner_id != selected_id and new_slot == 1:
-            self.window_slot_var.set(str(previous_slot) if previous_slot else "")
-            self.status_var.set("Slot 1 is reserved for the Primary window")
-            return
-
-        if new_slot == 1 and slot_one_owner_id and slot_one_owner_id != selected_id:
-            self.window_slot_var.set(str(previous_slot) if previous_slot else "")
-            self.status_var.set("Slot 1 cannot be swapped")
-            return
-
-        if self._swap_or_assign_window_slot(selected_id, new_slot):
-            self.config.save()
-            self.engine.refresh_thumbnail_titles()
-            self.status_var.set(f"Window slot set to {new_slot}")
-        else:
-            self.status_var.set(f"Window slot remains {new_slot}")
-
-        selected_thumbnail = self.config.get_thumbnail(selected_id)
-        selected_slot = self._get_window_slot(selected_thumbnail)
-        self.window_slot_var.set(str(selected_slot) if selected_slot else "")
-        self._schedule_clear_window_slot_selection()
-
-    def _schedule_clear_window_slot_selection(self) -> None:
-        """Clear selected text in Alt Slot combobox to prevent unreadable highlight."""
-        combo = getattr(self, 'window_slot_combo', None)
-        if not combo:
-            return
-
-        def _clear() -> None:
-            try:
-                combo.selection_clear()
-            except Exception:
-                pass
-
-        try:
-            self.root.after_idle(_clear)
-        except Exception:
-            _clear()
-
-    def _activate_window_by_slot(self, slot: int):
-        """Activate window assigned to Alt slot number."""
-        target_slot = self._normalize_window_slot(slot)
-        if target_slot is None:
-            return "break"
-
-        target_thumbnail = None
-        for thumbnail in self.config.get_all_thumbnails():
-            if self._get_window_slot(thumbnail) == target_slot:
-                target_thumbnail = thumbnail
-                break
-
-        if not target_thumbnail:
-            self.status_var.set(f"No window assigned to Alt+{0 if target_slot == 10 else target_slot}")
-            return "break"
-
-        thumbnail_id = target_thumbnail.get("id")
-        hwnd = target_thumbnail.get("window_hwnd")
-        title = target_thumbnail.get("window_title", "Unknown")
-        if not thumbnail_id:
-            return "break"
-
-        if not hwnd or not self.window_manager.is_window_valid(hwnd):
-            reconnect_state = self.engine.reconnect_window(thumbnail_id)
-            if reconnect_state not in ("already_valid", "reconnected"):
-                self.status_var.set(f"Alt+{0 if target_slot == 10 else target_slot}: window unavailable")
-                return "break"
-            refreshed = self.config.get_thumbnail(thumbnail_id)
-            hwnd = refreshed.get("window_hwnd") if refreshed else None
-
-        if hwnd and self.window_manager.activate_window(hwnd):
-            self.selected_thumbnail_id = thumbnail_id
-            self.selected_region_id = None
-            self.show_all_regions = False
-            self._pending_tree_focus_window_id = thumbnail_id
-            self._pending_tree_focus_region_id = None
-            self._update_thumbnail_list()
-            self.status_var.set(f"Activated Alt+{0 if target_slot == 10 else target_slot}: {title}")
-        else:
-            self.status_var.set(f"Failed to activate Alt+{0 if target_slot == 10 else target_slot}")
-
-        return "break"
+    # Window slot methods are in WindowSlotMixin (window_slot_mixin.py)
 
     def _toggle_alert_focus_window(self) -> None:
         """Persist Alert Focus flag for selected window (single-alert-focus semantics)."""
@@ -1478,57 +1260,7 @@ class ScreenAlertMainWindow:
             logger.error(f"Error opening settings dialog: {str(e)}", exc_info=True)
             msgbox.showerror("Error", f"Failed to open settings: {str(e)}")
 
-    def _apply_settings_realtime(self, settings: Dict) -> None:
-        """Apply settings that can safely take effect at runtime."""
-        if "theme_preset" in settings:
-            self.set_theme_preset(str(settings.get("theme_preset", self._theme_preset)))
-        elif "high_contrast" in settings:
-            self.set_high_contrast(bool(settings.get("high_contrast", self._current_theme == 'high-contrast')))
-        self._schedule_runtime_settings_apply(settings)
-
-    def _schedule_runtime_settings_apply(self, settings: Dict) -> None:
-        """Coalesce runtime setting updates to keep UI responsive during rapid Apply actions."""
-        runtime_payload = {
-            "opacity": float(settings.get("opacity", self.config.get_opacity())),
-            "always_on_top": bool(settings.get("always_on_top", self.config.get_always_on_top())),
-            "show_borders": bool(settings.get("show_borders", self.config.get_show_borders())),
-            "show_overlay_when_unavailable": bool(
-                settings.get(
-                    "show_overlay_when_unavailable",
-                    self.config.get_show_overlay_when_unavailable(),
-                )
-            ),
-        }
-        self._pending_runtime_settings = runtime_payload
-        if self._runtime_apply_scheduled:
-            return
-        self._runtime_apply_scheduled = True
-        self.root.after_idle(self._flush_runtime_settings_apply)
-
-    def _flush_runtime_settings_apply(self) -> None:
-        """Apply latest queued runtime settings once."""
-        self._runtime_apply_scheduled = False
-        payload = self._pending_runtime_settings
-        self._pending_runtime_settings = None
-        if not payload:
-            return
-        if payload == self._last_applied_runtime_settings:
-            return
-        try:
-            self.engine.apply_runtime_settings(
-                opacity=float(payload.get("opacity", self.config.get_opacity())),
-                always_on_top=bool(payload.get("always_on_top", self.config.get_always_on_top())),
-                show_borders=bool(payload.get("show_borders", self.config.get_show_borders())),
-                show_overlay_when_unavailable=bool(
-                    payload.get(
-                        "show_overlay_when_unavailable",
-                        self.config.get_show_overlay_when_unavailable(),
-                    )
-                ),
-            )
-            self._last_applied_runtime_settings = dict(payload)
-        except Exception as runtime_error:
-            logger.error(f"Error applying runtime settings: {runtime_error}")
+    # Runtime settings methods are in SettingsMixin (settings_mixin.py)
 
     def _show_shortcuts(self) -> None:
         """Display keyboard shortcuts help popup."""
@@ -1817,8 +1549,8 @@ class ScreenAlertMainWindow:
         if kind == "all":
             menu.add_command(label="Add Window", command=self._add_window)
             menu.add_command(
-                label="Enable All Overviews",
-                command=self._enable_all_overviews,
+                label="Enable All Overlays",
+                command=self._enable_all_overlays,
                 state=tk.NORMAL,
             )
             menu.add_command(label=("Resume All" if self.engine.paused else "Pause All"), command=self._toggle_pause)
@@ -1833,8 +1565,8 @@ class ScreenAlertMainWindow:
         elif kind == "window":
             menu.add_command(label="Add Region", command=self._add_region)
             menu.add_command(
-                label="Enable Overview",
-                command=self._enable_selected_overview,
+                label="Enable Overlay",
+                command=self._enable_selected_overlay,
                 state=tk.NORMAL,
             )
             menu.add_command(label="Reconnect Window", command=self._reconnect_selected_window)
@@ -1917,10 +1649,20 @@ class ScreenAlertMainWindow:
         self._update_thumbnail_list()
         self.status_var.set(f"Removed all regions from {title}")
 
+    def _rebuild_thumbnail_map(self) -> None:
+        """Rebuild thumbnail_map from config so HWND keys stay in sync."""
+        self.thumbnail_map.clear()
+        for thumbnail in self.config.get_all_thumbnails():
+            hwnd = thumbnail.get('window_hwnd')
+            thumbnail_id = thumbnail.get('id')
+            if hwnd and thumbnail_id:
+                self.thumbnail_map[hwnd] = thumbnail_id
+
     def _reconnect_all_windows(self) -> None:
         """Manually trigger strict reconnect attempts for all windows."""
         try:
             result = self.engine.reconnect_all_windows()
+            self._rebuild_thumbnail_map()
             self.engine.cache_manager.invalidate_all()
             self._update_thumbnail_list()
 
@@ -1949,6 +1691,7 @@ class ScreenAlertMainWindow:
         title = thumbnail.get("window_title", "Unknown")
         try:
             state = self.engine.reconnect_window(thumbnail_id)
+            self._rebuild_thumbnail_map()
             self.engine.cache_manager.invalidate_all()
             self._update_thumbnail_list()
 
@@ -1956,28 +1699,93 @@ class ScreenAlertMainWindow:
                 self.status_var.set(f"Reconnected: {title}")
             elif state == "already_valid":
                 self.status_var.set(f"Already connected: {title}")
-            elif state == "failed":
+            elif state in ("failed", "missing"):
                 self.status_var.set(f"Reconnect failed: {title}")
-            else:
-                self.status_var.set(f"Window not found: {title}")
+                if self.config.get_prompt_on_reconnect_fail():
+                    self._prompt_reconnect_replacement(thumbnail_id, title)
         except Exception as error:
             logger.error(f"Error reconnecting window '{title}': {error}", exc_info=True)
             msgbox.showerror("Reconnect", f"Reconnect failed: {error}")
 
-    def _set_overview_enabled(self, thumbnail_id: str, enabled: bool) -> bool:
-        """Show/hide a single overview window without changing monitor state."""
+    def _prompt_reconnect_replacement(self, thumbnail_id: str, title: str) -> None:
+        """After a failed manual reconnect, offer to pick a replacement window."""
+        answer = msgbox.askyesno(
+            "Reconnect Failed",
+            f"Could not reconnect to '{title}'.\n\n"
+            "Would you like to select a replacement window?\n"
+            "The existing regions and settings will be preserved.",
+        )
+        if not answer:
+            return
+
+        attached_hwnds = self.engine.get_attached_hwnds(exclude_thumbnail_id=thumbnail_id)
+        dialog = WindowSelectorDialog(self.root, self.window_manager, self.config,
+                                      attached_hwnds=attached_hwnds)
+        windows_info = dialog.show()
+        if not windows_info or len(windows_info) == 0:
+            return
+
+        window_info = windows_info[0]
+        new_hwnd = window_info.get('hwnd')
+        if not new_hwnd:
+            return
+
+        # Capture old size before updating so regions can be scaled
+        thumbnail = self.config.get_thumbnail(thumbnail_id)
+        old_size = tuple(thumbnail.get("window_size") or []) if thumbnail else ()
+
+        metadata = self.window_manager.get_window_metadata(new_hwnd)
+        new_size = window_info.get('size') or (metadata.get('size') if metadata else None)
+        updates = {
+            "window_hwnd": new_hwnd,
+            "window_title": window_info.get('title', title),
+            "window_class": window_info.get('class') or (metadata.get('class', '') if metadata else ''),
+            "window_size": list(new_size) if new_size else [],
+            "monitor_id": window_info.get('monitor_id', metadata.get('monitor_id') if metadata else None),
+        }
+
+        self.config.update_thumbnail(thumbnail_id, updates)
+
+        # Scale regions proportionally if window size changed
+        if old_size and new_size and len(old_size) == 2 and tuple(new_size) != old_size:
+            self.engine.scale_regions_for_new_size(
+                thumbnail_id, old_size, tuple(new_size))
+
+        self.config.save()
+        self._rebuild_thumbnail_map()
+
+        # Reset engine state so it treats this as a fresh connection
+        self.engine._reconnect_attempted_once.discard(thumbnail_id)
+        self.engine._window_lost_notified.discard(thumbnail_id)
+        self.engine._thumbnail_connected[thumbnail_id] = True
+        self.engine.cache_manager.invalidate_all()
+        self.engine.renderer.set_source_hwnd(thumbnail_id, new_hwnd)
+        self.engine.renderer.set_thumbnail_availability(thumbnail_id, True)
+
+        self._update_thumbnail_list()
+        new_title = updates["window_title"]
+        self.status_var.set(f"Replaced with: {new_title}")
+        logger.info(f"[RECONNECT] Manual replacement for {thumbnail_id}: '{title}' -> '{new_title}' hwnd={new_hwnd}")
+
+    def _set_overlay_enabled(self, thumbnail_id: str, enabled: bool) -> bool:
+        """Show/hide a single overlay window without changing monitor state."""
         thumbnail = self.config.get_thumbnail(thumbnail_id)
         if not thumbnail:
             return False
 
         target_enabled = bool(enabled)
-        current_visible = bool(thumbnail.get("overview_visible", True))
+        current_visible = bool(thumbnail.get("overlay_visible",
+                                             thumbnail.get("overview_visible", True)))
         if current_visible != target_enabled:
-            self.config.update_thumbnail(thumbnail_id, {"overview_visible": target_enabled})
+            self.config.update_thumbnail(thumbnail_id, {"overlay_visible": target_enabled})
             self.config.save()
 
         if target_enabled:
             self.engine.renderer.set_thumbnail_user_visibility(thumbnail_id, True)
+            # Re-establish DWM link since it may have been dropped
+            window_hwnd = thumbnail.get("window_hwnd")
+            if window_hwnd:
+                self.engine.renderer.set_source_hwnd(thumbnail_id, window_hwnd)
             self.engine.renderer.set_thumbnail_availability(
                 thumbnail_id,
                 True,
@@ -1988,8 +1796,8 @@ class ScreenAlertMainWindow:
 
         return True
 
-    def _enable_selected_overview(self) -> None:
-        """Enable overview window for the currently selected thumbnail."""
+    def _enable_selected_overlay(self) -> None:
+        """Enable overlay window for the currently selected thumbnail."""
         if not self.selected_thumbnail_id:
             self.status_var.set("Select a window first")
             return
@@ -2000,33 +1808,33 @@ class ScreenAlertMainWindow:
             return
 
         title = thumbnail.get("window_title", "Unknown")
-        self._set_overview_enabled(self.selected_thumbnail_id, True)
-        self.status_var.set(f"Overview enabled: {title}")
+        self._set_overlay_enabled(self.selected_thumbnail_id, True)
+        self.status_var.set(f"Overlay enabled: {title}")
         self._update_thumbnail_list()
 
-    def _enable_all_overviews(self) -> None:
-        """Enable all configured overview windows."""
+    def _enable_all_overlays(self) -> None:
+        """Enable all configured overlay windows."""
         total = 0
         for thumbnail in self.config.get_all_thumbnails():
             thumbnail_id = thumbnail.get("id")
             if not thumbnail_id:
                 continue
-            self._set_overview_enabled(thumbnail_id, True)
+            self._set_overlay_enabled(thumbnail_id, True)
             total += 1
 
-        self.status_var.set(f"Enabled {total} overview(s)")
+        self.status_var.set(f"Enabled {total} overlay(s)")
         self._update_thumbnail_list()
 
-    def _close_all_overviews(self) -> None:
-        """Close all configured overview windows visually (keep monitoring active)."""
+    def _close_all_overlays(self) -> None:
+        """Close all configured overlay windows visually (keep monitoring active)."""
         total = 0
         for thumbnail in self.config.get_all_thumbnails():
             thumbnail_id = thumbnail.get("id")
             if thumbnail_id:
-                self._set_overview_enabled(thumbnail_id, False)
+                self._set_overlay_enabled(thumbnail_id, False)
                 total += 1
 
-        self.status_var.set(f"Closed {total} overview(s)")
+        self.status_var.set(f"Closed {total} overlay(s)")
         self._update_thumbnail_list()
     
     def _update_thumbnail_list(self) -> None:
@@ -2266,113 +2074,7 @@ class ScreenAlertMainWindow:
             logger.warning(f"Failed to marshal callback to UI thread: {error}")
             return False
 
-    def _enqueue_engine_event(self, event_type: str, *args) -> None:
-        """Coalesce high-frequency engine events and flush once on UI thread."""
-        with self._event_lock:
-            if event_type == "alert":
-                thumbnail_id, region_id, region_name = args
-                self._pending_alert_events[(thumbnail_id, region_id)] = region_name
-            elif event_type == "change":
-                thumbnail_id, region_id, state = args
-                self._pending_region_change_events[(thumbnail_id, region_id)] = state
-            elif event_type == "window_lost":
-                thumbnail_id, window_title = args
-                self._pending_window_lost_events[thumbnail_id] = window_title
-
-            if self._ui_event_flush_scheduled:
-                return
-            self._ui_event_flush_scheduled = True
-
-        try:
-            self.root.after(0, self._flush_engine_events)
-        except Exception as error:
-            logger.warning(f"Failed scheduling engine event flush: {error}")
-            with self._event_lock:
-                self._ui_event_flush_scheduled = False
-
-    def _flush_engine_events(self) -> None:
-        """Apply coalesced engine events on the Tk UI thread."""
-        with self._event_lock:
-            alerts = list(self._pending_alert_events.items())
-            changes = list(self._pending_region_change_events.items())
-            lost_windows = list(self._pending_window_lost_events.items())
-            self._pending_alert_events.clear()
-            self._pending_region_change_events.clear()
-            self._pending_window_lost_events.clear()
-            self._ui_event_flush_scheduled = False
-
-        if self.config.get_diagnostics_enabled():
-            logger.debug(
-                f"[UI EVENT FLUSH] alerts={len(alerts)} changes={len(changes)} window_lost={len(lost_windows)}"
-            )
-
-        for (thumbnail_id, region_id), region_name in alerts:
-            self._on_alert(thumbnail_id, region_id, region_name)
-        for (thumbnail_id, region_id), state in changes:
-            self._on_region_change(thumbnail_id, region_id, state)
-        for thumbnail_id, window_title in lost_windows:
-            self._on_window_lost(thumbnail_id, window_title)
-    
-    def _on_alert(self, thumbnail_id: str, region_id: str, region_name: str) -> None:
-        """Handle alert event with status update and TTS"""
-        if threading.current_thread() is not threading.main_thread():
-            self._enqueue_engine_event("alert", thumbnail_id, region_id, region_name)
-            return
-
-        thumbnail = self.config.get_thumbnail(thumbnail_id)
-        if thumbnail:
-            title = thumbnail.get('window_title', 'Unknown')
-            
-            logger.info(f"[ALERT EVENT] {title} - {region_name} (region_id={region_id})")
-
-            self._activate_alert_focus_window()
-            
-            # Mark region as dirty for BOTH status and thumbnail updates
-            self._mark_dirty(thumbnail_id, region_id, status="alert", thumbnail=True)
-            
-            # Update status bar
-            self.status_var.set(f"🚨 ALERT: {title} - {region_name}")
-            
-            logger.info(f"Alert in {title}: {region_name}")
-
-    
-    def _on_region_change(self, thumbnail_id: str, region_id: str, state: str = "ok") -> None:
-        """Handle region state change from the monitoring engine."""
-        if threading.current_thread() is not threading.main_thread():
-            self._enqueue_engine_event("change", thumbnail_id, region_id, state)
-            return
-
-        thumbnail = self.config.get_thumbnail(thumbnail_id)
-        if thumbnail:
-            regions = thumbnail.get('monitored_regions', [])
-            region_name = "Unknown"
-            for region in regions:
-                if region.get('id') == region_id:
-                    region_name = region.get('name', 'Unknown')
-                    break
-
-            logger.debug(f"[STATE EVENT] {thumbnail.get('window_title', 'Unknown')} - {region_name} -> {state}")
-
-            # Mark region as dirty for BOTH status and thumbnail updates
-            self._mark_dirty(thumbnail_id, region_id, status=state, thumbnail=True)
-
-    
-    def _on_window_lost(self, thumbnail_id: str, window_title: str) -> None:
-        """Handle lost window — mark all its regions as unavailable."""
-        if threading.current_thread() is not threading.main_thread():
-            self._enqueue_engine_event("window_lost", thumbnail_id, window_title)
-            return
-
-        logger.warning(f"Window lost: {window_title}")
-        self.status_var.set(f"Window lost: {window_title}")
-
-        # Set all regions for this thumbnail to unavailable/N/A
-        thumbnail = self.config.get_thumbnail(thumbnail_id)
-        if thumbnail:
-            for region in thumbnail.get("monitored_regions", []):
-                region_id = region.get("id", "")
-                if region_id:
-                    self._mark_dirty(thumbnail_id, region_id, status="unavailable", thumbnail=True)
+    # Engine event methods are in EngineEventMixin (engine_event_mixin.py)
 
     def _render_window_detail(self, thumbnail: Optional[Dict]) -> None:
         """Render window info and region cards"""
@@ -2959,8 +2661,8 @@ class ScreenAlertMainWindow:
             icons.append(("disconnected", "Window is disconnected/disabled"))
 
         thumbnail_id = thumbnail.get("id")
-        if self._is_overview_visible_live(thumbnail_id, thumbnail):
-            icons.append(("overview_open", "Overview is visible"))
+        if self._is_overlay_visible_live(thumbnail_id, thumbnail):
+            icons.append(("overlay_open", "Overlay is visible"))
         return icons
 
     def _format_window_tree_text(self, thumbnail: Dict, window_status: str) -> str:
@@ -3072,10 +2774,10 @@ class ScreenAlertMainWindow:
         title = thumbnail.get("window_title", "Unknown")
         is_primary = bool(thumbnail.get("is_primary", False))
         thumbnail_id = thumbnail.get("id")
-        overview_visible = self._is_overview_visible_live(thumbnail_id, thumbnail)
+        overlay_visible = self._is_overlay_visible_live(thumbnail_id, thumbnail)
         row_text = f"{'• ' if is_primary else '  '}{title}"
 
-        cache_key = (row_text, window_status, overview_visible, window_tree_state, self._current_theme, self._theme_preset)
+        cache_key = (row_text, window_status, overlay_visible, window_tree_state, self._current_theme, self._theme_preset)
 
         cached = self._window_tree_icon_strip_cache.get(cache_key)
         if cached is not None:
@@ -3098,7 +2800,7 @@ class ScreenAlertMainWindow:
         icon_size = max(12, line_space - 2)
         spacing = 6
         right_pad = 2
-        icon_count = 1 + (1 if overview_visible else 0)
+        icon_count = 1 + (1 if overlay_visible else 0)
         icons_width = (icon_count * icon_size) + ((icon_count - 1) * spacing)
 
         width = 4 + text_width + 10 + icons_width + right_pad
@@ -3114,7 +2816,7 @@ class ScreenAlertMainWindow:
         self._draw_connection_icon(draw, icon_x, icon_y, icon_size, connected=(window_status == "connected"))
         icon_x += icon_size + spacing
 
-        if overview_visible:
+        if overlay_visible:
             self._draw_open_eye_icon(draw, icon_x, icon_y, icon_size)
 
         tk_image = ImageTk.PhotoImage(image)
@@ -3659,6 +3361,10 @@ class ScreenAlertMainWindow:
                 logger.debug(f"[PERIODIC UPDATE] Batch complete")
             else:
                 logger.debug(f"[PERIODIC UPDATE] No dirty regions")
+
+            # Keep thumbnail_map in sync with config (engine may update
+            # HWNDs via automatic reconnect on the background thread).
+            self._rebuild_thumbnail_map()
 
             self._refresh_dynamic_status_texts()
             self._refresh_aggregate_status()

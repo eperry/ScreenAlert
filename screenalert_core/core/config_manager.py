@@ -7,7 +7,7 @@ from typing import Dict, Any, Optional, List
 
 from screenalert_core.utils.constants import (
     CONFIG_FILE, WINDOW_REGION_CONFIG_FILE, CONFIG_DIR, DEFAULT_REFRESH_RATE_MS, DEFAULT_OPACITY,
-    DEFAULT_ALERT_THRESHOLD, THUMBNAIL_DEFAULT_WIDTH, THUMBNAIL_DEFAULT_HEIGHT
+    DEFAULT_ALERT_THRESHOLD, THUMBNAIL_DEFAULT_WIDTH, THUMBNAIL_DEFAULT_HEIGHT, LOG_LEVELS,
 )
 from screenalert_core.utils.helpers import generate_uuid
 
@@ -46,7 +46,7 @@ class ConfigManager:
                 "always_on_top": True,
                 "show_borders": True,
                 "show_overlay_when_unavailable": False,
-                "log_verbose": False,
+                "log_level": "ERROR",
                 "high_contrast": False,
                 "last_window_filter": "",
                 "last_window_size_filter_op": "==",
@@ -79,6 +79,13 @@ class ConfigManager:
                 "headless": False,
                 "diagnostics_enabled": False,
                 "save_alert_diagnostics": False,
+                "reconnect_size_tolerance": 20,
+                "prompt_on_reconnect_fail": True,
+                "overlay_update_rate_hz": 30,
+                "auto_discovery_enabled": True,
+                "auto_discovery_interval_sec": 60,
+                "overlay_scaling_mode": "fit",
+                "show_overlay_on_connect": True,
             },
             "thumbnails": [],
             "ui": {
@@ -118,6 +125,13 @@ class ConfigManager:
                 result["version"] = app_loaded["version"]
             if isinstance(app_loaded.get("app"), dict):
                 result["app"].update(app_loaded["app"])
+            # Migrate legacy log_verbose -> log_level
+            app_section = result.get("app", {})
+            if "log_level" not in app_section and app_section.get("log_verbose", False):
+                app_section["log_level"] = "DEBUG"
+                logger.info("Migrated legacy log_verbose=True to log_level=DEBUG")
+            # Remove the legacy key so it is not written back
+            app_section.pop("log_verbose", None)
             if isinstance(app_loaded.get("ui"), dict):
                 result["ui"].update(app_loaded["ui"])
             if isinstance(app_loaded.get("plugins"), dict):
@@ -246,13 +260,27 @@ class ConfigManager:
         """Set whether overlays remain visible with a Not Available placeholder."""
         self._config["app"]["show_overlay_when_unavailable"] = bool(enabled)
     
+    def get_log_level(self) -> str:
+        """Return the configured log level string (TRACE/DEBUG/INFO/WARNING/ERROR)."""
+        val = self._config.get("app", {}).get("log_level", "ERROR")
+        if val not in LOG_LEVELS:
+            return "ERROR"
+        return val
+
+    def set_log_level(self, level: str) -> None:
+        """Set the log level string, validated against known levels."""
+        if level not in LOG_LEVELS:
+            logger.warning("set_log_level: unknown level %r, ignoring", level)
+            return
+        self._config["app"]["log_level"] = level
+
+    # Legacy shim kept for any code that still calls set_verbose_logging via
+    # the --diagnostics CLI path; maps to log_level=DEBUG.
     def get_verbose_logging(self) -> bool:
-        """Get verbose logging setting"""
-        return self._config.get("app", {}).get("log_verbose", False)
-    
+        return self.get_log_level() in ("TRACE", "DEBUG")
+
     def set_verbose_logging(self, verbose: bool) -> None:
-        """Set verbose logging"""
-        self._config["app"]["log_verbose"] = verbose
+        self.set_log_level("DEBUG" if verbose else "WARNING")
 
     def get_high_contrast(self) -> bool:
         """Get high contrast mode setting."""
@@ -470,7 +498,52 @@ class ConfigManager:
 
     def set_headless(self, enabled: bool) -> None:
         self._config["app"]["headless"] = bool(enabled)
-    
+
+    def get_reconnect_size_tolerance(self) -> int:
+        return max(0, min(500, int(self._config.get("app", {}).get("reconnect_size_tolerance", 20))))
+
+    def set_reconnect_size_tolerance(self, value: int) -> None:
+        self._config["app"]["reconnect_size_tolerance"] = max(0, min(500, int(value)))
+
+    def get_prompt_on_reconnect_fail(self) -> bool:
+        return bool(self._config.get("app", {}).get("prompt_on_reconnect_fail", True))
+
+    def set_prompt_on_reconnect_fail(self, enabled: bool) -> None:
+        self._config["app"]["prompt_on_reconnect_fail"] = bool(enabled)
+
+    def get_overlay_update_rate_hz(self) -> int:
+        return max(10, min(60, int(self._config.get("app", {}).get("overlay_update_rate_hz", 30))))
+
+    def set_overlay_update_rate_hz(self, hz: int) -> None:
+        self._config["app"]["overlay_update_rate_hz"] = max(10, min(60, int(hz)))
+
+    def get_auto_discovery_enabled(self) -> bool:
+        return bool(self._config.get("app", {}).get("auto_discovery_enabled", True))
+
+    def set_auto_discovery_enabled(self, enabled: bool) -> None:
+        self._config["app"]["auto_discovery_enabled"] = bool(enabled)
+
+    def get_auto_discovery_interval_sec(self) -> int:
+        return max(10, min(300, int(self._config.get("app", {}).get("auto_discovery_interval_sec", 60))))
+
+    def set_auto_discovery_interval_sec(self, seconds: int) -> None:
+        self._config["app"]["auto_discovery_interval_sec"] = max(10, min(300, int(seconds)))
+
+    def get_overlay_scaling_mode(self) -> str:
+        mode = self._config.get("app", {}).get("overlay_scaling_mode", "fit")
+        return mode if mode in ("fit", "stretch", "letterbox") else "fit"
+
+    def set_overlay_scaling_mode(self, mode: str) -> None:
+        if mode not in ("fit", "stretch", "letterbox"):
+            mode = "fit"
+        self._config["app"]["overlay_scaling_mode"] = mode
+
+    def get_show_overlay_on_connect(self) -> bool:
+        return bool(self._config.get("app", {}).get("show_overlay_on_connect", True))
+
+    def set_show_overlay_on_connect(self, enabled: bool) -> None:
+        self._config["app"]["show_overlay_on_connect"] = bool(enabled)
+
     def get_last_window_filter(self) -> str:
         """Get last used window filter"""
         return self._config.get("app", {}).get("last_window_filter", "")
@@ -515,12 +588,12 @@ class ConfigManager:
         Returns:
             Thumbnail ID
         """
-        # Normalize title and prevent duplicate titles (case-insensitive)
+        # Normalize title and reject duplicate titles (case-insensitive)
         normalized_title = str(window_title or "").strip()
         for t in self._config.get("thumbnails", []):
             if str(t.get("window_title", "")).strip().lower() == normalized_title.lower():
-                logger.warning(f"Thumbnail with title already exists, returning existing id: {t.get('id')} ({normalized_title})")
-                return t.get("id")
+                logger.warning(f"Thumbnail with title already exists (id={t.get('id')}), rejecting add for '{normalized_title}'")
+                return None
 
         thumbnail_id = generate_uuid()
         

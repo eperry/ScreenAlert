@@ -1,0 +1,27 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "C:/Users/Ed/AppData/Roaming/ScreenAlert"
+		}
+	],
+	"settings": {
+		"chat.tools.terminal.autoApprove": {
+			".venv\\Scripts\\python.exe": true,
+			"&": true,
+			"/^python screenalert\\.py$/": {
+				"approve": true,
+				"matchCommandLine": true
+			},
+			"d:/onedrive/Documents/Development/ScreenAlert/.venv/Scripts/python.exe": true,
+			"/^powershell -NoProfile -Command \"\\$env:PYTHONPATH='D:\\\\onedrive\\\\Documents\\\\Development\\\\ScreenAlert'; & 'D:\\\\onedrive\\\\Documents\\\\Development\\\\ScreenAlert\\\\\\.venv\\\\Scripts\\\\python\\.exe' 'D:\\\\onedrive\\\\Documents\\\\Development\\\\ScreenAlert\\\\tools\\\\auto_add_thumbnail\\.py' --hwnd 0x003a0c02 --title 'Untitled - Notepad' --duration 15\"$/": {
+				"approve": true,
+				"matchCommandLine": true
+			}
+		},
+		"powershell.cwd": "ScreenAlert",
+		"claudeCodeChat.permissions.yoloMode": true
+	}
+}
