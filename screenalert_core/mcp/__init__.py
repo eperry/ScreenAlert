@@ -1,0 +1,1 @@
+# ScreenAlert MCP server package

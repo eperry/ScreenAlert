@@ -86,6 +86,18 @@ class ConfigManager:
                 "auto_discovery_interval_sec": 60,
                 "overlay_scaling_mode": "fit",
                 "show_overlay_on_connect": True,
+                # Event logging
+                "event_log_enabled": True,
+                "event_log_max_rows": 5000,
+                # MCP server
+                "mcp_enabled": True,
+                "mcp_port": 8765,
+                "mcp_api_key": "",
+                "mcp_ssl_cert_path": "",
+                "mcp_ssl_key_path": "",
+                "mcp_http_redirect": False,
+                "mcp_http_port": 8766,
+                "mcp_max_connections": 5,
             },
             "thumbnails": [],
             "ui": {
@@ -543,6 +555,70 @@ class ConfigManager:
 
     def set_show_overlay_on_connect(self, enabled: bool) -> None:
         self._config["app"]["show_overlay_on_connect"] = bool(enabled)
+
+    # ── Event log ─────────────────────────────────────────────────────────────
+
+    def get_event_log_enabled(self) -> bool:
+        return bool(self._config.get("app", {}).get("event_log_enabled", True))
+
+    def set_event_log_enabled(self, enabled: bool) -> None:
+        self._config["app"]["event_log_enabled"] = bool(enabled)
+
+    def get_event_log_max_rows(self) -> int:
+        return int(self._config.get("app", {}).get("event_log_max_rows", 5000))
+
+    def set_event_log_max_rows(self, rows: int) -> None:
+        self._config["app"]["event_log_max_rows"] = max(100, int(rows))
+
+    # ── MCP server ────────────────────────────────────────────────────────────
+
+    def get_mcp_enabled(self) -> bool:
+        return bool(self._config.get("app", {}).get("mcp_enabled", True))
+
+    def set_mcp_enabled(self, enabled: bool) -> None:
+        self._config["app"]["mcp_enabled"] = bool(enabled)
+
+    def get_mcp_port(self) -> int:
+        return int(self._config.get("app", {}).get("mcp_port", 8765))
+
+    def set_mcp_port(self, port: int) -> None:
+        self._config["app"]["mcp_port"] = int(port)
+
+    def get_mcp_api_key(self) -> str:
+        return self._config.get("app", {}).get("mcp_api_key", "")
+
+    def set_mcp_api_key(self, key: str) -> None:
+        self._config["app"]["mcp_api_key"] = str(key)
+
+    def get_mcp_ssl_cert_path(self) -> str:
+        return self._config.get("app", {}).get("mcp_ssl_cert_path", "")
+
+    def set_mcp_ssl_cert_path(self, path: str) -> None:
+        self._config["app"]["mcp_ssl_cert_path"] = str(path)
+
+    def get_mcp_ssl_key_path(self) -> str:
+        return self._config.get("app", {}).get("mcp_ssl_key_path", "")
+
+    def set_mcp_ssl_key_path(self, path: str) -> None:
+        self._config["app"]["mcp_ssl_key_path"] = str(path)
+
+    def get_mcp_http_redirect(self) -> bool:
+        return bool(self._config.get("app", {}).get("mcp_http_redirect", False))
+
+    def set_mcp_http_redirect(self, enabled: bool) -> None:
+        self._config["app"]["mcp_http_redirect"] = bool(enabled)
+
+    def get_mcp_http_port(self) -> int:
+        return int(self._config.get("app", {}).get("mcp_http_port", 8766))
+
+    def set_mcp_http_port(self, port: int) -> None:
+        self._config["app"]["mcp_http_port"] = int(port)
+
+    def get_mcp_max_connections(self) -> int:
+        return int(self._config.get("app", {}).get("mcp_max_connections", 5))
+
+    def set_mcp_max_connections(self, n: int) -> None:
+        self._config["app"]["mcp_max_connections"] = max(1, int(n))
 
     def get_last_window_filter(self) -> str:
         """Get last used window filter"""
