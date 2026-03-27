@@ -249,9 +249,12 @@ class MCPServer:
     # ── Tool & prompt registration ─────────────────────────────────────────────
 
     def _register_tools(self) -> None:
-        """Register all MCP tools. Each phase adds its module here."""
+        """Register all MCP tools."""
         self._register_utility_tools()
-        # Phase 3: windows, regions
+        from screenalert_core.mcp.tools import windows as _windows_mod
+        from screenalert_core.mcp.tools import regions as _regions_mod
+        _windows_mod.register(self._mcp, self._engine, self._config, self._event_logger)
+        _regions_mod.register(self._mcp, self._engine, self._config, self._event_logger)
         # Phase 4: monitoring, settings
         # Phase 5: event_log, images
 
