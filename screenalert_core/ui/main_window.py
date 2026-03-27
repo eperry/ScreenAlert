@@ -26,11 +26,13 @@ from screenalert_core.core.image_processor import ImageProcessor
 from screenalert_core.utils.update_checker import check_for_updates
 from screenalert_core.utils.constants import LOGS_DIR
 from screenalert_core.ui.window_slot_mixin import WindowSlotMixin
+from screenalert_core.ui.engine_event_mixin import EngineEventMixin
+from screenalert_core.ui.settings_mixin import SettingsMixin
 
 logger = logging.getLogger(__name__)
 
 
-class ScreenAlertMainWindow(WindowSlotMixin):
+class ScreenAlertMainWindow(WindowSlotMixin, EngineEventMixin, SettingsMixin):
     """Main control window for ScreenAlert"""
     
     def __init__(self, engine: ScreenAlertEngine):
@@ -1258,73 +1260,7 @@ class ScreenAlertMainWindow(WindowSlotMixin):
             logger.error(f"Error opening settings dialog: {str(e)}", exc_info=True)
             msgbox.showerror("Error", f"Failed to open settings: {str(e)}")
 
-    def _apply_settings_realtime(self, settings: Dict) -> None:
-        """Apply settings that can safely take effect at runtime."""
-        if "theme_preset" in settings:
-            self.set_theme_preset(str(settings.get("theme_preset", self._theme_preset)))
-        elif "high_contrast" in settings:
-            self.set_high_contrast(bool(settings.get("high_contrast", self._current_theme == 'high-contrast')))
-        self._schedule_runtime_settings_apply(settings)
-
-    def _schedule_runtime_settings_apply(self, settings: Dict) -> None:
-        """Coalesce runtime setting updates to keep UI responsive during rapid Apply actions."""
-        runtime_payload = {
-            "opacity": float(settings.get("opacity", self.config.get_opacity())),
-            "always_on_top": bool(settings.get("always_on_top", self.config.get_always_on_top())),
-            "show_borders": bool(settings.get("show_borders", self.config.get_show_borders())),
-            "show_overlay_when_unavailable": bool(
-                settings.get(
-                    "show_overlay_when_unavailable",
-                    self.config.get_show_overlay_when_unavailable(),
-                )
-            ),
-            "overlay_scaling_mode": settings.get(
-                "overlay_scaling_mode",
-                self.config.get_overlay_scaling_mode(),
-            ),
-        }
-        self._pending_runtime_settings = runtime_payload
-        if self._runtime_apply_scheduled:
-            return
-        self._runtime_apply_scheduled = True
-        self.root.after_idle(self._flush_runtime_settings_apply)
-
-    def _flush_runtime_settings_apply(self) -> None:
-        """Apply latest queued runtime settings once."""
-        self._runtime_apply_scheduled = False
-        payload = self._pending_runtime_settings
-        self._pending_runtime_settings = None
-        if not payload:
-            return
-        if payload == self._last_applied_runtime_settings:
-            return
-        try:
-            self.engine.apply_runtime_settings(
-                opacity=float(payload.get("opacity", self.config.get_opacity())),
-                always_on_top=bool(payload.get("always_on_top", self.config.get_always_on_top())),
-                show_borders=bool(payload.get("show_borders", self.config.get_show_borders())),
-                show_overlay_when_unavailable=bool(
-                    payload.get(
-                        "show_overlay_when_unavailable",
-                        self.config.get_show_overlay_when_unavailable(),
-                    )
-                ),
-                overlay_scaling_mode=payload.get(
-                    "overlay_scaling_mode",
-                    self.config.get_overlay_scaling_mode(),
-                ),
-            )
-            # Apply log level change immediately without requiring a restart
-            if "log_level" in payload:
-                try:
-                    from screenalert_core.utils.log_setup import set_runtime_log_level
-                    set_runtime_log_level(payload["log_level"])
-                    logger.info("Log level changed to %s", payload["log_level"])
-                except Exception as log_err:
-                    logger.warning("Failed to apply log level change: %s", log_err)
-            self._last_applied_runtime_settings = dict(payload)
-        except Exception as runtime_error:
-            logger.error(f"Error applying runtime settings: {runtime_error}")
+    # Runtime settings methods are in SettingsMixin (settings_mixin.py)
 
     def _show_shortcuts(self) -> None:
         """Display keyboard shortcuts help popup."""
@@ -2138,113 +2074,7 @@ class ScreenAlertMainWindow(WindowSlotMixin):
             logger.warning(f"Failed to marshal callback to UI thread: {error}")
             return False
 
-    def _enqueue_engine_event(self, event_type: str, *args) -> None:
-        """Coalesce high-frequency engine events and flush once on UI thread."""
-        with self._event_lock:
-            if event_type == "alert":
-                thumbnail_id, region_id, region_name = args
-                self._pending_alert_events[(thumbnail_id, region_id)] = region_name
-            elif event_type == "change":
-                thumbnail_id, region_id, state = args
-                self._pending_region_change_events[(thumbnail_id, region_id)] = state
-            elif event_type == "window_lost":
-                thumbnail_id, window_title = args
-                self._pending_window_lost_events[thumbnail_id] = window_title
-
-            if self._ui_event_flush_scheduled:
-                return
-            self._ui_event_flush_scheduled = True
-
-        try:
-            self.root.after(0, self._flush_engine_events)
-        except Exception as error:
-            logger.warning(f"Failed scheduling engine event flush: {error}")
-            with self._event_lock:
-                self._ui_event_flush_scheduled = False
-
-    def _flush_engine_events(self) -> None:
-        """Apply coalesced engine events on the Tk UI thread."""
-        with self._event_lock:
-            alerts = list(self._pending_alert_events.items())
-            changes = list(self._pending_region_change_events.items())
-            lost_windows = list(self._pending_window_lost_events.items())
-            self._pending_alert_events.clear()
-            self._pending_region_change_events.clear()
-            self._pending_window_lost_events.clear()
-            self._ui_event_flush_scheduled = False
-
-        if self.config.get_diagnostics_enabled():
-            logger.debug(
-                f"[UI EVENT FLUSH] alerts={len(alerts)} changes={len(changes)} window_lost={len(lost_windows)}"
-            )
-
-        for (thumbnail_id, region_id), region_name in alerts:
-            self._on_alert(thumbnail_id, region_id, region_name)
-        for (thumbnail_id, region_id), state in changes:
-            self._on_region_change(thumbnail_id, region_id, state)
-        for thumbnail_id, window_title in lost_windows:
-            self._on_window_lost(thumbnail_id, window_title)
-    
-    def _on_alert(self, thumbnail_id: str, region_id: str, region_name: str) -> None:
-        """Handle alert event with status update and TTS"""
-        if threading.current_thread() is not threading.main_thread():
-            self._enqueue_engine_event("alert", thumbnail_id, region_id, region_name)
-            return
-
-        thumbnail = self.config.get_thumbnail(thumbnail_id)
-        if thumbnail:
-            title = thumbnail.get('window_title', 'Unknown')
-            
-            logger.info(f"[ALERT EVENT] {title} - {region_name} (region_id={region_id})")
-
-            self._activate_alert_focus_window()
-            
-            # Mark region as dirty for BOTH status and thumbnail updates
-            self._mark_dirty(thumbnail_id, region_id, status="alert", thumbnail=True)
-            
-            # Update status bar
-            self.status_var.set(f"🚨 ALERT: {title} - {region_name}")
-            
-            logger.info(f"Alert in {title}: {region_name}")
-
-    
-    def _on_region_change(self, thumbnail_id: str, region_id: str, state: str = "ok") -> None:
-        """Handle region state change from the monitoring engine."""
-        if threading.current_thread() is not threading.main_thread():
-            self._enqueue_engine_event("change", thumbnail_id, region_id, state)
-            return
-
-        thumbnail = self.config.get_thumbnail(thumbnail_id)
-        if thumbnail:
-            regions = thumbnail.get('monitored_regions', [])
-            region_name = "Unknown"
-            for region in regions:
-                if region.get('id') == region_id:
-                    region_name = region.get('name', 'Unknown')
-                    break
-
-            logger.debug(f"[STATE EVENT] {thumbnail.get('window_title', 'Unknown')} - {region_name} -> {state}")
-
-            # Mark region as dirty for BOTH status and thumbnail updates
-            self._mark_dirty(thumbnail_id, region_id, status=state, thumbnail=True)
-
-    
-    def _on_window_lost(self, thumbnail_id: str, window_title: str) -> None:
-        """Handle lost window — mark all its regions as unavailable."""
-        if threading.current_thread() is not threading.main_thread():
-            self._enqueue_engine_event("window_lost", thumbnail_id, window_title)
-            return
-
-        logger.warning(f"Window lost: {window_title}")
-        self.status_var.set(f"Window lost: {window_title}")
-
-        # Set all regions for this thumbnail to unavailable/N/A
-        thumbnail = self.config.get_thumbnail(thumbnail_id)
-        if thumbnail:
-            for region in thumbnail.get("monitored_regions", []):
-                region_id = region.get("id", "")
-                if region_id:
-                    self._mark_dirty(thumbnail_id, region_id, status="unavailable", thumbnail=True)
+    # Engine event methods are in EngineEventMixin (engine_event_mixin.py)
 
     def _render_window_detail(self, thumbnail: Optional[Dict]) -> None:
         """Render window info and region cards"""

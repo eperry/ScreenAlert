@@ -247,27 +247,30 @@ class ScreenAlertEngine:
         overlay_scaling_mode: Optional[str] = None,
     ) -> None:
         """Apply selected settings to active runtime components immediately."""
-        if opacity is not None:
-            self.config.set_all_thumbnail_opacity(opacity)
-            self.renderer.set_all_thumbnail_opacity(opacity)
+        try:
+            if opacity is not None:
+                self.config.set_all_thumbnail_opacity(opacity)
+                self.renderer.set_all_thumbnail_opacity(opacity)
 
-        if always_on_top is not None:
-            self.renderer.set_all_thumbnail_topmost(bool(always_on_top))
-            with self.lock:
-                for thumbnail in self.config.get_all_thumbnails():
-                    thumbnail["always_on_top"] = bool(always_on_top)
+            if always_on_top is not None:
+                self.renderer.set_all_thumbnail_topmost(bool(always_on_top))
+                with self.lock:
+                    for thumbnail in self.config.get_all_thumbnails():
+                        thumbnail["always_on_top"] = bool(always_on_top)
 
-        if show_borders is not None:
-            self.renderer.set_all_thumbnail_borders(bool(show_borders))
-            with self.lock:
-                for thumbnail in self.config.get_all_thumbnails():
-                    thumbnail["show_border"] = bool(show_borders)
+            if show_borders is not None:
+                self.renderer.set_all_thumbnail_borders(bool(show_borders))
+                with self.lock:
+                    for thumbnail in self.config.get_all_thumbnails():
+                        thumbnail["show_border"] = bool(show_borders)
 
-        if show_overlay_when_unavailable is not None:
-            self.renderer.refresh_unavailable_thumbnails(bool(show_overlay_when_unavailable))
+            if show_overlay_when_unavailable is not None:
+                self.renderer.refresh_unavailable_thumbnails(bool(show_overlay_when_unavailable))
 
-        if overlay_scaling_mode is not None:
-            self.renderer.set_all_thumbnail_scaling_mode(overlay_scaling_mode)
+            if overlay_scaling_mode is not None:
+                self.renderer.set_all_thumbnail_scaling_mode(overlay_scaling_mode)
+        except Exception as exc:
+            logger.error("apply_runtime_settings failed: %s", exc, exc_info=True)
 
     def refresh_thumbnail_titles(self) -> None:
         """Refresh overlay title text for all active thumbnails."""
@@ -543,40 +546,48 @@ class ScreenAlertEngine:
             if not thumbnail_id:
                 continue
 
-            window_hwnd = thumbnail_config.get("window_hwnd")
-            _, expected_class, expected_size, expected_monitor = self._extract_window_identity(thumbnail_config)
-            window_title = thumbnail_config.get("window_title", "")
+            try:
+                window_hwnd = thumbnail_config.get("window_hwnd")
+                _, expected_class, expected_size, expected_monitor = self._extract_window_identity(thumbnail_config)
+                window_title = thumbnail_config.get("window_title", "")
 
-            # Manual reconnect should always permit a fresh attempt.
-            self._reconnect_attempted_once.discard(thumbnail_id)
-            self._window_lost_notified.discard(thumbnail_id)
+                # Manual reconnect should always permit a fresh attempt.
+                self._reconnect_attempted_once.discard(thumbnail_id)
+                self._window_lost_notified.discard(thumbnail_id)
 
-            is_valid = self._validate_thumbnail_window(thumbnail_config, window_hwnd)
+                is_valid = self._validate_thumbnail_window(thumbnail_config, window_hwnd)
 
-            if is_valid:
-                self._mark_connected(thumbnail_id, window_hwnd, update_config=False)
-                result["already_valid"] += 1
-                continue
+                if is_valid:
+                    self._mark_connected(thumbnail_id, window_hwnd, update_config=False)
+                    result["already_valid"] += 1
+                    continue
 
-            result["attempted"] += 1
-            new_window = self._try_reconnect(
-                thumbnail_id,
-                window_title,
-                expected_class,
-                expected_size,
-                expected_monitor,
-            )
-
-            if new_window:
-                self._mark_connected(thumbnail_id, new_window['hwnd'], update_config=False)
-                result["reconnected"] += 1
-            else:
-                self._reconnect_attempted_once.add(thumbnail_id)
-                self._window_lost_notified.add(thumbnail_id)
-                self.renderer.set_thumbnail_availability(
+                result["attempted"] += 1
+                new_window = self._try_reconnect(
                     thumbnail_id,
-                    False,
-                    self.config.get_show_overlay_when_unavailable(),
+                    window_title,
+                    expected_class,
+                    expected_size,
+                    expected_monitor,
+                )
+
+                if new_window:
+                    self._mark_connected(thumbnail_id, new_window['hwnd'], update_config=False)
+                    result["reconnected"] += 1
+                else:
+                    self._reconnect_attempted_once.add(thumbnail_id)
+                    self._window_lost_notified.add(thumbnail_id)
+                    self.renderer.set_thumbnail_availability(
+                        thumbnail_id,
+                        False,
+                        self.config.get_show_overlay_when_unavailable(),
+                    )
+                    result["failed"] += 1
+
+            except Exception as exc:
+                logger.error(
+                    "reconnect_all_windows: error processing [%s]: %s",
+                    thumbnail_id, exc, exc_info=True,
                 )
                 result["failed"] += 1
 
@@ -591,36 +602,40 @@ class ScreenAlertEngine:
         if not thumbnail_config:
             return "missing"
 
-        window_hwnd = thumbnail_config.get("window_hwnd")
-        window_title, expected_class, expected_size, expected_monitor = self._extract_window_identity(thumbnail_config)
+        try:
+            window_hwnd = thumbnail_config.get("window_hwnd")
+            window_title, expected_class, expected_size, expected_monitor = self._extract_window_identity(thumbnail_config)
 
-        self._reconnect_attempted_once.discard(thumbnail_id)
-        self._window_lost_notified.discard(thumbnail_id)
+            self._reconnect_attempted_once.discard(thumbnail_id)
+            self._window_lost_notified.discard(thumbnail_id)
 
-        is_valid = self._validate_thumbnail_window(thumbnail_config, window_hwnd)
-        if is_valid:
-            self._mark_connected(thumbnail_id, window_hwnd, update_config=False)
-            return "already_valid"
+            is_valid = self._validate_thumbnail_window(thumbnail_config, window_hwnd)
+            if is_valid:
+                self._mark_connected(thumbnail_id, window_hwnd, update_config=False)
+                return "already_valid"
 
-        new_window = self._try_reconnect(
-            thumbnail_id,
-            window_title,
-            expected_class,
-            expected_size,
-            expected_monitor,
-        )
-        if new_window:
-            self._mark_connected(thumbnail_id, new_window['hwnd'], update_config=False)
-            return "reconnected"
+            new_window = self._try_reconnect(
+                thumbnail_id,
+                window_title,
+                expected_class,
+                expected_size,
+                expected_monitor,
+            )
+            if new_window:
+                self._mark_connected(thumbnail_id, new_window['hwnd'], update_config=False)
+                return "reconnected"
 
-        self._reconnect_attempted_once.add(thumbnail_id)
-        self._window_lost_notified.add(thumbnail_id)
-        self.renderer.set_thumbnail_availability(
-            thumbnail_id,
-            False,
-            self.config.get_show_overlay_when_unavailable(),
-        )
-        return "failed"
+            self._reconnect_attempted_once.add(thumbnail_id)
+            self._window_lost_notified.add(thumbnail_id)
+            self.renderer.set_thumbnail_availability(
+                thumbnail_id,
+                False,
+                self.config.get_show_overlay_when_unavailable(),
+            )
+            return "failed"
+        except Exception as exc:
+            logger.error("reconnect_window [%s]: %s", thumbnail_id, exc, exc_info=True)
+            return "failed"
     
     # ── Auto-discovery ────────────────────────────────────────────────
 
@@ -888,7 +903,7 @@ class ScreenAlertEngine:
                 for thumbnail_config in thumbnails:
                     if not thumbnail_config.get("enabled", True):
                         continue
-                    
+
                     thumbnail_id = thumbnail_config["id"]
                     window_hwnd = thumbnail_config["window_hwnd"]
                     window_title, expected_class, expected_size, expected_monitor = \
@@ -1058,7 +1073,7 @@ class ScreenAlertEngine:
                                     )
                                     self._diag_alert_count += 1
                                     self.on_alert(thumbnail_id, region_id, config.get("name", ""))
-                
+
                 # Sleep to maintain refresh rate
                 elapsed = (time.time() - start_time) * 1000  # Convert to ms
                 sleep_time = max(1, refresh_rate_ms - elapsed) / 1000  # Convert to seconds
@@ -1095,7 +1110,7 @@ class ScreenAlertEngine:
                 time.sleep(sleep_time)
             
             except Exception as e:
-                logger.error(f"Error in main loop: {e}")
+                logger.error("Error in main loop: %s", e, exc_info=True)
                 time.sleep(0.1)
 
     def _update_overlay_active_by_foreground_source(self, thumbnails: List[Dict], foreground_hwnd: int) -> None:
