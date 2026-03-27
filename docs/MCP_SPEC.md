@@ -2,9 +2,9 @@
 
 ## Overview
 
-An MCP (Model Context Protocol) server that exposes the full ScreenAlert feature set to Claude Desktop and Claude Code. Allows Claude to query status, manage windows and regions, change settings, and analyze alert captures — all from a natural language conversation.
+An MCP (Model Context Protocol) server embedded directly inside the running ScreenAlert application. Exposes the full ScreenAlert feature set to Claude Desktop and Claude Code — allowing Claude to query status, manage windows and regions, change settings, and analyze alert captures from a natural language conversation.
 
-The MCP server runs as a local process on the same machine as ScreenAlert. Communication is via stdio (no network/internet required for the MCP connection itself; only Claude's intelligence routes through Anthropic's API).
+The MCP server is an HTTP thread running inside ScreenAlert on a local port. Claude Desktop connects to it over localhost — no separate process, no IPC, no internet required for the MCP connection itself (only Claude's intelligence routes through Anthropic's API).
 
 ---
 
@@ -13,28 +13,35 @@ The MCP server runs as a local process on the same machine as ScreenAlert. Commu
 ```
 Claude Desktop / Claude Code
         │
-        │  stdio (local, no internet)
+        │  HTTP/SSE  localhost:8765  (no internet)
         ▼
-screenalert_mcp_server.py        ← MCP server process
-        │
-        ├── ScreenAlertEngine    ← shared engine instance (or IPC to running app)
-        ├── ConfigManager        ← read/write config
-        ├── EventLog (SQLite)    ← transaction/event history
-        └── CaptureStore         ← image files on disk
+┌─────────────────────────────────────┐
+│  ScreenAlert (running app)          │
+│                                     │
+│  MCP HTTP Server  (thread)          │
+│        │                            │
+│        ├── ScreenAlertEngine        │
+│        ├── ConfigManager            │
+│        ├── EventLogger (JSONL)      │
+│        └── CaptureStore             │
+└─────────────────────────────────────┘
 ```
 
 ### Connection model
 
-Two deployment options (decide before implementation):
+The MCP server starts automatically when ScreenAlert launches and listens on `localhost:8765` (configurable). Claude Desktop uses the `url` transport — no process spawning, no separate launcher:
 
-| Mode | Description | Pros | Cons |
-|---|---|---|---|
-| **Embedded** | MCP server imports and wraps the live ScreenAlert engine | Real-time access, no IPC | Must run inside the ScreenAlert process |
-| **Standalone** | Separate process, communicates via named pipe or shared SQLite | Independent lifecycle | Slightly more complex wiring |
+```json
+{
+  "mcpServers": {
+    "screenalert": {
+      "url": "http://localhost:8765/sse"
+    }
+  }
+}
+```
 
-**Recommendation: Embedded.** Launch the MCP server as a thread inside the running ScreenAlert app. The engine is already available; no IPC needed.
-
-I agree lets do embedded
+If ScreenAlert is not running, Claude Desktop will show the server as unavailable — which is the correct behaviour. When ScreenAlert starts, the server comes up automatically and Claude Desktop reconnects.
 
 ---
 
@@ -271,11 +278,11 @@ Resources are listed by `list_resources` and read by `read_resource` — standar
 
 ## File Structure
 
-```
+```text
 screenalert_core/
   mcp/
     __init__.py
-    server.py          ← MCP server entry point, tool registry, stdio loop
+    server.py          ← HTTP/SSE server, tool registry, startup/shutdown
     tools/
       __init__.py
       windows.py       ← list_windows, find_desktop_windows, add_window, ...
@@ -283,26 +290,37 @@ screenalert_core/
       monitoring.py    ← pause, resume, mute, get_status
       settings.py      ← get_global_settings, set_global_setting
       event_log.py     ← get_event_log, get_event_summary, clear_event_log, images
-    event_logger.py    ← EventLogger class, SQLite write/query, ring buffer
+    event_logger.py    ← EventLogger class, JSONL write/query
     resources.py       ← MCP resource handlers for capture files
 ```
 
-New top-level entry point (for Claude Desktop config):
-```
-screenalert_mcp.py   ← thin launcher: starts engine + MCP server
+The MCP server is started from `main_window.py` (or the app entry point) as a daemon thread:
+
+```python
+# in screenalert.py or main_window.py startup
+from screenalert_core.mcp.server import MCPServer
+mcp_server = MCPServer(engine=engine, config=config, event_logger=event_logger)
+mcp_server.start()  # non-blocking, runs HTTP listener on localhost:8765
 ```
 
 Claude Desktop config (`claude_desktop_config.json`):
+
 ```json
 {
   "mcpServers": {
     "screenalert": {
-      "command": "python",
-      "args": ["C:/path/to/ScreenAlert/screenalert_mcp.py"]
+      "url": "http://localhost:8765/sse"
     }
   }
 }
 ```
+
+New global settings keys for MCP:
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `mcp_enabled` | `true` | Start MCP server with the app |
+| `mcp_port` | `8765` | Local port for the HTTP/SSE listener |
 
 ---
 
@@ -319,13 +337,15 @@ Claude Desktop config (`claude_desktop_config.json`):
 - Global setting keys: `event_log_enabled`, `event_log_max_rows`
 
 ### Phase 2 — MCP Server Skeleton
-**Files:** `screenalert_core/mcp/server.py`, `screenalert_mcp.py`
+**Files:** `screenalert_core/mcp/server.py`
 
-- stdio-based MCP server using the `mcp` Python package
+- HTTP/SSE MCP server using the `mcp` Python package (`mcp[cli]`)
+- `MCPServer` class with `start()` / `stop()` — runs as a daemon thread inside ScreenAlert
 - Tool registry — each tool is a decorated function
-- Engine reference passed in at startup
+- Engine, config, and event_logger references injected at startup
+- Port and enabled flag driven by global settings (`mcp_port`, `mcp_enabled`)
 - Basic `list_tools` / `call_tool` handlers
-- Test with Claude Desktop using a single stub tool
+- Test with Claude Desktop using a single stub tool (`ping` → returns app version)
 
 ### Phase 3 — Window & Region Tools
 **Files:** `screenalert_core/mcp/tools/windows.py`, `regions.py`
