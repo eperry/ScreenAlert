@@ -147,6 +147,40 @@ _CATEGORIES: List[Tuple[str, str, Optional[str], List[dict]]] = [
             "desc": "Keep showing the thumbnail overlay even when the monitored window is closed or not found. "
                     "When off, overlays auto-hide for missing windows.",
         },
+        {
+            "key": "overlay_update_rate_hz", "name": "Overlay Update Rate (Hz)", "type": "int",
+            "desc": "How often overlay properties (size, position, opacity) are synced. "
+                    "Does not affect visual smoothness — DWM thumbnails are always composited "
+                    "at display refresh rate. Higher values = faster response to changes.",
+            "min": 10, "max": 60, "increment": 5,
+        },
+        {
+            "key": "auto_discovery_enabled", "name": "Auto-Discover Windows", "type": "bool",
+            "desc": "Periodically scan for disconnected windows and automatically reconnect them. "
+                    "Runs on a lightweight background thread, separate from the main monitoring loop.",
+        },
+        {
+            "key": "auto_discovery_interval_sec", "name": "Auto-Discovery Interval (sec)", "type": "int",
+            "desc": "How often (in seconds) to search for disconnected windows. "
+                    "Lower values find windows faster but use slightly more CPU.",
+            "min": 10, "max": 300, "increment": 10,
+        },
+        {
+            "key": "overlay_scaling_mode", "name": "Overlay Scaling", "type": "choice",
+            "desc": "How the overlay resizes and displays the source window.\n\n"
+                    "Fit = Aspect ratio locked. Resizing adjusts both axes together "
+                    "to match the source window proportions. No black bars.\n"
+                    "Stretch = Free-form resize. The thumbnail stretches to fill "
+                    "whatever shape you drag the overlay to. May distort.\n"
+                    "Letterbox = Free-form resize but the thumbnail keeps its "
+                    "aspect ratio inside, with black bars filling the gap.",
+            "choices": ["fit", "stretch", "letterbox"],
+        },
+        {
+            "key": "show_overlay_on_connect", "name": "Show Overlay on Connect", "type": "bool",
+            "desc": "Automatically show the overlay window when a monitored application is "
+                    "discovered or reconnected. When off, overlays stay hidden until manually enabled.",
+        },
     ]),
     ("alerts", "Alerts", None, [
         {
@@ -283,6 +317,11 @@ _CONFIG_MAP = {
     "diagnostics_enabled": ("get_diagnostics_enabled", "set_diagnostics_enabled"),
     "reconnect_size_tolerance": ("get_reconnect_size_tolerance", "set_reconnect_size_tolerance"),
     "prompt_on_reconnect_fail": ("get_prompt_on_reconnect_fail", "set_prompt_on_reconnect_fail"),
+    "overlay_update_rate_hz": ("get_overlay_update_rate_hz", "set_overlay_update_rate_hz"),
+    "auto_discovery_enabled": ("get_auto_discovery_enabled", "set_auto_discovery_enabled"),
+    "auto_discovery_interval_sec": ("get_auto_discovery_interval_sec", "set_auto_discovery_interval_sec"),
+    "overlay_scaling_mode": ("get_overlay_scaling_mode", "set_overlay_scaling_mode"),
+    "show_overlay_on_connect": ("get_show_overlay_on_connect", "set_show_overlay_on_connect"),
 }
 
 

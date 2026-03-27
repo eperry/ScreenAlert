@@ -44,6 +44,22 @@ THUMBNAIL_MAX_HEIGHT = 800
 THUMBNAIL_DEFAULT_WIDTH = 320
 THUMBNAIL_DEFAULT_HEIGHT = 240
 
+# DWM Overlay Update Rate
+DEFAULT_OVERLAY_UPDATE_RATE_HZ = 30
+OVERLAY_UPDATE_RATE_MIN_HZ = 10
+OVERLAY_UPDATE_RATE_MAX_HZ = 60
+
+# Overlay Scaling Modes
+SCALING_MODE_FIT = "fit"              # Aspect-locked resize (overlay shape matches source)
+SCALING_MODE_STRETCH = "stretch"      # Free-form resize, fills overlay (may distort)
+SCALING_MODE_LETTERBOX = "letterbox"  # Free-form resize, aspect-preserved with bars
+SCALING_MODES = [SCALING_MODE_FIT, SCALING_MODE_STRETCH, SCALING_MODE_LETTERBOX]
+
+# Auto-Discovery
+DEFAULT_AUTO_DISCOVERY_INTERVAL_SEC = 60
+AUTO_DISCOVERY_INTERVAL_MIN_SEC = 10
+AUTO_DISCOVERY_INTERVAL_MAX_SEC = 300
+
 # Visual Theme
 COLOR_BG_DARK = "#0a0a0a"
 COLOR_BG_MEDIUM = "#1a1a1a"

@@ -18,7 +18,7 @@ from screenalert_core.core.cache_manager import CacheManager
 from screenalert_core.core.image_processor import ImageProcessor
 from screenalert_core.monitoring.region_monitor import MonitoringEngine
 from screenalert_core.monitoring.alert_system import AlertSystem
-from screenalert_core.rendering.thumbnail_renderer import ThumbnailRenderer
+from screenalert_core.rendering.overlay_manager import OverlayManager
 from screenalert_core.utils.plugin_hooks import PluginHooks
 from screenalert_core.utils.constants import DEFAULT_REFRESH_RATE_MS, TEMP_DIR
 
@@ -42,12 +42,14 @@ class ScreenAlertEngine:
         self.alert_system = AlertSystem()
         self.plugin_hooks = PluginHooks()
         self.tkinter_root: Optional[tk.Tk] = None  # Will be set by main_window
-        self.renderer = ThumbnailRenderer(manager_callback=self._on_thumbnail_interaction, parent_root=None)
+        self.renderer = OverlayManager(manager_callback=self._on_thumbnail_interaction, parent_root=None)
         
         # State
         self.running = False
         self.paused = False
         self.loop_thread: Optional[threading.Thread] = None
+        self._discovery_thread: Optional[threading.Thread] = None
+        self._discovery_stop_event = threading.Event()
         self.foreground_hook_thread: Optional[threading.Thread] = None
         self._foreground_hook_thread_id: Optional[int] = None
         self._foreground_event_hook_handle = None
@@ -76,7 +78,7 @@ class ScreenAlertEngine:
         self._prev_window_images: Dict[str, Image.Image] = {}
         logger.info("ScreenAlert engine initialized")
         logger.debug(f"Config path: {config_path}")
-        logger.debug("WindowManager, CacheManager, MonitoringEngine, AlertSystem, ThumbnailRenderer initialized")
+        logger.debug("WindowManager, CacheManager, MonitoringEngine, AlertSystem, OverlayManager initialized")
 
     def register_plugin_hook(self, event_name: str, callback: Callable[..., None]) -> None:
         """Register callback for plugin extension events."""
@@ -93,6 +95,25 @@ class ScreenAlertEngine:
     def is_thumbnail_connected(self, thumbnail_id: str) -> bool:
         """Return cached connection status for a thumbnail (non-blocking)."""
         return self._thumbnail_connected.get(thumbnail_id, False)
+
+    def get_attached_hwnds(self, exclude_thumbnail_id: str = None) -> set:
+        """Return set of window hwnds currently attached to thumbnails.
+
+        Args:
+            exclude_thumbnail_id: Optionally exclude this thumbnail (e.g. when
+                reconnecting it, its own hwnd shouldn't block the search).
+        """
+        attached = set()
+        with self.lock:
+            for tc in self.config.get_all_thumbnails():
+                tid = tc.get("id")
+                if tid == exclude_thumbnail_id:
+                    continue
+                if self._thumbnail_connected.get(tid, False):
+                    hwnd = tc.get("window_hwnd")
+                    if hwnd:
+                        attached.add(hwnd)
+        return attached
 
     def _get_global_detection_config(self) -> Dict:
         """Build a flat dict of global detection settings for detector creation."""
@@ -117,8 +138,9 @@ class ScreenAlertEngine:
             root: The main tkinter Tk instance
         """
         self.tkinter_root = root
+        # OverlayManager does not use tkinter; parent_root kept for compat
         self.renderer.parent_root = root
-        logger.debug("Set tkinter root for renderer")
+        logger.debug("Set tkinter root")
         # Now that we have a tkinter root, initialize from config
         if not self._config_initialized:
             self._initialize_from_config()
@@ -147,10 +169,10 @@ class ScreenAlertEngine:
                     logger.warning(f"Failed to add renderer for {thumbnail_id}")
                     return False
 
-                # Apply persisted overview visibility before availability updates.
+                # Apply persisted overlay visibility before availability updates.
                 self.renderer.set_thumbnail_user_visibility(
                     thumbnail_id,
-                    bool(config.get("overview_visible", True)),
+                    bool(config.get("overlay_visible", config.get("overview_visible", True))),
                 )
                 
                 # Immediately capture and display (same as add_thumbnail)
@@ -168,17 +190,9 @@ class ScreenAlertEngine:
                         expected_size=expected_size,
                     ):
                         self._thumbnail_connected[thumbnail_id] = True
-                        window_image = self.window_manager.capture_window(window_hwnd)
-                        if window_image:
-                            logger.info(f"[{thumbnail_id}] Initial capture from config: {window_image.size}")
-                            self.renderer.update_thumbnail_image(thumbnail_id, window_image)
-                            self.renderer.set_thumbnail_availability(thumbnail_id, True)
-                        else:
-                            self.renderer.set_thumbnail_availability(
-                                thumbnail_id,
-                                False,
-                                self.config.get_show_overlay_when_unavailable(),
-                            )
+                        self.renderer.set_source_hwnd(thumbnail_id, window_hwnd)
+                        self.renderer.set_thumbnail_availability(thumbnail_id, True)
+                        logger.info(f"[{thumbnail_id}] DWM thumbnail linked from config: hwnd={window_hwnd}")
                     else:
                         self._thumbnail_connected[thumbnail_id] = False
                         self.renderer.set_thumbnail_availability(
@@ -209,6 +223,7 @@ class ScreenAlertEngine:
         always_on_top: Optional[bool] = None,
         show_borders: Optional[bool] = None,
         show_overlay_when_unavailable: Optional[bool] = None,
+        overlay_scaling_mode: Optional[str] = None,
     ) -> None:
         """Apply selected settings to active runtime components immediately."""
         if opacity is not None:
@@ -229,6 +244,9 @@ class ScreenAlertEngine:
 
         if show_overlay_when_unavailable is not None:
             self.renderer.refresh_unavailable_thumbnails(bool(show_overlay_when_unavailable))
+
+        if overlay_scaling_mode is not None:
+            self.renderer.set_all_thumbnail_scaling_mode(overlay_scaling_mode)
 
     def refresh_thumbnail_titles(self) -> None:
         """Refresh overlay title text for all active thumbnails."""
@@ -277,21 +295,19 @@ class ScreenAlertEngine:
                 self.config.remove_thumbnail(thumbnail_id)
                 return None
 
-            # New windows start with overview visible unless config says otherwise.
+            # New windows start with overlay visible unless config says otherwise.
             self.renderer.set_thumbnail_user_visibility(
                 thumbnail_id,
-                bool(config.get("overview_visible", True)),
+                bool(config.get("overlay_visible", config.get("overview_visible", True))),
             )
             
-            # Immediately capture and display the window (don't wait for monitoring to start)
-            logger.info(f"[{thumbnail_id}] Capturing initial window image...")
-            window_image = self.window_manager.capture_window(window_hwnd)
-            if window_image:
-                logger.info(f"[{thumbnail_id}] Initial capture: {window_image.size}")
-                self.renderer.update_thumbnail_image(thumbnail_id, window_image)
+            # Link DWM thumbnail to source window immediately
+            self.renderer.set_source_hwnd(thumbnail_id, window_hwnd)
+            if self.window_manager.is_window_valid(window_hwnd):
                 self.renderer.set_thumbnail_availability(thumbnail_id, True)
+                logger.info(f"[{thumbnail_id}] DWM thumbnail linked: hwnd={window_hwnd}")
             else:
-                logger.warning(f"[{thumbnail_id}] Failed to capture initial image")
+                logger.warning(f"[{thumbnail_id}] Source window not valid")
                 self.renderer.set_thumbnail_availability(
                     thumbnail_id,
                     False,
@@ -405,6 +421,7 @@ class ScreenAlertEngine:
         
         try:
             self.running = True
+            self.renderer.set_all_thumbnail_scaling_mode(self.config.get_overlay_scaling_mode())
             self.renderer.start()
             
             # Start main loop thread
@@ -413,7 +430,10 @@ class ScreenAlertEngine:
 
             # Start Windows foreground-change event hook (no polling)
             self._start_foreground_event_hook()
-            
+
+            # Start auto-discovery thread for finding disconnected windows
+            self._start_auto_discovery()
+
             logger.info("ScreenAlert engine started")
             self.plugin_hooks.emit("engine.started")
             return True
@@ -426,6 +446,9 @@ class ScreenAlertEngine:
     def stop(self) -> None:
         """Stop the engine"""
         self.running = False
+
+        self._stop_auto_discovery()
+
         try:
             self.renderer.stop()
         except Exception as error:
@@ -520,7 +543,7 @@ class ScreenAlertEngine:
             )
 
             if is_valid:
-                self.renderer.set_thumbnail_availability(thumbnail_id, True)
+                self._mark_connected(thumbnail_id, window_hwnd, update_config=False)
                 result["already_valid"] += 1
                 continue
 
@@ -534,7 +557,7 @@ class ScreenAlertEngine:
             )
 
             if new_window:
-                self.renderer.set_thumbnail_availability(thumbnail_id, True)
+                self._mark_connected(thumbnail_id, new_window['hwnd'], update_config=False)
                 result["reconnected"] += 1
             else:
                 self._reconnect_attempted_once.add(thumbnail_id)
@@ -576,7 +599,7 @@ class ScreenAlertEngine:
             size_tolerance=size_tolerance,
         )
         if is_valid:
-            self.renderer.set_thumbnail_availability(thumbnail_id, True)
+            self._mark_connected(thumbnail_id, window_hwnd, update_config=False)
             return "already_valid"
 
         new_window = self._try_reconnect(
@@ -587,7 +610,7 @@ class ScreenAlertEngine:
             expected_monitor,
         )
         if new_window:
-            self.renderer.set_thumbnail_availability(thumbnail_id, True)
+            self._mark_connected(thumbnail_id, new_window['hwnd'], update_config=False)
             return "reconnected"
 
         self._reconnect_attempted_once.add(thumbnail_id)
@@ -599,6 +622,139 @@ class ScreenAlertEngine:
         )
         return "failed"
     
+    # ── Auto-discovery ────────────────────────────────────────────────
+
+    def _start_auto_discovery(self) -> None:
+        """Start background thread that periodically discovers disconnected windows."""
+        if not self.config.get_auto_discovery_enabled():
+            logger.info("Auto-discovery is disabled")
+            return
+        self._discovery_stop_event.clear()
+        self._discovery_thread = threading.Thread(
+            target=self._auto_discovery_loop, name="auto-discovery", daemon=True
+        )
+        self._discovery_thread.start()
+        logger.info("Auto-discovery started (interval=%ds)",
+                     self.config.get_auto_discovery_interval_sec())
+
+    def _stop_auto_discovery(self) -> None:
+        """Signal the auto-discovery thread to stop and wait for it."""
+        self._discovery_stop_event.set()
+        if self._discovery_thread and self._discovery_thread.is_alive():
+            self._discovery_thread.join(timeout=5.0)
+            if self._discovery_thread.is_alive():
+                logger.warning("Auto-discovery thread did not exit within timeout")
+        self._discovery_thread = None
+
+    def _auto_discovery_loop(self) -> None:
+        """Periodically scan for disconnected thumbnails and try to reconnect."""
+        logger.debug("Auto-discovery thread running")
+        try:
+            while not self._discovery_stop_event.is_set():
+                interval = self.config.get_auto_discovery_interval_sec()
+                # Sleep in small increments so we can exit promptly
+                if self._discovery_stop_event.wait(timeout=interval):
+                    break  # stop was requested
+
+                if not self.running:
+                    break
+
+                self._auto_discover_disconnected()
+        except Exception:
+            logger.exception("Auto-discovery thread error")
+        finally:
+            logger.debug("Auto-discovery thread exited")
+
+    def _mark_connected(self, thumbnail_id: str, hwnd: int,
+                        update_config: bool = True) -> None:
+        """Common post-connect actions: update config, link DWM, set available, show overlay.
+
+        Args:
+            update_config: If True, persist the new hwnd and metadata to config.
+                          Set False when the caller already updated config (e.g. _try_reconnect).
+        """
+        if update_config:
+            metadata = self.window_manager.get_window_metadata(hwnd)
+            updates = {"window_hwnd": hwnd}
+            if metadata:
+                updates["window_class"] = metadata.get('class', '')
+                updates["window_size"] = list(metadata.get('size', []))
+                updates["monitor_id"] = metadata.get('monitor_id')
+            with self.lock:
+                self.config.update_thumbnail(thumbnail_id, updates)
+            self.config.save()
+
+        self.renderer.set_source_hwnd(thumbnail_id, hwnd)
+        self.renderer.set_thumbnail_availability(thumbnail_id, True)
+        if self.config.get_show_overlay_on_connect():
+            self.renderer.set_thumbnail_user_visibility(thumbnail_id, True)
+        self._thumbnail_connected[thumbnail_id] = True
+        self._reconnect_attempted_once.discard(thumbnail_id)
+        self._window_lost_notified.discard(thumbnail_id)
+
+    def _auto_discover_disconnected(self) -> None:
+        """Try to reconnect only thumbnails that are currently disconnected."""
+        with self.lock:
+            thumbnails = list(self.config.get_all_thumbnails())
+
+        reconnected = 0
+        attempted = 0
+
+        for tc in thumbnails:
+            thumbnail_id = tc.get("id")
+            if not thumbnail_id or not tc.get("enabled", True):
+                continue
+
+            # Skip already-connected thumbnails
+            if self._thumbnail_connected.get(thumbnail_id, False):
+                continue
+
+            window_hwnd = tc.get("window_hwnd")
+            window_title = tc.get("window_title", "")
+            if not window_title:
+                continue
+
+            # Quick check: maybe the stored hwnd became valid again (app restarted with same hwnd)
+            if window_hwnd and self.window_manager.is_window_valid(window_hwnd):
+                expected_class = tc.get("window_class") or None
+                expected_size = tuple(tc["window_size"]) if tc.get("window_size") else None
+                expected_monitor = tc.get("monitor_id")
+                size_tolerance = self.config.get_reconnect_size_tolerance()
+                if self.window_manager.validate_window_identity(
+                    window_hwnd,
+                    expected_title=window_title,
+                    expected_class=expected_class,
+                    expected_monitor_id=expected_monitor,
+                    expected_size=expected_size,
+                    size_tolerance=size_tolerance,
+                ):
+                    self._mark_connected(thumbnail_id, window_hwnd)
+                    reconnected += 1
+                    logger.info("[%s] Auto-discovery: existing hwnd valid again", thumbnail_id)
+                    continue
+
+            # Search for the window by title
+            attempted += 1
+            expected_class = tc.get("window_class") or None
+            expected_size = tuple(tc["window_size"]) if tc.get("window_size") else None
+            expected_monitor = tc.get("monitor_id")
+
+            new_window = self._try_reconnect(
+                thumbnail_id, window_title, expected_class,
+                expected_size, expected_monitor,
+            )
+            if new_window:
+                self._mark_connected(thumbnail_id, new_window['hwnd'])
+                reconnected += 1
+                logger.info("[%s] Auto-discovery: reconnected to hwnd=%s",
+                            thumbnail_id, new_window['hwnd'])
+
+        if reconnected:
+            logger.info("Auto-discovery: reconnected %d/%d disconnected thumbnails",
+                        reconnected, attempted)
+        else:
+            logger.debug("Auto-discovery: no disconnected thumbnails found (%d checked)", attempted)
+
     def scale_regions_for_new_size(self, thumbnail_id: str,
                                    old_size: tuple, new_size: tuple) -> int:
         """Scale all region rects proportionally when the window size changes.
@@ -651,12 +807,15 @@ class ScreenAlertEngine:
                        expected_size=None,
                        expected_monitor_id: int = None) -> Optional[Dict]:
         """Try to reconnect to a window when the current handle is invalid.
-        
+
         Returns:
             New window dict if reconnected, None otherwise
         """
         logger.info(f"[{thumbnail_id}] Attempting reconnection for '{window_title}'")
-        
+
+        # Collect hwnds already attached to other thumbnails so we don't steal them
+        attached_hwnds = self.get_attached_hwnds(exclude_thumbnail_id=thumbnail_id)
+
         # Reconnect by exact title match, with optional class/monitor filtering.
         # Size is NOT used as a filter — windows may have been resized or
         # restarted at a different resolution.  The stored size is updated
@@ -667,7 +826,12 @@ class ScreenAlertEngine:
             expected_monitor_id=expected_monitor_id,
             expected_class_name=expected_class,
         )
-        
+
+        # Skip windows already attached to another thumbnail
+        if new_window and new_window['hwnd'] in attached_hwnds:
+            logger.debug(f"[{thumbnail_id}] Skipping hwnd={new_window['hwnd']} — already attached to another thumbnail")
+            new_window = None
+
         if new_window:
             new_hwnd = new_window['hwnd']
             new_size = new_window.get('size')
@@ -758,9 +922,15 @@ class ScreenAlertEngine:
                     )
 
                     if window_ok:
+                        was_disconnected = not self._thumbnail_connected.get(thumbnail_id, False)
                         self._reconnect_attempted_once.discard(thumbnail_id)
                         self._window_lost_notified.discard(thumbnail_id)
                         self._thumbnail_connected[thumbnail_id] = True
+                        # If just transitioned from disconnected, show the overlay
+                        if was_disconnected:
+                            self.renderer.set_thumbnail_availability(thumbnail_id, True)
+                            if self.config.get_show_overlay_on_connect():
+                                self.renderer.set_thumbnail_user_visibility(thumbnail_id, True)
 
                     if not window_ok:
                         self._thumbnail_connected[thumbnail_id] = False
@@ -783,9 +953,7 @@ class ScreenAlertEngine:
                         )
                         if new_window:
                             window_hwnd = new_window['hwnd']
-                            self._reconnect_attempted_once.discard(thumbnail_id)
-                            self._window_lost_notified.discard(thumbnail_id)
-                            self._thumbnail_connected[thumbnail_id] = True
+                            self._mark_connected(thumbnail_id, window_hwnd, update_config=False)
                         else:
                             self._reconnect_attempted_once.add(thumbnail_id)
                             self.renderer.set_thumbnail_availability(
@@ -806,33 +974,22 @@ class ScreenAlertEngine:
                         window_image = self.window_manager.capture_window(window_hwnd)
                         if window_image:
                             self.cache_manager.set(window_hwnd, window_image)
-                            self.renderer.set_thumbnail_availability(thumbnail_id, True)
                             logger.debug(f"[{thumbnail_id}] CAPTURED: size {window_image.size}")
                         else:
-                            self.renderer.set_thumbnail_availability(
-                                thumbnail_id,
-                                False,
-                                self.config.get_show_overlay_when_unavailable(),
-                            )
-                            logger.error(f"[{thumbnail_id}] CAPTURE FAILED: hwnd={window_hwnd}")
+                            # Capture failed but DWM overlay is independent — don't
+                            # hide the overlay, just skip region monitoring this cycle.
+                            logger.debug(f"[{thumbnail_id}] CAPTURE FAILED (skipping regions): hwnd={window_hwnd}")
                             continue
                     else:
                         window_image = cached_image
-                        self.renderer.set_thumbnail_availability(thumbnail_id, True)
                         logger.debug(f"[{thumbnail_id}] Using cached image: {window_image.size}")
                     self._diag_capture_ms += (time.perf_counter() - capture_start) * 1000.0
-                    
-                    # Update renderer with full window image
-                    render_start = time.perf_counter()
-                    logger.debug(f"[{thumbnail_id}] Sending to renderer: {window_image.size}")
-                    result = self.renderer.update_thumbnail_image(thumbnail_id, window_image)
-                    if not result:
-                        logger.error(f"[{thumbnail_id}] RENDERER REJECTED (thumbnail not found?)")
-                    else:
-                        logger.debug(f"[{thumbnail_id}] Renderer accepted image")
-                    self._diag_render_ms += (time.perf_counter() - render_start) * 1000.0
-                    
-                    # Process monitoring regions (uses same captured image)
+
+                    # DWM handles thumbnail display; no image sent to renderer.
+                    # Ensure DWM link is established for this hwnd.
+                    self.renderer.set_source_hwnd(thumbnail_id, window_hwnd)
+
+                    # Process monitoring regions (uses captured image for analysis)
                     if not self.paused:
                         monitor_start = time.perf_counter()
                         alert_hold_seconds = self.config.get_alert_hold_seconds()
@@ -1209,10 +1366,10 @@ class ScreenAlertEngine:
                 hwnd = thumbnail["window_hwnd"]
                 self.window_manager.activate_window(hwnd)
 
-        elif action == "overview_closed":
-            # User closed overview window: hide overlay only, keep monitoring active.
+        elif action == "overlay_closed":
+            # User closed overlay window: hide overlay only, keep monitoring active.
             with self.lock:
-                self.config.update_thumbnail(thumbnail_id, {"overview_visible": False})
+                self.config.update_thumbnail(thumbnail_id, {"overlay_visible": False})
             self.config.save()
             self.renderer.set_thumbnail_user_visibility(thumbnail_id, False)
 

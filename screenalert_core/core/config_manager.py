@@ -81,6 +81,11 @@ class ConfigManager:
                 "save_alert_diagnostics": False,
                 "reconnect_size_tolerance": 20,
                 "prompt_on_reconnect_fail": True,
+                "overlay_update_rate_hz": 30,
+                "auto_discovery_enabled": True,
+                "auto_discovery_interval_sec": 60,
+                "overlay_scaling_mode": "fit",
+                "show_overlay_on_connect": True,
             },
             "thumbnails": [],
             "ui": {
@@ -484,6 +489,39 @@ class ConfigManager:
 
     def set_prompt_on_reconnect_fail(self, enabled: bool) -> None:
         self._config["app"]["prompt_on_reconnect_fail"] = bool(enabled)
+
+    def get_overlay_update_rate_hz(self) -> int:
+        return max(10, min(60, int(self._config.get("app", {}).get("overlay_update_rate_hz", 30))))
+
+    def set_overlay_update_rate_hz(self, hz: int) -> None:
+        self._config["app"]["overlay_update_rate_hz"] = max(10, min(60, int(hz)))
+
+    def get_auto_discovery_enabled(self) -> bool:
+        return bool(self._config.get("app", {}).get("auto_discovery_enabled", True))
+
+    def set_auto_discovery_enabled(self, enabled: bool) -> None:
+        self._config["app"]["auto_discovery_enabled"] = bool(enabled)
+
+    def get_auto_discovery_interval_sec(self) -> int:
+        return max(10, min(300, int(self._config.get("app", {}).get("auto_discovery_interval_sec", 60))))
+
+    def set_auto_discovery_interval_sec(self, seconds: int) -> None:
+        self._config["app"]["auto_discovery_interval_sec"] = max(10, min(300, int(seconds)))
+
+    def get_overlay_scaling_mode(self) -> str:
+        mode = self._config.get("app", {}).get("overlay_scaling_mode", "fit")
+        return mode if mode in ("fit", "stretch", "letterbox") else "fit"
+
+    def set_overlay_scaling_mode(self, mode: str) -> None:
+        if mode not in ("fit", "stretch", "letterbox"):
+            mode = "fit"
+        self._config["app"]["overlay_scaling_mode"] = mode
+
+    def get_show_overlay_on_connect(self) -> bool:
+        return bool(self._config.get("app", {}).get("show_overlay_on_connect", True))
+
+    def set_show_overlay_on_connect(self, enabled: bool) -> None:
+        self._config["app"]["show_overlay_on_connect"] = bool(enabled)
 
     def get_last_window_filter(self) -> str:
         """Get last used window filter"""

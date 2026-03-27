@@ -540,8 +540,8 @@ class ScreenAlertMainWindow:
         menubar.add_cascade(label="Windows", menu=self.windows_menu)
         self.windows_menu.add_command(label="Add Window", command=self._add_window)
         self.windows_menu.add_command(label="Reconnect All Windows", command=self._reconnect_all_windows)
-        self.windows_menu.add_command(label="Enable All Overviews", command=self._enable_all_overviews)
-        self.windows_menu.add_command(label="Close All Overviews", command=self._close_all_overviews)
+        self.windows_menu.add_command(label="Enable All Overlays", command=self._enable_all_overlays)
+        self.windows_menu.add_command(label="Close All Overlays", command=self._close_all_overlays)
         
         help_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Help", menu=help_menu)
@@ -862,7 +862,9 @@ class ScreenAlertMainWindow:
             self.status_var.set("Add windows already in progress...")
             return
 
-        dialog = WindowSelectorDialog(self.root, self.window_manager, self.config)
+        attached_hwnds = self.engine.get_attached_hwnds()
+        dialog = WindowSelectorDialog(self.root, self.window_manager, self.config,
+                                      attached_hwnds=attached_hwnds)
         windows_info = dialog.show()
 
         if windows_info:
@@ -1085,10 +1087,12 @@ class ScreenAlertMainWindow:
 
         self.status_var.set("Primary window set" if is_primary else "Primary window cleared")
 
-    def _is_overview_visible_live(self, thumbnail_id: str, thumbnail: Optional[Dict] = None) -> bool:
-        """Return overview visibility from config state."""
+    def _is_overlay_visible_live(self, thumbnail_id: str, thumbnail: Optional[Dict] = None) -> bool:
+        """Return overlay visibility from config state."""
         source = thumbnail if thumbnail is not None else self.config.get_thumbnail(thumbnail_id)
-        return bool((source or {}).get("overview_visible", True))
+        if not source:
+            return True
+        return bool(source.get("overlay_visible", source.get("overview_visible", True)))
 
     def _normalize_window_slot(self, value) -> Optional[int]:
         """Return a valid 1-10 slot number or None."""
@@ -1498,6 +1502,10 @@ class ScreenAlertMainWindow:
                     self.config.get_show_overlay_when_unavailable(),
                 )
             ),
+            "overlay_scaling_mode": settings.get(
+                "overlay_scaling_mode",
+                self.config.get_overlay_scaling_mode(),
+            ),
         }
         self._pending_runtime_settings = runtime_payload
         if self._runtime_apply_scheduled:
@@ -1524,6 +1532,10 @@ class ScreenAlertMainWindow:
                         "show_overlay_when_unavailable",
                         self.config.get_show_overlay_when_unavailable(),
                     )
+                ),
+                overlay_scaling_mode=payload.get(
+                    "overlay_scaling_mode",
+                    self.config.get_overlay_scaling_mode(),
                 ),
             )
             self._last_applied_runtime_settings = dict(payload)
@@ -1817,8 +1829,8 @@ class ScreenAlertMainWindow:
         if kind == "all":
             menu.add_command(label="Add Window", command=self._add_window)
             menu.add_command(
-                label="Enable All Overviews",
-                command=self._enable_all_overviews,
+                label="Enable All Overlays",
+                command=self._enable_all_overlays,
                 state=tk.NORMAL,
             )
             menu.add_command(label=("Resume All" if self.engine.paused else "Pause All"), command=self._toggle_pause)
@@ -1833,8 +1845,8 @@ class ScreenAlertMainWindow:
         elif kind == "window":
             menu.add_command(label="Add Region", command=self._add_region)
             menu.add_command(
-                label="Enable Overview",
-                command=self._enable_selected_overview,
+                label="Enable Overlay",
+                command=self._enable_selected_overlay,
                 state=tk.NORMAL,
             )
             menu.add_command(label="Reconnect Window", command=self._reconnect_selected_window)
@@ -1986,7 +1998,9 @@ class ScreenAlertMainWindow:
         if not answer:
             return
 
-        dialog = WindowSelectorDialog(self.root, self.window_manager, self.config)
+        attached_hwnds = self.engine.get_attached_hwnds(exclude_thumbnail_id=thumbnail_id)
+        dialog = WindowSelectorDialog(self.root, self.window_manager, self.config,
+                                      attached_hwnds=attached_hwnds)
         windows_info = dialog.show()
         if not windows_info or len(windows_info) == 0:
             return
@@ -2025,6 +2039,7 @@ class ScreenAlertMainWindow:
         self.engine._window_lost_notified.discard(thumbnail_id)
         self.engine._thumbnail_connected[thumbnail_id] = True
         self.engine.cache_manager.invalidate_all()
+        self.engine.renderer.set_source_hwnd(thumbnail_id, new_hwnd)
         self.engine.renderer.set_thumbnail_availability(thumbnail_id, True)
 
         self._update_thumbnail_list()
@@ -2032,20 +2047,25 @@ class ScreenAlertMainWindow:
         self.status_var.set(f"Replaced with: {new_title}")
         logger.info(f"[RECONNECT] Manual replacement for {thumbnail_id}: '{title}' -> '{new_title}' hwnd={new_hwnd}")
 
-    def _set_overview_enabled(self, thumbnail_id: str, enabled: bool) -> bool:
-        """Show/hide a single overview window without changing monitor state."""
+    def _set_overlay_enabled(self, thumbnail_id: str, enabled: bool) -> bool:
+        """Show/hide a single overlay window without changing monitor state."""
         thumbnail = self.config.get_thumbnail(thumbnail_id)
         if not thumbnail:
             return False
 
         target_enabled = bool(enabled)
-        current_visible = bool(thumbnail.get("overview_visible", True))
+        current_visible = bool(thumbnail.get("overlay_visible",
+                                             thumbnail.get("overview_visible", True)))
         if current_visible != target_enabled:
-            self.config.update_thumbnail(thumbnail_id, {"overview_visible": target_enabled})
+            self.config.update_thumbnail(thumbnail_id, {"overlay_visible": target_enabled})
             self.config.save()
 
         if target_enabled:
             self.engine.renderer.set_thumbnail_user_visibility(thumbnail_id, True)
+            # Re-establish DWM link since it may have been dropped
+            window_hwnd = thumbnail.get("window_hwnd")
+            if window_hwnd:
+                self.engine.renderer.set_source_hwnd(thumbnail_id, window_hwnd)
             self.engine.renderer.set_thumbnail_availability(
                 thumbnail_id,
                 True,
@@ -2056,8 +2076,8 @@ class ScreenAlertMainWindow:
 
         return True
 
-    def _enable_selected_overview(self) -> None:
-        """Enable overview window for the currently selected thumbnail."""
+    def _enable_selected_overlay(self) -> None:
+        """Enable overlay window for the currently selected thumbnail."""
         if not self.selected_thumbnail_id:
             self.status_var.set("Select a window first")
             return
@@ -2068,33 +2088,33 @@ class ScreenAlertMainWindow:
             return
 
         title = thumbnail.get("window_title", "Unknown")
-        self._set_overview_enabled(self.selected_thumbnail_id, True)
-        self.status_var.set(f"Overview enabled: {title}")
+        self._set_overlay_enabled(self.selected_thumbnail_id, True)
+        self.status_var.set(f"Overlay enabled: {title}")
         self._update_thumbnail_list()
 
-    def _enable_all_overviews(self) -> None:
-        """Enable all configured overview windows."""
+    def _enable_all_overlays(self) -> None:
+        """Enable all configured overlay windows."""
         total = 0
         for thumbnail in self.config.get_all_thumbnails():
             thumbnail_id = thumbnail.get("id")
             if not thumbnail_id:
                 continue
-            self._set_overview_enabled(thumbnail_id, True)
+            self._set_overlay_enabled(thumbnail_id, True)
             total += 1
 
-        self.status_var.set(f"Enabled {total} overview(s)")
+        self.status_var.set(f"Enabled {total} overlay(s)")
         self._update_thumbnail_list()
 
-    def _close_all_overviews(self) -> None:
-        """Close all configured overview windows visually (keep monitoring active)."""
+    def _close_all_overlays(self) -> None:
+        """Close all configured overlay windows visually (keep monitoring active)."""
         total = 0
         for thumbnail in self.config.get_all_thumbnails():
             thumbnail_id = thumbnail.get("id")
             if thumbnail_id:
-                self._set_overview_enabled(thumbnail_id, False)
+                self._set_overlay_enabled(thumbnail_id, False)
                 total += 1
 
-        self.status_var.set(f"Closed {total} overview(s)")
+        self.status_var.set(f"Closed {total} overlay(s)")
         self._update_thumbnail_list()
     
     def _update_thumbnail_list(self) -> None:
@@ -3027,8 +3047,8 @@ class ScreenAlertMainWindow:
             icons.append(("disconnected", "Window is disconnected/disabled"))
 
         thumbnail_id = thumbnail.get("id")
-        if self._is_overview_visible_live(thumbnail_id, thumbnail):
-            icons.append(("overview_open", "Overview is visible"))
+        if self._is_overlay_visible_live(thumbnail_id, thumbnail):
+            icons.append(("overlay_open", "Overlay is visible"))
         return icons
 
     def _format_window_tree_text(self, thumbnail: Dict, window_status: str) -> str:
@@ -3140,10 +3160,10 @@ class ScreenAlertMainWindow:
         title = thumbnail.get("window_title", "Unknown")
         is_primary = bool(thumbnail.get("is_primary", False))
         thumbnail_id = thumbnail.get("id")
-        overview_visible = self._is_overview_visible_live(thumbnail_id, thumbnail)
+        overlay_visible = self._is_overlay_visible_live(thumbnail_id, thumbnail)
         row_text = f"{'• ' if is_primary else '  '}{title}"
 
-        cache_key = (row_text, window_status, overview_visible, window_tree_state, self._current_theme, self._theme_preset)
+        cache_key = (row_text, window_status, overlay_visible, window_tree_state, self._current_theme, self._theme_preset)
 
         cached = self._window_tree_icon_strip_cache.get(cache_key)
         if cached is not None:
@@ -3166,7 +3186,7 @@ class ScreenAlertMainWindow:
         icon_size = max(12, line_space - 2)
         spacing = 6
         right_pad = 2
-        icon_count = 1 + (1 if overview_visible else 0)
+        icon_count = 1 + (1 if overlay_visible else 0)
         icons_width = (icon_count * icon_size) + ((icon_count - 1) * spacing)
 
         width = 4 + text_width + 10 + icons_width + right_pad
@@ -3182,7 +3202,7 @@ class ScreenAlertMainWindow:
         self._draw_connection_icon(draw, icon_x, icon_y, icon_size, connected=(window_status == "connected"))
         icon_x += icon_size + spacing
 
-        if overview_visible:
+        if overlay_visible:
             self._draw_open_eye_icon(draw, icon_x, icon_y, icon_size)
 
         tk_image = ImageTk.PhotoImage(image)

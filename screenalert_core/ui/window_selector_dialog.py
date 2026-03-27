@@ -16,16 +16,19 @@ class WindowSelectorDialog:
     """Dialog for selecting a window to monitor"""
     
     def __init__(self, parent: tk.Widget, window_manager: WindowManager,
-                 config_manager: Optional[ConfigManager] = None):
+                 config_manager: Optional[ConfigManager] = None,
+                 attached_hwnds: Optional[set] = None):
         """Initialize window selector dialog
-        
+
         Args:
             parent: Parent window
             window_manager: WindowManager instance
             config_manager: Config manager for persisting filter state
+            attached_hwnds: Set of hwnds already attached to overlays
         """
         self.window_manager = window_manager
         self.config = config_manager
+        self._attached_hwnds = attached_hwnds or set()
         self.selected_window: Optional[Dict] = None
         self.selected_windows: List[Dict] = []
         self.windows: List[Dict] = []  # Initialize windows list BEFORE UI
@@ -85,6 +88,14 @@ class WindowSelectorDialog:
         size_entry.bind('<KeyRelease>', self._on_filter_change)
         ttk.Label(size_filter_frame, text="(e.g., 1920x1080 or 1920; width-only is supported)").pack(side=tk.LEFT, padx=(6, 0))
 
+        # Hide attached windows checkbox
+        self._hide_attached_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            main_frame, text="Hide windows already attached to overlays",
+            variable=self._hide_attached_var,
+            command=self._on_filter_change,
+        ).pack(anchor="w", pady=(0, 5))
+
         # Window list frame
         list_frame = ttk.Frame(main_frame)
         list_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
@@ -141,11 +152,14 @@ class WindowSelectorDialog:
         size_op = self.size_op_var.get() if hasattr(self, 'size_op_var') else "=="
         self.listbox.delete(0, tk.END)
         self._filtered_rows = []
+        hide_attached = self._hide_attached_var.get() if hasattr(self, '_hide_attached_var') else False
         for window in self.windows:
             title = window["title"]
             if filter_text and filter_text not in title.lower():
                 continue
             if not self._matches_size_filter(window.get("size"), size_target, size_op):
+                continue
+            if hide_attached and window.get("hwnd") in self._attached_hwnds:
                 continue
 
             display_title = title if len(title) <= 80 else title[:77] + "..."
@@ -163,7 +177,7 @@ class WindowSelectorDialog:
             self.selected_window = None
             self.selected_windows = []
 
-    def _on_filter_change(self, event):
+    def _on_filter_change(self, event=None):
         self._save_filter_state()
         self._update_listbox()
 

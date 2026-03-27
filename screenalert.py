@@ -129,7 +129,9 @@ def setup_logging(verbose: bool = False) -> logging.Logger:
 
     # Clamp very chatty modules so normal operation is readable.
     # Keep this independent of --verbose/--diagnostics to avoid multi-MB logs.
-    logging.getLogger("screenalert_core.rendering.thumbnail_renderer").setLevel(logging.WARNING)
+    logging.getLogger("screenalert_core.rendering.overlay_manager").setLevel(logging.WARNING)
+    logging.getLogger("screenalert_core.rendering.overlay_window").setLevel(logging.WARNING)
+    logging.getLogger("screenalert_core.rendering.dwm_backend").setLevel(logging.WARNING)
     logging.getLogger("screenalert_core.core.window_manager").setLevel(logging.INFO)
     logging.getLogger("screenalert_core.ui.main_window").setLevel(logging.INFO)
     
