@@ -493,7 +493,7 @@ New global settings keys for MCP:
 ### Phase 1 — Event Logger
 **Files:** `screenalert_core/mcp/event_logger.py`
 
-- `EventLogger` class with SQLite backend
+- `EventLogger` class with JSONL backend
 - In-memory ring buffer (last N events) for speed, periodic flush to disk
 - `log(category, event, source, window_id, window_name, region_id, region_name, detail)` method
 - Query method supporting all filters from `get_event_log`
@@ -534,11 +534,46 @@ New global settings keys for MCP:
 - Implement `get_alert_image` and `get_alert_diagnostic_images` — read file, return base64 PNG content block
 - Implement MCP Resources for the captures directory
 
-### Phase 6 — Integration & Config
+### Phase 6 — UI Integration
+
+**Files:** `screenalert_core/ui/main_window.py`, `screenalert_core/ui/settings_dialog.py`
+
+**Main window — MCP status button (bottom bar):**
+
+- A toggle button sits in the bottom status bar of the main window, right-aligned
+- States:
+  - `● MCP` — green dot, server is running and accepting connections
+  - `○ MCP` — grey dot, server is disabled (`mcp_enabled = false`)
+  - `⚠ MCP` — amber dot, server failed to start (port in use, cert error, etc.)
+- Clicking the button toggles `mcp_enabled` on/off and starts/stops the server immediately — no restart required
+- Tooltip shows: current state, port, and number of active client connections
+
+**Settings dialog — new "MCP" category:**
+
+| Setting | Control | Description |
+| --- | --- | --- |
+| Enable MCP Server | Toggle | Start/stop server with the app (`mcp_enabled`) |
+| Port | Spinbox 1024–65535 | HTTPS listener port (`mcp_port`, default 8765) |
+| API Key | Read-only text field + **Copy** button | Shows current key; click Copy to put it on clipboard |
+| **Regenerate Key** | Button | Generates a new random key immediately; disconnects all clients |
+| Certificate Fingerprint | Read-only text field | SHA-256 fingerprint of the active TLS cert for client verification |
+| **Regenerate Certificate** | Button | Deletes and recreates the self-signed cert; restarts MCP listener |
+| HTTP Redirect | Toggle | Enable plain-HTTP listener that redirects to HTTPS (`mcp_http_redirect`) |
+| HTTP Redirect Port | Spinbox 1024–65535 | Port for the redirect listener (`mcp_http_port`, default 8766) |
+| Event Log | Toggle | Enable JSONL event logging (`event_log_enabled`) |
+| Max Log Entries | Spinbox | Maximum events before oldest are pruned (`event_log_max_rows`) |
+
+**Behaviour notes:**
+
+- Changing port or regenerating the cert restarts the MCP listener automatically
+- The Settings MCP category is always visible but controls are greyed out when `mcp_enabled` is off
+- The main-window button and the Settings toggle stay in sync
+
+### Phase 7 — Integration & Docs
+
 - Wire `EventLogger` into all engine/UI callsites
-- Add `screenalert_mcp.py` launcher
 - Update `RELEASE_NOTES.md`
-- Document Claude Desktop setup in `docs/MCP_SETUP.md`
+- Document setup for each client in `docs/MCP_SETUP.md` (Claude Desktop, Claude Code, generic)
 
 ---
 
