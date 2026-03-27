@@ -29,7 +29,21 @@ Claude Desktop / Claude Code
 
 ### Connection model
 
-The MCP server starts automatically when ScreenAlert launches and listens on `localhost:8765` (configurable). Claude Desktop uses the `url` transport — no process spawning, no separate launcher:
+The MCP server starts automatically when ScreenAlert launches and listens on `localhost:8765` (configurable). It speaks the standard MCP protocol over HTTP/SSE — **any MCP-compliant client can connect**, not just Claude Desktop.
+
+The server endpoint is:
+
+```text
+http://localhost:8765/sse
+```
+
+If ScreenAlert is not running, clients will show the server as unavailable. When ScreenAlert starts, the server comes up and clients reconnect automatically.
+
+### Client configuration
+
+Each MCP client has its own config format, but they all point to the same URL:
+
+**Claude Desktop** (`claude_desktop_config.json`):
 
 ```json
 {
@@ -41,7 +55,29 @@ The MCP server starts automatically when ScreenAlert launches and listens on `lo
 }
 ```
 
-If ScreenAlert is not running, Claude Desktop will show the server as unavailable — which is the correct behaviour. When ScreenAlert starts, the server comes up automatically and Claude Desktop reconnects.
+**Claude Code** (`.claude/settings.json`):
+
+```json
+{
+  "mcpServers": {
+    "screenalert": {
+      "url": "http://localhost:8765/sse",
+      "transport": "sse"
+    }
+  }
+}
+```
+
+**OpenClaw / other MCP clients:** Point to `http://localhost:8765/sse` using whatever config format the client requires. The server implementation is client-agnostic — it does not negotiate or identify callers.
+
+### Note on MCP transport versions
+
+The MCP spec defines two HTTP transports:
+
+- **SSE** (`/sse`) — older, widely supported, what most clients use today
+- **Streamable HTTP** (`/mcp`) — newer spec revision, more efficient
+
+The server will expose both endpoints so clients at either spec version can connect.
 
 ---
 
