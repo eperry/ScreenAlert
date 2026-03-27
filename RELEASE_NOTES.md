@@ -60,3 +60,20 @@ Replaced the software thumbnail pipeline (PrintWindow → PIL → Tkinter) with 
   - **Auto-Discover Windows**: Enable/disable background window discovery.
   - **Auto-Discovery Interval (sec)**: Scan frequency (10–300s, default 60).
   - **Show Overlay on Connect**: Auto-show overlays when windows are discovered.
+
+### Logging
+
+- **Unified log level**: Multiple per-feature logging flags (`log_verbose`, `diagnostics_enabled`, etc.) replaced with a single **Log Level** dropdown in Settings — `TRACE`, `DEBUG`, `INFO`, `WARNING`, `ERROR` (default `ERROR`).
+- **TRACE level**: Custom severity below DEBUG for very high-frequency diagnostic output.
+- **Runtime log level changes**: Changing the log level in Settings takes effect immediately with no restart required.
+- **`--log-level` CLI flag**: Pass `--log-level DEBUG` (or any level) to override the saved config at launch. `--verbose` and `--diagnostics` continue to work as aliases for `DEBUG`.
+- **Backward compatibility**: Old configs with `log_verbose: true` automatically migrate to `log_level: DEBUG` on first load.
+
+### Code Quality & Internal
+
+- **`log_setup.py`**: Centralised logging initialisation (`setup_logging`) and runtime level switching (`set_runtime_log_level`) to avoid circular imports.
+- **`win32_types.py`**: All Win32 constants, DLL handles, and ctypes struct definitions extracted from `overlay_window.py` into `rendering/win32_types.py` for reuse and clarity.
+- **Alert diagnostics**: `save_alert_diagnostics` extracted from `screening_engine` into `utils/diagnostics.py` as a standalone, independently testable pure function.
+- **Engine deduplication**: Six copies of the 3-line window identity extraction pattern replaced by `_extract_window_identity()` and `_validate_thumbnail_window()` helpers in `screening_engine`.
+- **UI mixins**: `main_window.py` split into focused mixin modules — `WindowSlotMixin` (slot management), `EngineEventMixin` (engine→UI event delivery), `SettingsMixin` (runtime settings application).
+- **Error handling**: `reconnect_window`, `reconnect_all_windows`, and `apply_runtime_settings` in the engine are now individually guarded with try/except and full tracebacks; engine event flush handles each event independently so one failure does not abort the rest.
