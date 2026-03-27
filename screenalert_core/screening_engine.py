@@ -21,6 +21,7 @@ from screenalert_core.monitoring.alert_system import AlertSystem
 from screenalert_core.rendering.overlay_manager import OverlayManager
 from screenalert_core.utils.plugin_hooks import PluginHooks
 from screenalert_core.utils.constants import DEFAULT_REFRESH_RATE_MS, TEMP_DIR
+from screenalert_core.utils.diagnostics import save_alert_diagnostics
 
 logger = logging.getLogger(__name__)
 
@@ -1025,8 +1026,18 @@ class ScreenAlertEngine:
                                     # Optional: save diagnostic images (background thread to avoid blocking loop)
                                     if self.config.get_save_alert_diagnostics():
                                         threading.Thread(
-                                            target=self._save_alert_diagnostics,
-                                            args=(thumbnail_config.copy(), config.copy(), window_image.copy(), region),
+                                            target=save_alert_diagnostics,
+                                            args=(
+                                                self.config.get_capture_dir(),
+                                                thumbnail_config.copy(),
+                                                config.copy(),
+                                                window_image.copy(),
+                                                region,
+                                                self._prev_window_images.get(thumbnail_id),
+                                                self.config.get_canny_low(),
+                                                self.config.get_canny_high(),
+                                                self.config.get_edge_binarize(),
+                                            ),
                                             daemon=True,
                                         ).start()
 
@@ -1256,79 +1267,6 @@ class ScreenAlertEngine:
         except Exception as e:
             logger.warning(f"Failed to save snapshot: {e}")
     
-    def _save_alert_diagnostics(self, thumbnail_config: Dict, region_config: Dict,
-                                window_image: Image.Image, region_monitor) -> None:
-        """Save diagnostic images when an alert fires (prev/current window, region, edge maps)."""
-        try:
-            import numpy as np
-            capture_dir = self.config.get_capture_dir()
-            diag_dir = os.path.join(capture_dir, "diagnostics")
-            os.makedirs(diag_dir, exist_ok=True)
-
-            window_title = thumbnail_config.get("window_title", "window")
-            region_name = region_config.get("name", "region")
-
-            def safe(text: str) -> str:
-                text = re.sub(r'[^a-zA-Z0-9._-]+', '_', text or "")
-                return text[:64] or "item"
-
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            prefix = f"{timestamp}_{safe(window_title)}_{safe(region_name)}_alert"
-
-            # Previous window image (stored per-thumbnail)
-            prev_window = self._prev_window_images.get(
-                thumbnail_config.get("id", ""), None
-            )
-            if prev_window is not None:
-                prev_window.save(
-                    os.path.join(diag_dir, f"{prefix}_window_prev.png"), format="PNG"
-                )
-
-            # Current window image
-            window_image.save(
-                os.path.join(diag_dir, f"{prefix}_window_curr.png"), format="PNG"
-            )
-
-            # Region crops (from monitor's stored alert images)
-            prev_region = region_monitor.last_alert_prev_image
-            curr_region = region_monitor.last_alert_curr_image
-            if prev_region is not None:
-                prev_region.save(
-                    os.path.join(diag_dir, f"{prefix}_region_prev.png"), format="PNG"
-                )
-            if curr_region is not None:
-                curr_region.save(
-                    os.path.join(diag_dir, f"{prefix}_region_curr.png"), format="PNG"
-                )
-
-            # Edge detection maps
-            if prev_region is not None and curr_region is not None:
-                canny_low = self.config.get_canny_low()
-                canny_high = self.config.get_canny_high()
-                binarize = self.config.get_edge_binarize()
-
-                g1 = np.array(prev_region.convert('L'), dtype=np.uint8)
-                g2 = np.array(curr_region.convert('L'), dtype=np.uint8)
-                edges1 = ImageProcessor._canny_edges(g1, canny_low, canny_high, binarize=binarize)
-                edges2 = ImageProcessor._canny_edges(g2, canny_low, canny_high, binarize=binarize)
-
-                Image.fromarray(edges1).save(
-                    os.path.join(diag_dir, f"{prefix}_edges_prev.png"), format="PNG"
-                )
-                Image.fromarray(edges2).save(
-                    os.path.join(diag_dir, f"{prefix}_edges_curr.png"), format="PNG"
-                )
-
-                # Edge diff: pixels where edges changed
-                edge_diff = np.abs(edges1.astype(np.int16) - edges2.astype(np.int16)).astype(np.uint8)
-                Image.fromarray(edge_diff).save(
-                    os.path.join(diag_dir, f"{prefix}_edges_diff.png"), format="PNG"
-                )
-
-            logger.info(f"Saved alert diagnostics: {diag_dir}/{prefix}_*")
-        except Exception as e:
-            logger.warning(f"Failed to save alert diagnostics: {e}")
-
     def _on_thumbnail_interaction(self, thumbnail_id: str, action: str, payload: Optional[Dict] = None) -> None:
         """Handle thumbnail user interactions"""
         payload = payload or {}
