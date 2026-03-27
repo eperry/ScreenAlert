@@ -131,13 +131,81 @@ Authorization: Bearer <api-key>
 
 **Server behaviour on auth failure:** Returns HTTP `401 Unauthorized` with no body. The connection is not established and nothing is logged beyond a single warning at DEBUG level (to avoid log spam from misconfigured clients).
 
-New global settings keys:
+### TLS / HTTPS
+
+HTTPS is the **default**. Plain HTTP is disabled unless explicitly enabled as a redirect-only listener.
+
+**Self-signed certificate — auto-generated on first startup:**
+
+- Generated using the `cryptography` Python package (already a transitive dependency via PIL/other)
+- EC 256-bit key (smaller and faster than RSA 2048 for local use)
+- Subject Alternative Names: `localhost`, `127.0.0.1`
+- Validity: 10 years (local-only cert, no CA rotation needed)
+- No private key password
+- Stored in the ScreenAlert data directory:
+
+```text
+C:/Users/<user>/AppData/Roaming/ScreenAlert/mcp_cert.pem
+C:/Users/<user>/AppData/Roaming/ScreenAlert/mcp_key.pem
+```
+
+- Certificate is regenerated automatically if either file is missing or the cert is expired
+- The cert's fingerprint (SHA-256) is shown in Settings > MCP so the user can verify it when configuring clients
+
+**HTTP redirect (optional):**
+
+If `mcp_http_redirect` is enabled, a second listener on `mcp_http_port` accepts plain HTTP connections and returns `301 Moved Permanently` to the HTTPS URL. Disabled by default — plain HTTP traffic simply gets no response.
+
+**Client configuration — HTTPS with self-signed cert:**
+
+Since the cert is self-signed, clients must either disable certificate verification or trust the cert. For a localhost-only server this is acceptable — the API key provides the actual security.
+
+**Claude Desktop** (`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "screenalert": {
+      "url": "https://localhost:8765/sse",
+      "headers": {
+        "Authorization": "Bearer YOUR_KEY_HERE"
+      }
+    }
+  }
+}
+```
+
+**Claude Code** (`.claude/settings.json`):
+
+```json
+{
+  "mcpServers": {
+    "screenalert": {
+      "url": "https://localhost:8765/sse",
+      "transport": "sse",
+      "headers": {
+        "Authorization": "Bearer YOUR_KEY_HERE"
+      }
+    }
+  }
+}
+```
+
+**Other clients:** Use `https://localhost:8765/sse`. If the client rejects self-signed certs, either add `mcp_cert.pem` to the system or client trust store, or set the client's equivalent of `verify: false` / `insecure: true`.
+
+**Regenerate certificate:** A **Regenerate Certificate** button in Settings > MCP deletes and recreates the cert files and restarts the MCP listener. All clients will need to re-verify/re-trust after rotation.
+
+### MCP settings summary
 
 | Key | Default | Description |
 | --- | --- | --- |
 | `mcp_enabled` | `true` | Start MCP server with the app |
-| `mcp_port` | `8765` | Local port for the HTTP/SSE listener |
-| `mcp_api_key` | auto-generated | Bearer token required on all MCP connections |
+| `mcp_port` | `8765` | HTTPS port for the MCP listener |
+| `mcp_api_key` | auto-generated | Bearer token required on all connections |
+| `mcp_ssl_cert_path` | auto | Path to TLS cert PEM (auto-generated if absent/expired) |
+| `mcp_ssl_key_path` | auto | Path to TLS key PEM (auto-generated if absent) |
+| `mcp_http_redirect` | `false` | Enable plain HTTP listener that redirects to HTTPS |
+| `mcp_http_port` | `8766` | Port for the HTTP redirect listener |
 
 ---
 
@@ -433,15 +501,17 @@ New global settings keys for MCP:
 - Global setting keys: `event_log_enabled`, `event_log_max_rows`
 
 ### Phase 2 — MCP Server Skeleton
-**Files:** `screenalert_core/mcp/server.py`
+**Files:** `screenalert_core/mcp/server.py`, `screenalert_core/mcp/tls.py`
 
-- HTTP/SSE MCP server using the `mcp` Python package (`mcp[cli]`)
+- HTTPS/SSE MCP server using the `mcp` Python package (`mcp[cli]`)
 - `MCPServer` class with `start()` / `stop()` — runs as a daemon thread inside ScreenAlert
+- `tls.py`: `ensure_cert(cert_path, key_path)` — generates EC 256 self-signed cert via `cryptography` package if missing or expired; SANs: `localhost`, `127.0.0.1`; 10-year validity; no key password
+- API key middleware — validates `Authorization: Bearer` header on every request; returns `401` on mismatch
+- Optional HTTP redirect listener (`mcp_http_redirect` / `mcp_http_port`)
+- Both `/sse` and `/mcp` endpoints exposed
 - Tool registry — each tool is a decorated function
 - Engine, config, and event_logger references injected at startup
-- Port and enabled flag driven by global settings (`mcp_port`, `mcp_enabled`)
-- Basic `list_tools` / `call_tool` handlers
-- Test with Claude Desktop using a single stub tool (`ping` → returns app version)
+- Test with Claude Desktop using a single stub tool (`ping` → returns app version and cert fingerprint)
 
 ### Phase 3 — Window & Region Tools
 **Files:** `screenalert_core/mcp/tools/windows.py`, `regions.py`
