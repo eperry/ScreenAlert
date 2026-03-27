@@ -83,5 +83,8 @@ STATUS_COLORS = {
 }
 
 # Logging
+TRACE = 5  # Custom level below DEBUG (10)
+LOG_LEVELS = ["TRACE", "DEBUG", "INFO", "WARNING", "ERROR"]
+DEFAULT_LOG_LEVEL = "ERROR"
 LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s'
 LOG_DATE_FORMAT = '%Y-%m-%d %H:%M:%S'

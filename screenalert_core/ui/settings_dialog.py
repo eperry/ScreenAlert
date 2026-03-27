@@ -238,9 +238,14 @@ _CATEGORIES: List[Tuple[str, str, Optional[str], List[dict]]] = [
     ]),
     ("advanced", "Advanced", None, [
         {
-            "key": "verbose_logging", "name": "Verbose Logging", "type": "bool",
-            "desc": "Enable DEBUG-level logging to the log file. Produces much more output; "
-                    "useful for troubleshooting.",
+            "key": "log_level", "name": "Log Level", "type": "choice",
+            "desc": "Controls how much detail is written to the log file.\n\n"
+                    "ERROR = only errors (default, recommended).\n"
+                    "WARNING = errors and warnings.\n"
+                    "INFO = normal operational messages.\n"
+                    "DEBUG = detailed troubleshooting output.\n"
+                    "TRACE = maximum verbosity — every frame, every check.",
+            "choices": ["TRACE", "DEBUG", "INFO", "WARNING", "ERROR"],
         },
         {
             "key": "anonymize_logs", "name": "Anonymize Logs", "type": "bool",
@@ -310,7 +315,7 @@ _CONFIG_MAP = {
     "capture_on_green": ("get_capture_on_green", "set_capture_on_green"),
     "capture_dir": ("get_capture_dir", "set_capture_dir"),
     "capture_filename_format": ("get_capture_filename_format", "set_capture_filename_format"),
-    "verbose_logging": ("get_verbose_logging", "set_verbose_logging"),
+    "log_level": ("get_log_level", "set_log_level"),
     "anonymize_logs": ("get_anonymize_logs", "set_anonymize_logs"),
     "suppress_fullscreen": ("get_suppress_fullscreen", "set_suppress_fullscreen"),
     "update_check_enabled": ("get_update_check_enabled", "set_update_check_enabled"),

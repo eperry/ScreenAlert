@@ -7,7 +7,7 @@ from typing import Dict, Any, Optional, List
 
 from screenalert_core.utils.constants import (
     CONFIG_FILE, WINDOW_REGION_CONFIG_FILE, CONFIG_DIR, DEFAULT_REFRESH_RATE_MS, DEFAULT_OPACITY,
-    DEFAULT_ALERT_THRESHOLD, THUMBNAIL_DEFAULT_WIDTH, THUMBNAIL_DEFAULT_HEIGHT
+    DEFAULT_ALERT_THRESHOLD, THUMBNAIL_DEFAULT_WIDTH, THUMBNAIL_DEFAULT_HEIGHT, LOG_LEVELS,
 )
 from screenalert_core.utils.helpers import generate_uuid
 
@@ -46,7 +46,7 @@ class ConfigManager:
                 "always_on_top": True,
                 "show_borders": True,
                 "show_overlay_when_unavailable": False,
-                "log_verbose": False,
+                "log_level": "ERROR",
                 "high_contrast": False,
                 "last_window_filter": "",
                 "last_window_size_filter_op": "==",
@@ -125,6 +125,13 @@ class ConfigManager:
                 result["version"] = app_loaded["version"]
             if isinstance(app_loaded.get("app"), dict):
                 result["app"].update(app_loaded["app"])
+            # Migrate legacy log_verbose -> log_level
+            app_section = result.get("app", {})
+            if "log_level" not in app_section and app_section.get("log_verbose", False):
+                app_section["log_level"] = "DEBUG"
+                logger.info("Migrated legacy log_verbose=True to log_level=DEBUG")
+            # Remove the legacy key so it is not written back
+            app_section.pop("log_verbose", None)
             if isinstance(app_loaded.get("ui"), dict):
                 result["ui"].update(app_loaded["ui"])
             if isinstance(app_loaded.get("plugins"), dict):
@@ -253,13 +260,27 @@ class ConfigManager:
         """Set whether overlays remain visible with a Not Available placeholder."""
         self._config["app"]["show_overlay_when_unavailable"] = bool(enabled)
     
+    def get_log_level(self) -> str:
+        """Return the configured log level string (TRACE/DEBUG/INFO/WARNING/ERROR)."""
+        val = self._config.get("app", {}).get("log_level", "ERROR")
+        if val not in LOG_LEVELS:
+            return "ERROR"
+        return val
+
+    def set_log_level(self, level: str) -> None:
+        """Set the log level string, validated against known levels."""
+        if level not in LOG_LEVELS:
+            logger.warning("set_log_level: unknown level %r, ignoring", level)
+            return
+        self._config["app"]["log_level"] = level
+
+    # Legacy shim kept for any code that still calls set_verbose_logging via
+    # the --diagnostics CLI path; maps to log_level=DEBUG.
     def get_verbose_logging(self) -> bool:
-        """Get verbose logging setting"""
-        return self._config.get("app", {}).get("log_verbose", False)
-    
+        return self.get_log_level() in ("TRACE", "DEBUG")
+
     def set_verbose_logging(self, verbose: bool) -> None:
-        """Set verbose logging"""
-        self._config["app"]["log_verbose"] = verbose
+        self.set_log_level("DEBUG" if verbose else "WARNING")
 
     def get_high_contrast(self) -> bool:
         """Get high contrast mode setting."""

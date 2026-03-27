@@ -12,6 +12,7 @@ import time
 import argparse
 import faulthandler
 from pathlib import Path
+from typing import Optional
 
 if os.name == "nt":
     import ctypes
@@ -21,8 +22,9 @@ workspace_root = Path(__file__).parent.parent
 sys.path.insert(0, str(workspace_root))
 
 from screenalert_core.utils.constants import (
-    APP_NAME, APP_VERSION, LOGS_DIR, LOG_FORMAT, LOG_DATE_FORMAT
+    APP_NAME, APP_VERSION, LOGS_DIR,
 )
+from screenalert_core.utils.log_setup import setup_logging, set_runtime_log_level  # noqa: F401
 from screenalert_core.screening_engine import ScreenAlertEngine
 from screenalert_core.ui.main_window import ScreenAlertMainWindow
 
@@ -97,53 +99,7 @@ def teardown_thread_diagnostics() -> None:
         _THREAD_DUMP_FILE = None
 
 
-def setup_logging(verbose: bool = False) -> logging.Logger:
-    """Configure logging"""
-    log_level = logging.DEBUG if verbose else logging.WARNING
-    
-    # Create logs directory
-    os.makedirs(LOGS_DIR, exist_ok=True)
-    
-    # Create formatters
-    formatter = logging.Formatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
-    
-    # File handler
-    log_file = os.path.join(LOGS_DIR, "screenalert.log")
-    fh = logging.FileHandler(log_file)
-    fh.setLevel(log_level)
-    fh.setFormatter(formatter)
-    
-    # Console handler (force UTF-8 to avoid cp1252 encoding errors)
-    import sys, io
-    utf8_stream = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
-    ch = logging.StreamHandler(utf8_stream)
-    ch.setLevel(log_level)
-    ch.setFormatter(formatter)
-
-    # Configure root logger so ALL module loggers (screenalert_core.*)
-    # propagate their output to the same handlers.
-    root_logger = logging.getLogger()
-    root_logger.setLevel(log_level)
-    root_logger.addHandler(fh)
-    root_logger.addHandler(ch)
-
-    # Clamp very chatty modules so normal operation is readable.
-    # Keep this independent of --verbose/--diagnostics to avoid multi-MB logs.
-    logging.getLogger("screenalert_core.rendering.overlay_manager").setLevel(logging.WARNING)
-    logging.getLogger("screenalert_core.rendering.overlay_window").setLevel(logging.WARNING)
-    logging.getLogger("screenalert_core.rendering.dwm_backend").setLevel(logging.WARNING)
-    logging.getLogger("screenalert_core.core.window_manager").setLevel(logging.INFO)
-    logging.getLogger("screenalert_core.ui.main_window").setLevel(logging.INFO)
-    
-    # Also configure the named logger for screenalert.py itself
-    logger = logging.getLogger('screenalert')
-    logger.setLevel(log_level)
-    
-    logger.info(f"\n{'='*60}")
-    logger.info(f"{APP_NAME} v{APP_VERSION} Starting")
-    logger.info(f"{'='*60}")
-    
-    return logger
+# setup_logging and set_runtime_log_level are imported from log_setup above.
 
 
 def parse_args():
@@ -151,7 +107,12 @@ def parse_args():
     parser = argparse.ArgumentParser(description="ScreenAlert")
     parser.add_argument("--config", type=str, default=None, help="Path to config JSON")
     parser.add_argument("--headless", action="store_true", help="Run monitoring without UI")
-    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
+    parser.add_argument("--verbose", action="store_true",
+                        help="Enable DEBUG logging (shorthand for --log-level DEBUG)")
+    parser.add_argument("--log-level", type=str, default=None,
+                        choices=["TRACE", "DEBUG", "INFO", "WARNING", "ERROR"],
+                        metavar="LEVEL",
+                        help="Log level: TRACE/DEBUG/INFO/WARNING/ERROR (overrides saved setting)")
     parser.add_argument("--diagnostics", action="store_true", help="Enable diagnostics mode")
     parser.add_argument("--thread-dump-interval", type=int, default=0,
                         help="Dump all thread stacks every N seconds to logs/thread_dumps.log")
@@ -177,17 +138,35 @@ def main():
         except Exception:
             pass
 
-    # Setup logging
-    logger = setup_logging(verbose=bool(args.verbose or args.diagnostics))
-    
+    # Determine log level: CLI flag > --verbose/--diagnostics shorthand > config file
+    # We need to load config first to read the saved log level, but logging
+    # must be set up before the engine so early messages are captured.
+    # Solution: do a lightweight config peek, then init properly after engine loads.
+    cli_level = None  # type: Optional[str]
+    if args.log_level:
+        cli_level = args.log_level.upper()
+    elif args.verbose or args.diagnostics:
+        cli_level = "DEBUG"
+
+    # Bootstrap logging at the CLI-requested level (or ERROR if not specified).
+    # The real saved level will be applied once the engine/config is loaded.
+    bootstrap_level = cli_level or "ERROR"
+    logger = setup_logging(log_level_str=bootstrap_level, log_dir=LOGS_DIR)
+
     try:
         # Create engine
         logger.info("Initializing ScreenAlert Engine...")
         engine = ScreenAlertEngine(config_path=args.config)
 
+        # Apply final log level: CLI overrides config, otherwise use saved value
+        final_level = cli_level or engine.config.get_log_level()
+        if final_level != bootstrap_level:
+            set_runtime_log_level(final_level)
+        logger.info("%s v%s starting (log_level=%s)", APP_NAME, APP_VERSION, final_level)
+
         if args.diagnostics:
             engine.config.set_diagnostics_enabled(True)
-            engine.config.set_verbose_logging(True)
+            engine.config.set_log_level("DEBUG")
             engine.config.save()
             logger.info("Diagnostics mode enabled")
 

@@ -1538,6 +1538,14 @@ class ScreenAlertMainWindow:
                     self.config.get_overlay_scaling_mode(),
                 ),
             )
+            # Apply log level change immediately without requiring a restart
+            if "log_level" in payload:
+                try:
+                    from screenalert_core.utils.log_setup import set_runtime_log_level
+                    set_runtime_log_level(payload["log_level"])
+                    logger.info("Log level changed to %s", payload["log_level"])
+                except Exception as log_err:
+                    logger.warning("Failed to apply log level change: %s", log_err)
             self._last_applied_runtime_settings = dict(payload)
         except Exception as runtime_error:
             logger.error(f"Error applying runtime settings: {runtime_error}")
