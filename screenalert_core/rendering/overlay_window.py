@@ -12,6 +12,24 @@ import threading
 from typing import Any, Callable, Dict, Optional, Tuple, TYPE_CHECKING
 
 from screenalert_core.rendering.dwm_backend import ThumbnailBackend
+from screenalert_core.rendering.win32_types import (
+    user32, gdi32, kernel32,
+    WS_POPUP, WS_VISIBLE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WM_CREATE, WM_DESTROY, WM_PAINT, WM_CLOSE, WM_ERASEBKGND, WM_TIMER,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONDOWN, WM_RBUTTONUP,
+    WM_MOUSEMOVE, WM_MOUSELEAVE, WM_DPICHANGED, WM_USER,
+    LWA_ALPHA,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
+    HWND_TOPMOST, HWND_NOTOPMOST,
+    SW_HIDE, SW_SHOWNOACTIVATE,
+    TME_LEAVE, MK_SHIFT, MK_LBUTTON, MK_RBUTTON,
+    PS_SOLID, NULL_BRUSH,
+    TIMER_ID_UPDATE, TITLE_BAR_HEIGHT, BORDER_WIDTH, DRAG_THRESHOLD_PX,
+    COLOR_BORDER_ACTIVE, COLOR_TITLE_BG, COLOR_UNAVAILABLE_BG, COLOR_BLACK,
+    TRACKMOUSEEVENT, PAINTSTRUCT, WNDPROC, WNDCLASSEXW,
+    _window_map, ensure_wndclass,
+)
 from screenalert_core.utils.constants import (
     THUMBNAIL_MIN_WIDTH, THUMBNAIL_MAX_WIDTH,
     THUMBNAIL_MIN_HEIGHT, THUMBNAIL_MAX_HEIGHT,
@@ -21,168 +39,6 @@ if TYPE_CHECKING:
     from screenalert_core.rendering.overlay_manager import OverlayManager
 
 logger = logging.getLogger(__name__)
-
-# ── Win32 constants ──────────────────────────────────────────────────────
-
-WS_POPUP = 0x80000000
-WS_VISIBLE = 0x10000000
-WS_EX_TOOLWINDOW = 0x00000080
-WS_EX_TOPMOST = 0x00000008
-WS_EX_LAYERED = 0x00080000
-WS_EX_NOACTIVATE = 0x08000000
-
-WM_CREATE = 0x0001
-WM_DESTROY = 0x0002
-WM_PAINT = 0x000F
-WM_CLOSE = 0x0010
-WM_ERASEBKGND = 0x0014
-WM_TIMER = 0x0113
-WM_LBUTTONDOWN = 0x0201
-WM_LBUTTONUP = 0x0202
-WM_RBUTTONDOWN = 0x0204
-WM_RBUTTONUP = 0x0205
-WM_MOUSEMOVE = 0x0200
-WM_MOUSELEAVE = 0x02A3
-WM_DPICHANGED = 0x02E0
-WM_USER = 0x0400
-
-LWA_ALPHA = 0x00000002
-
-SWP_NOACTIVATE = 0x0010
-SWP_NOMOVE = 0x0002
-SWP_NOSIZE = 0x0001
-SWP_NOZORDER = 0x0004
-SWP_SHOWWINDOW = 0x0040
-HWND_TOPMOST = -1
-HWND_NOTOPMOST = -2
-
-SW_HIDE = 0
-SW_SHOWNOACTIVATE = 4
-
-TME_LEAVE = 0x00000002
-
-MK_SHIFT = 0x0004
-MK_LBUTTON = 0x0001
-MK_RBUTTON = 0x0002
-
-# GDI
-PS_SOLID = 0
-NULL_BRUSH = 5
-
-TIMER_ID_UPDATE = 1
-TITLE_BAR_HEIGHT = 25
-BORDER_WIDTH = 3
-DRAG_THRESHOLD_PX = 4
-
-# Colors
-COLOR_BORDER_ACTIVE = 0x0095FF  # BGR for #FF9500
-COLOR_TITLE_BG = 0x2E2E2E  # BGR for #2e2e2e
-COLOR_UNAVAILABLE_BG = 0xD77800  # BGR for #0078D7
-COLOR_BLACK = 0x000000
-
-user32 = ctypes.windll.user32
-gdi32 = ctypes.windll.gdi32
-kernel32 = ctypes.windll.kernel32
-
-# Set proper argtypes for 64-bit Windows
-user32.DefWindowProcW.argtypes = [ctypes.wintypes.HWND, ctypes.c_uint, ctypes.wintypes.WPARAM, ctypes.wintypes.LPARAM]
-user32.DefWindowProcW.restype = ctypes.c_longlong
-
-
-# ── Win32 helpers ────────────────────────────────────────────────────────
-
-class TRACKMOUSEEVENT(ctypes.Structure):
-    _fields_ = [
-        ("cbSize", ctypes.c_ulong),
-        ("dwFlags", ctypes.c_ulong),
-        ("hwndTrack", ctypes.wintypes.HWND),
-        ("dwHoverTime", ctypes.c_ulong),
-    ]
-
-
-class PAINTSTRUCT(ctypes.Structure):
-    _fields_ = [
-        ("hdc", ctypes.wintypes.HDC),
-        ("fErase", ctypes.wintypes.BOOL),
-        ("rcPaint", ctypes.wintypes.RECT),
-        ("fRestore", ctypes.wintypes.BOOL),
-        ("fIncUpdate", ctypes.wintypes.BOOL),
-        ("rgbReserved", ctypes.c_byte * 32),
-    ]
-
-
-WNDPROC = ctypes.WINFUNCTYPE(
-    ctypes.c_longlong,
-    ctypes.wintypes.HWND,
-    ctypes.c_uint,
-    ctypes.wintypes.WPARAM,
-    ctypes.wintypes.LPARAM,
-)
-
-
-class WNDCLASSEXW(ctypes.Structure):
-    _fields_ = [
-        ("cbSize", ctypes.c_uint),
-        ("style", ctypes.c_uint),
-        ("lpfnWndProc", WNDPROC),
-        ("cbClsExtra", ctypes.c_int),
-        ("cbWndExtra", ctypes.c_int),
-        ("hInstance", ctypes.wintypes.HINSTANCE),
-        ("hIcon", ctypes.wintypes.HICON),
-        ("hCursor", ctypes.wintypes.HICON),
-        ("hbrBackground", ctypes.wintypes.HBRUSH),
-        ("lpszMenuName", ctypes.wintypes.LPCWSTR),
-        ("lpszClassName", ctypes.wintypes.LPCWSTR),
-        ("hIconSm", ctypes.wintypes.HICON),
-    ]
-
-
-# Global window class registration (once per process)
-_wndclass_registered = False
-_wndclass_name = "ScreenAlertOverlay"
-_window_map: Dict[int, "OverlayWindow"] = {}  # hwnd -> OverlayWindow
-
-
-def _wndproc(hwnd, msg, wparam, lparam):
-    """Global WndProc that dispatches to the OverlayWindow instance."""
-    try:
-        overlay = _window_map.get(hwnd)
-        if overlay:
-            result = overlay._handle_message(msg, wparam, lparam)
-            if result is not None:
-                return result
-    except Exception as e:
-        logger.warning("WndProc error for hwnd=%s msg=0x%04X: %s", hwnd, msg, e)
-    return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
-
-
-_wndproc_ref = WNDPROC(_wndproc)  # prevent GC
-
-
-def _ensure_wndclass():
-    """Register the Win32 window class (once per process)."""
-    global _wndclass_registered
-    if _wndclass_registered:
-        return
-    wc = WNDCLASSEXW()
-    wc.cbSize = ctypes.sizeof(WNDCLASSEXW)
-    wc.style = 0
-    wc.lpfnWndProc = _wndproc_ref
-    wc.cbClsExtra = 0
-    wc.cbWndExtra = 0
-    wc.hInstance = kernel32.GetModuleHandleW(None)
-    wc.hIcon = None
-    wc.hCursor = user32.LoadCursorW(None, 32512)  # IDC_ARROW
-    wc.hbrBackground = None
-    wc.lpszMenuName = None
-    wc.lpszClassName = _wndclass_name
-    wc.hIconSm = None
-    atom = user32.RegisterClassExW(ctypes.byref(wc))
-    if not atom:
-        err = ctypes.GetLastError()
-        raise OSError(f"RegisterClassExW failed: error={err}")
-    _wndclass_registered = True
-    logger.debug("Overlay window class registered")
 
 
 # ── OverlayWindow ────────────────────────────────────────────────────────
@@ -251,7 +107,7 @@ class OverlayWindow:
     def _create_window(self) -> None:
         """Create the native Win32 overlay window."""
         try:
-            _ensure_wndclass()
+            ensure_wndclass()
 
             ex_style = WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE
             if self.always_on_top:
