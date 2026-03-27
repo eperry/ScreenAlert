@@ -9,7 +9,7 @@ import string
 import ctypes
 import tkinter as tk
 from datetime import datetime
-from typing import Dict, Optional, List, Callable
+from typing import Dict, Optional, List, Callable, Tuple
 from PIL import Image
 
 from screenalert_core.core.config_manager import ConfigManager
@@ -148,6 +148,36 @@ class ScreenAlertEngine:
             logger.debug("Initialized thumbnails from config")
         logger.info("tkinter root set, config initialized")
     
+    # ── Window identity helpers ───────────────────────────────────────────
+
+    @staticmethod
+    def _extract_window_identity(tc: Dict) -> Tuple[str, Optional[str], Optional[tuple], Optional[int]]:
+        """Extract (title, class, size, monitor_id) from a thumbnail config dict."""
+        title = tc.get("window_title", "")
+        cls = tc.get("window_class") or None
+        raw_size = tc.get("window_size")
+        size = tuple(raw_size) if raw_size else None
+        monitor = tc.get("monitor_id")
+        return title, cls, size, monitor
+
+    def _validate_thumbnail_window(self, tc: Dict, hwnd: int) -> bool:
+        """Return True if *hwnd* matches the identity stored in thumbnail config *tc*."""
+        title, cls, size, monitor = self._extract_window_identity(tc)
+        try:
+            return self.window_manager.validate_window_identity(
+                hwnd,
+                expected_title=title,
+                expected_class=cls,
+                expected_monitor_id=monitor,
+                expected_size=size,
+                size_tolerance=self.config.get_reconnect_size_tolerance(),
+            )
+        except Exception as exc:
+            logger.warning("validate_window_identity error for hwnd=%s: %s", hwnd, exc)
+            return False
+
+    # ── Config initialisation ─────────────────────────────────────────────
+
     def _initialize_from_config(self) -> None:
         """Load thumbnails and regions from config"""
         for thumbnail_config in self.config.get_all_thumbnails():
@@ -178,17 +208,7 @@ class ScreenAlertEngine:
                 # Immediately capture and display (same as add_thumbnail)
                 window_hwnd = config.get("window_hwnd")
                 if window_hwnd:
-                    expected_title = config.get("window_title")
-                    expected_class = config.get("window_class") or None
-                    expected_size = tuple(config.get("window_size")) if config.get("window_size") else None
-                    expected_monitor = config.get("monitor_id")
-                    if self.window_manager.validate_window_identity(
-                        window_hwnd,
-                        expected_title=expected_title,
-                        expected_class=expected_class,
-                        expected_monitor_id=expected_monitor,
-                        expected_size=expected_size,
-                    ):
+                    if self._validate_thumbnail_window(config, window_hwnd):
                         self._thumbnail_connected[thumbnail_id] = True
                         self.renderer.set_source_hwnd(thumbnail_id, window_hwnd)
                         self.renderer.set_thumbnail_availability(thumbnail_id, True)
@@ -523,24 +543,14 @@ class ScreenAlertEngine:
                 continue
 
             window_hwnd = thumbnail_config.get("window_hwnd")
+            _, expected_class, expected_size, expected_monitor = self._extract_window_identity(thumbnail_config)
             window_title = thumbnail_config.get("window_title", "")
-            expected_class = thumbnail_config.get("window_class") or None
-            expected_size = tuple(thumbnail_config["window_size"]) if thumbnail_config.get("window_size") else None
-            expected_monitor = thumbnail_config.get("monitor_id")
 
             # Manual reconnect should always permit a fresh attempt.
             self._reconnect_attempted_once.discard(thumbnail_id)
             self._window_lost_notified.discard(thumbnail_id)
 
-            size_tolerance = self.config.get_reconnect_size_tolerance()
-            is_valid = self.window_manager.validate_window_identity(
-                window_hwnd,
-                expected_title=window_title,
-                expected_class=expected_class,
-                expected_monitor_id=expected_monitor,
-                expected_size=expected_size,
-                size_tolerance=size_tolerance,
-            )
+            is_valid = self._validate_thumbnail_window(thumbnail_config, window_hwnd)
 
             if is_valid:
                 self._mark_connected(thumbnail_id, window_hwnd, update_config=False)
@@ -581,23 +591,12 @@ class ScreenAlertEngine:
             return "missing"
 
         window_hwnd = thumbnail_config.get("window_hwnd")
-        window_title = thumbnail_config.get("window_title", "")
-        expected_class = thumbnail_config.get("window_class") or None
-        expected_size = tuple(thumbnail_config["window_size"]) if thumbnail_config.get("window_size") else None
-        expected_monitor = thumbnail_config.get("monitor_id")
+        window_title, expected_class, expected_size, expected_monitor = self._extract_window_identity(thumbnail_config)
 
         self._reconnect_attempted_once.discard(thumbnail_id)
         self._window_lost_notified.discard(thumbnail_id)
 
-        size_tolerance = self.config.get_reconnect_size_tolerance()
-        is_valid = self.window_manager.validate_window_identity(
-            window_hwnd,
-            expected_title=window_title,
-            expected_class=expected_class,
-            expected_monitor_id=expected_monitor,
-            expected_size=expected_size,
-            size_tolerance=size_tolerance,
-        )
+        is_valid = self._validate_thumbnail_window(thumbnail_config, window_hwnd)
         if is_valid:
             self._mark_connected(thumbnail_id, window_hwnd, update_config=False)
             return "already_valid"
@@ -714,20 +713,11 @@ class ScreenAlertEngine:
             if not window_title:
                 continue
 
+            _, expected_class, expected_size, expected_monitor = self._extract_window_identity(tc)
+
             # Quick check: maybe the stored hwnd became valid again (app restarted with same hwnd)
             if window_hwnd and self.window_manager.is_window_valid(window_hwnd):
-                expected_class = tc.get("window_class") or None
-                expected_size = tuple(tc["window_size"]) if tc.get("window_size") else None
-                expected_monitor = tc.get("monitor_id")
-                size_tolerance = self.config.get_reconnect_size_tolerance()
-                if self.window_manager.validate_window_identity(
-                    window_hwnd,
-                    expected_title=window_title,
-                    expected_class=expected_class,
-                    expected_monitor_id=expected_monitor,
-                    expected_size=expected_size,
-                    size_tolerance=size_tolerance,
-                ):
+                if self._validate_thumbnail_window(tc, window_hwnd):
                     self._mark_connected(thumbnail_id, window_hwnd)
                     reconnected += 1
                     logger.info("[%s] Auto-discovery: existing hwnd valid again", thumbnail_id)
@@ -735,10 +725,6 @@ class ScreenAlertEngine:
 
             # Search for the window by title
             attempted += 1
-            expected_class = tc.get("window_class") or None
-            expected_size = tuple(tc["window_size"]) if tc.get("window_size") else None
-            expected_monitor = tc.get("monitor_id")
-
             new_window = self._try_reconnect(
                 thumbnail_id, window_title, expected_class,
                 expected_size, expected_monitor,
@@ -904,22 +890,11 @@ class ScreenAlertEngine:
                     
                     thumbnail_id = thumbnail_config["id"]
                     window_hwnd = thumbnail_config["window_hwnd"]
-                    window_title = thumbnail_config["window_title"]
-                    
+                    window_title, expected_class, expected_size, expected_monitor = \
+                        self._extract_window_identity(thumbnail_config)
+
                     # Validate window: both existence AND identity
-                    expected_class = thumbnail_config.get("window_class") or None
-                    expected_size = tuple(thumbnail_config["window_size"]) if thumbnail_config.get("window_size") else None
-                    expected_monitor = thumbnail_config.get("monitor_id")
-                    
-                    size_tolerance = self.config.get_reconnect_size_tolerance()
-                    window_ok = self.window_manager.validate_window_identity(
-                        window_hwnd,
-                        expected_title=window_title,
-                        expected_class=expected_class,
-                        expected_monitor_id=expected_monitor,
-                        expected_size=expected_size,
-                        size_tolerance=size_tolerance
-                    )
+                    window_ok = self._validate_thumbnail_window(thumbnail_config, window_hwnd)
 
                     if window_ok:
                         was_disconnected = not self._thumbnail_connected.get(thumbnail_id, False)
