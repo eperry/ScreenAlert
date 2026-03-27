@@ -34,6 +34,8 @@ Two deployment options (decide before implementation):
 
 **Recommendation: Embedded.** Launch the MCP server as a thread inside the running ScreenAlert app. The engine is already available; no IPC needed.
 
+I agree lets do embedded
+
 ---
 
 ## Tool Catalogue
@@ -150,49 +152,81 @@ Two deployment options (decide before implementation):
 
 ## Event Log Schema
 
-### SQLite table: `events`
+### Storage — JSONL (newline-delimited JSON)
 
-```sql
-CREATE TABLE events (
-    id          TEXT PRIMARY KEY,
-    timestamp   TEXT NOT NULL,          -- ISO 8601
-    category    TEXT NOT NULL,          -- alert, window, region, settings, monitoring, system, mcp
-    event       TEXT NOT NULL,          -- specific event name
-    source      TEXT NOT NULL,          -- engine, user, auto_discovery, mcp, system
-    window_id   TEXT,
-    window_name TEXT,
-    region_id   TEXT,
-    region_name TEXT,
-    detail      TEXT                    -- JSON blob
-);
+Each event is one JSON object per line, appended to a single file:
 
-CREATE INDEX idx_events_timestamp  ON events(timestamp);
-CREATE INDEX idx_events_category   ON events(category);
-CREATE INDEX idx_events_window_id  ON events(window_id);
-CREATE INDEX idx_events_region_id  ON events(region_id);
+```text
+C:/Users/<user>/AppData/Roaming/ScreenAlert/event_log.jsonl
 ```
 
-### Event categories and event names
+- **Append-only writes** — no file locking issues, no rewrite on every event
+- **Schemaless** — each event carries whatever fields make sense for its type
+- **Human-readable** — open in any text editor or pipe through `jq`
+- **No library dependency** — Python stdlib `json` only
+- **Rotation** — when the file exceeds `event_log_max_rows`, the oldest entries are trimmed (file is rewritten in-place, infrequent operation)
 
-| Category | Event | Detail fields |
+### Minimum required fields
+
+Every event **must** have these fields — everything else is free-form:
+
+| Field | Type | Description |
 |---|---|---|
-| `alert` | `region_alert` | `previous_state`, `new_state`, `capture_file`, `diagnostic_files[]` |
-| `alert` | `region_cleared` | `previous_state`, `new_state` |
-| `alert` | `alert_suppressed` | `reason` (fullscreen / muted) |
-| `window` | `window_added` | `hwnd`, `title` |
-| `window` | `window_removed` | `title` |
-| `window` | `window_connected` | `hwnd` |
-| `window` | `window_disconnected` | `last_hwnd` |
-| `window` | `window_discovered` | `hwnd` |
-| `window` | `reconnect_attempted` | — |
-| `window` | `reconnect_succeeded` | `new_hwnd` |
-| `window` | `reconnect_failed` | — |
-| `window` | `overlay_shown` | — |
-| `window` | `overlay_hidden` | — |
-| `region` | `region_added` | `rect` |
-| `region` | `region_removed` | — |
-| `region` | `region_state_changed` | `from`, `to` |
-| `settings` | `setting_changed` | `key`, `old_value`, `new_value`, `scope` (global/window/region) |
+| `id` | str (uuid) | Unique event identifier |
+| `timestamp` | str (ISO 8601) | When the event occurred |
+| `category` | str | Broad grouping: `alert`, `window`, `region`, `settings`, `monitoring`, `system`, `mcp` |
+| `event` | str | Specific event name within the category |
+| `source` | str | What triggered it: `engine`, `user`, `auto_discovery`, `mcp`, `system` |
+
+Beyond these five fields, events include whatever additional context is relevant. There is no enforced schema.
+
+### Example events
+
+**Alert with capture:**
+
+```json
+{"id": "a1b2c3", "timestamp": "2026-03-27T14:32:01.123", "category": "alert", "event": "region_alert", "source": "engine", "window_id": "abc", "window_name": "EVE - Edward Perry", "region_id": "def", "region_name": "local-chat", "previous_state": "ok", "new_state": "alert", "capture_file": "C:/captures/2026-03-27_143201.png", "diagnostic_files": ["C:/captures/diag/2026-03-27_143201_edges.png"]}
+```
+
+**Setting changed:**
+
+```json
+{"id": "b2c3d4", "timestamp": "2026-03-27T14:35:00.000", "category": "settings", "event": "setting_changed", "source": "mcp", "key": "opacity", "old_value": 0.8, "new_value": 0.6, "scope": "global"}
+```
+
+**Window reconnected:**
+
+```json
+{"id": "c3d4e5", "timestamp": "2026-03-27T14:36:12.456", "category": "window", "event": "reconnect_succeeded", "source": "auto_discovery", "window_id": "abc", "window_name": "EVE - Edward Perry", "old_hwnd": 12345, "new_hwnd": 67890}
+```
+
+**MCP tool call:**
+
+```json
+{"id": "d4e5f6", "timestamp": "2026-03-27T14:37:00.000", "category": "mcp", "event": "tool_called", "source": "mcp", "tool": "set_global_setting", "args": {"key": "opacity", "value": 0.6}, "result_status": "ok"}
+```
+
+### Known event names (non-exhaustive — new events can be added freely)
+
+| Category | Event | Typical extra fields |
+| --- | --- | --- |
+| `alert` | `region_alert` | `window_id`, `window_name`, `region_id`, `region_name`, `previous_state`, `new_state`, `capture_file`, `diagnostic_files` |
+| `alert` | `region_cleared` | `window_id`, `region_id`, `previous_state`, `new_state` |
+| `alert` | `alert_suppressed` | `window_id`, `region_id`, `reason` |
+| `window` | `window_added` | `window_id`, `window_name`, `hwnd` |
+| `window` | `window_removed` | `window_id`, `window_name` |
+| `window` | `window_connected` | `window_id`, `hwnd` |
+| `window` | `window_disconnected` | `window_id`, `last_hwnd` |
+| `window` | `window_discovered` | `window_id`, `hwnd` |
+| `window` | `reconnect_attempted` | `window_id` |
+| `window` | `reconnect_succeeded` | `window_id`, `old_hwnd`, `new_hwnd` |
+| `window` | `reconnect_failed` | `window_id` |
+| `window` | `overlay_shown` | `window_id` |
+| `window` | `overlay_hidden` | `window_id` |
+| `region` | `region_added` | `window_id`, `region_id`, `region_name`, `rect` |
+| `region` | `region_removed` | `window_id`, `region_id`, `region_name` |
+| `region` | `region_state_changed` | `window_id`, `region_id`, `from`, `to` |
+| `settings` | `setting_changed` | `key`, `old_value`, `new_value`, `scope`, `window_id?`, `region_id?` |
 | `monitoring` | `monitoring_started` | — |
 | `monitoring` | `monitoring_paused` | — |
 | `monitoring` | `monitoring_resumed` | — |
@@ -200,12 +234,11 @@ CREATE INDEX idx_events_region_id  ON events(region_id);
 | `monitoring` | `alerts_unmuted` | — |
 | `system` | `app_started` | `version` |
 | `system` | `app_stopped` | — |
-| `system` | `config_saved` | — |
 | `mcp` | `tool_called` | `tool`, `args`, `result_status` |
 
 ### Capture linkage
 
-Alert events always include capture references in `detail`, even when disabled (fields are `null`/`[]`):
+Alert events include capture file references as top-level fields (not nested). Fields are omitted entirely if capture was disabled — no null placeholders:
 
 ```json
 {
