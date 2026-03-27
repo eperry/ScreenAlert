@@ -79,6 +79,66 @@ The MCP spec defines two HTTP transports:
 
 The server will expose both endpoints so clients at either spec version can connect.
 
+### Authentication
+
+The server requires an API key on every request so that only configured clients can connect. The key is passed as a standard HTTP Bearer token:
+
+```text
+Authorization: Bearer <api-key>
+```
+
+**Key lifecycle:**
+
+- Generated automatically as a random 32-character hex string on first startup (or if missing from config)
+- Saved to the ScreenAlert config file as `mcp_api_key`
+- Displayed in Settings > MCP so the user can copy it into client configs
+- A **Regenerate Key** button in Settings rotates it immediately (existing clients will disconnect until reconfigured)
+
+**Client configuration with the key:**
+
+**Claude Desktop** (`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "screenalert": {
+      "url": "http://localhost:8765/sse",
+      "headers": {
+        "Authorization": "Bearer YOUR_KEY_HERE"
+      }
+    }
+  }
+}
+```
+
+**Claude Code** (`.claude/settings.json`):
+
+```json
+{
+  "mcpServers": {
+    "screenalert": {
+      "url": "http://localhost:8765/sse",
+      "transport": "sse",
+      "headers": {
+        "Authorization": "Bearer YOUR_KEY_HERE"
+      }
+    }
+  }
+}
+```
+
+**Other clients:** Pass the same `Authorization: Bearer` header using whatever mechanism the client supports.
+
+**Server behaviour on auth failure:** Returns HTTP `401 Unauthorized` with no body. The connection is not established and nothing is logged beyond a single warning at DEBUG level (to avoid log spam from misconfigured clients).
+
+New global settings keys:
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `mcp_enabled` | `true` | Start MCP server with the app |
+| `mcp_port` | `8765` | Local port for the HTTP/SSE listener |
+| `mcp_api_key` | auto-generated | Bearer token required on all MCP connections |
+
 ---
 
 ## Tool Catalogue
