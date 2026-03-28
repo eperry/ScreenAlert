@@ -255,8 +255,14 @@ class MCPServer:
         from screenalert_core.mcp.tools import regions as _regions_mod
         _windows_mod.register(self._mcp, self._engine, self._config, self._event_logger)
         _regions_mod.register(self._mcp, self._engine, self._config, self._event_logger)
-        # Phase 4: monitoring, settings
-        # Phase 5: event_log, images
+        from screenalert_core.mcp.tools import monitoring as _monitoring_mod
+        from screenalert_core.mcp.tools import settings as _settings_mod
+        _monitoring_mod.register(self._mcp, self._engine, self._config, self._event_logger)
+        _settings_mod.register(self._mcp, self._engine, self._config, self._event_logger)
+        from screenalert_core.mcp.tools import event_log as _event_log_mod
+        from screenalert_core.mcp.tools import images as _images_mod
+        _event_log_mod.register(self._mcp, self._engine, self._config, self._event_logger)
+        _images_mod.register(self._mcp, self._engine, self._config, self._event_logger)
 
     def _register_utility_tools(self) -> None:
         import time as _time
