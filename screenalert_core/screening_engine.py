@@ -61,6 +61,9 @@ class ScreenAlertEngine:
         self.on_alert: Callable = lambda *args, **kwargs: None
         self.on_region_change: Callable = lambda *args, **kwargs: None
         self.on_window_lost: Callable = lambda *args, **kwargs: None
+
+        # Optional event logger (set externally after construction)
+        self.event_logger = None
         
         # Config will be initialized after tkinter root is set
         self._config_initialized = False
@@ -707,6 +710,12 @@ class ScreenAlertEngine:
         self._reconnect_attempted_once.discard(thumbnail_id)
         self._window_lost_notified.discard(thumbnail_id)
 
+        if self.event_logger:
+            tc = self.config.get_thumbnail(thumbnail_id)
+            wname = tc.get("window_title", "") if tc else ""
+            self.event_logger.log("window", "window_connected", "engine",
+                                  window_id=thumbnail_id, window_name=wname, hwnd=hwnd)
+
     def _auto_discover_disconnected(self) -> None:
         """Try to reconnect only thumbnails that are currently disconnected."""
         with self.lock:
@@ -935,6 +944,10 @@ class ScreenAlertEngine:
                                 self.plugin_hooks.emit("window.lost", thumbnail_id=thumbnail_id, title=window_title)
                                 self.on_window_lost(thumbnail_id, window_title)
                                 self._window_lost_notified.add(thumbnail_id)
+                                if self.event_logger:
+                                    self.event_logger.log("window", "window_lost", "engine",
+                                                          window_id=thumbnail_id,
+                                                          window_name=window_title)
                             continue
 
                         # Try to reconnect to the correct window
@@ -956,6 +969,10 @@ class ScreenAlertEngine:
                                 self.plugin_hooks.emit("window.lost", thumbnail_id=thumbnail_id, title=window_title)
                                 self.on_window_lost(thumbnail_id, window_title)
                                 self._window_lost_notified.add(thumbnail_id)
+                                if self.event_logger:
+                                    self.event_logger.log("window", "window_lost", "engine",
+                                                          window_id=thumbnail_id,
+                                                          window_name=window_title)
                             continue
                     
                     # UNIFIED CAPTURE
@@ -1035,8 +1052,9 @@ class ScreenAlertEngine:
                                         self.alert_system.play_alert(play_sound, play_tts)
 
                                     # Optional: capture screenshot on alert
+                                    _capture_path = None
                                     if self.config.get_capture_on_alert():
-                                        self._capture_region_snapshot(thumbnail_config, config, window_image, status="alert")
+                                        _capture_path = self._capture_region_snapshot(thumbnail_config, config, window_image, status="alert")
 
                                     # Optional: save diagnostic images (background thread to avoid blocking loop)
                                     if self.config.get_save_alert_diagnostics():
@@ -1065,6 +1083,20 @@ class ScreenAlertEngine:
                                         "region_name": config.get("name", "Region"),
                                         "status": "alert"
                                     })
+
+                                    # Event log
+                                    if self.event_logger:
+                                        self.event_logger.log(
+                                            "alert", "region_alert", "engine",
+                                            window_id=thumbnail_id,
+                                            window_name=thumbnail_config.get("window_title", ""),
+                                            region_id=region_id,
+                                            region_name=config.get("name", ""),
+                                            previous_state="ok",
+                                            new_state="alert",
+                                            capture_file=_capture_path,
+                                        )
+
                                     self.plugin_hooks.emit(
                                         "alert",
                                         thumbnail_id=thumbnail_id,
@@ -1250,8 +1282,8 @@ class ScreenAlertEngine:
                 pass
 
     def _capture_region_snapshot(self, thumbnail_config: Dict, region_config: Dict,
-                                 window_image: Image.Image, status: str = "alert") -> None:
-        """Capture and persist region snapshot image."""
+                                 window_image: Image.Image, status: str = "alert") -> Optional[str]:
+        """Capture and persist region snapshot image. Returns the saved path or None."""
         try:
             capture_dir = self.config.get_capture_dir()
             os.makedirs(capture_dir, exist_ok=True)
@@ -1279,8 +1311,10 @@ class ScreenAlertEngine:
             region_img = ImageProcessor.crop_region(window_image, tuple(rect))
             region_img.save(output_path, format="PNG")
             logger.info(f"Saved snapshot: {output_path}")
+            return output_path
         except Exception as e:
             logger.warning(f"Failed to save snapshot: {e}")
+            return None
     
     def _on_thumbnail_interaction(self, thumbnail_id: str, action: str, payload: Optional[Dict] = None) -> None:
         """Handle thumbnail user interactions"""

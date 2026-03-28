@@ -193,6 +193,7 @@ def main():
         event_logger.start()
         event_logger.log("system", "app_started", "screenalert",
                          version=APP_VERSION)
+        engine.event_logger = event_logger
 
         # Start MCP server
         from screenalert_core.mcp.server import MCPServer
