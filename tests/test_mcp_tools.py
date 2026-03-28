@@ -1,14 +1,18 @@
 """
 Integration tests for all ScreenAlert MCP tools.
 
-Starts a real MCPServer on a test port (18765) with a mock engine and a
-real ConfigManager seeded with one window and one region.  Tests every tool
-plus the HTTP-only endpoints (/health, /status, /skills).
+Default mode (mock):
+    Starts a real MCPServer on port 18765 with a mock engine and a
+    real ConfigManager seeded with one window and one region.
+
+Live mode (--live flag):
+    Connects to a running ScreenAlert instance. Tests that require the
+    mock engine (direct state manipulation) are automatically skipped.
 
 Run with:
-    pytest tests/test_mcp_tools.py -v
-Or directly:
-    python tests/test_mcp_tools.py
+    pytest tests/test_mcp_tools.py -v              # mock server
+    pytest tests/test_mcp_tools.py -v --live        # live ScreenAlert
+    pytest tests/test_mcp_tools.py -v --live --live-port 8765
 """
 
 from __future__ import annotations
@@ -51,6 +55,11 @@ _BASE_HTTPS = f"https://127.0.0.1:{TEST_PORT}/v1"
 _SESSION: Optional[requests.Session] = None
 
 
+def _base_url() -> str:
+    """Return the correct base URL for the active test mode (mock or live)."""
+    return f"https://127.0.0.1:{_S.live_port}/v1"
+
+
 # ── Mock engine objects ────────────────────────────────────────────────────────
 
 class _MockMonitor:
@@ -70,6 +79,7 @@ class _MockMonitor:
     def state(self) -> str:
         return self._state
 
+    @property
     def is_alert(self) -> bool:
         return self._state == self.STATE_ALERT
 
@@ -223,14 +233,93 @@ def _parse(result) -> Any:
     return result
 
 
+def _no_verify_factory(**kwargs):
+    """httpx_client_factory that disables TLS verification (self-signed cert)."""
+    import httpx
+    kwargs.pop("verify", None)
+    return httpx.AsyncClient(verify=False, **kwargs)
+
+
+# Tools whose return type is List[dict] — in live mode, single-item results
+# come back as one TextContent and must be wrapped in a list.
+_LIST_TOOLS = frozenset({
+    "list_windows", "find_desktop_windows",
+    "list_regions", "list_alerts",
+    "get_alert_diagnostic_images",
+})
+
+
+async def _call_tool_async(port: int, api_key: str, name: str, args: dict) -> Any:
+    """Call an MCP tool against a live server via SSE transport.
+
+    FastMCP serializes List[dict] tools as one TextContent per item;
+    dict tools as a single TextContent.  We reconstruct the right shape:
+      - 0 items + list tool  → []
+      - 0 items              → {}
+      - 1 item  + list tool  → [parsed_item]
+      - 1 item               → parsed_item  (dict)
+      - N items              → [item1, item2, ...]
+
+    Retries up to 3 times with brief back-off to handle transient connection
+    limit errors (server allows only a small number of concurrent connections).
+    """
+    from mcp import ClientSession
+    from mcp.client.sse import sse_client
+
+    is_list_tool = name in _LIST_TOOLS
+    url = f"https://127.0.0.1:{port}/v1/sse"
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        if attempt:
+            await asyncio.sleep(0.5 * attempt)
+        try:
+            async with sse_client(
+                url,
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=10,
+                httpx_client_factory=_no_verify_factory,
+            ) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    result = await session.call_tool(name, args or {})
+                    if not result.content:
+                        return [] if is_list_tool else {}
+                    if len(result.content) == 1:
+                        text = getattr(result.content[0], "text", "")
+                        try:
+                            parsed = json.loads(text)
+                        except (json.JSONDecodeError, TypeError):
+                            parsed = text
+                        return [parsed] if is_list_tool else parsed
+                    # Multiple TextContent items → list return type
+                    items = []
+                    for item in result.content:
+                        text = getattr(item, "text", "")
+                        try:
+                            items.append(json.loads(text))
+                        except (json.JSONDecodeError, TypeError):
+                            items.append(text)
+                    return items
+        except Exception as exc:
+            last_exc = exc
+    raise last_exc
+
+
 def _call(mcp, name: str, args: dict = None) -> Any:
-    """Call an MCP tool synchronously and return parsed result."""
+    """Call an MCP tool synchronously.
+
+    In mock mode: uses FastMCP.call_tool() directly on the in-process instance.
+    In live mode: uses the MCP SSE transport against the live server.
+    """
+    if _S.live_mode:
+        return asyncio.run(_call_tool_async(_S.live_port, _S.api_key, name, args))
     return _parse(asyncio.run(mcp.call_tool(name, args or {})))
 
 
 def _http_get(path: str, key: str, verify: bool = False) -> requests.Response:
+    port = _S.live_port
     return requests.get(
-        f"{_BASE_HTTPS}/{path.lstrip('/')}",
+        f"https://127.0.0.1:{port}/v1/{path.lstrip('/')}",
         headers={"Authorization": f"Bearer {key}"},
         verify=verify,
         timeout=10,
@@ -252,6 +341,27 @@ def _wait_for_server(port: int, timeout: float = 15.0) -> bool:
     return False
 
 
+def _read_live_config(key_override: str) -> tuple[str, int]:
+    """Read API key and port from the live ScreenAlert config file."""
+    import os
+    if key_override:
+        return key_override, 8765  # caller can also pass --live-port
+
+    cfg_path = os.path.join(
+        os.environ.get("APPDATA", os.path.expanduser("~")),
+        "ScreenAlert", "screenalert_config.json"
+    )
+    try:
+        with open(cfg_path) as f:
+            data = json.load(f)
+        app = data.get("app", {})
+        api_key = app.get("mcp_api_key", "")
+        port = int(app.get("mcp_port", 8765))
+        return api_key, port
+    except (FileNotFoundError, KeyError, ValueError) as exc:
+        pytest.fail(f"Could not read live config from {cfg_path}: {exc}")
+
+
 # ── Fixtures / module-level setup ──────────────────────────────────────────────
 
 class _TestState:
@@ -262,19 +372,47 @@ class _TestState:
     event_logger = None
     mcp_server = None
     api_key: str = ""
-    mcp = None  # FastMCP instance (direct tool call tests)
+    mcp = None         # FastMCP instance (direct tool call tests, mock only)
+    live_mode: bool = False
+    live_port: int = TEST_PORT
+    # Discovered at runtime; start from the seeded test constants
+    test_window_id: str = TEST_WINDOW_ID
+    test_region_id: str = TEST_REGION_ID
 
 
 _S = _TestState()
 
+# ── Skip helpers ──────────────────────────────────────────────────────────────
+
+def _skip_in_live(reason: str = "requires mock engine"):
+    """Skip this test when running in --live mode."""
+    if _S.live_mode:
+        pytest.skip(f"[live mode] {reason}")
+
 
 @pytest.fixture(scope="module", autouse=True)
-def _start_mcp_server():
+def _start_mcp_server(request):
     """
-    Module-scoped fixture: creates all mock objects, seeds test data in
-    ConfigManager, starts the MCPServer on TEST_PORT, and tears it all down
-    after the module's tests complete.
+    Module-scoped fixture.
+
+    Default (mock) mode:
+        Creates mock objects, seeds test data, starts MCPServer on port 18765.
+
+    Live mode (--live flag):
+        Reads API key from config (or --live-key), connects to the running
+        ScreenAlert instance, discovers the first available window + region,
+        and runs tests using the Streamable HTTP transport.
     """
+    live = request.config.getoption("--live", default=False)
+
+    if live:
+        yield from _setup_live(request)
+    else:
+        yield from _setup_mock()
+
+
+def _setup_mock():
+    """Fixture body for mock (default) mode."""
     import secrets
     from screenalert_core.core.config_manager import ConfigManager
     from screenalert_core.mcp.event_logger import EventLogger
@@ -287,16 +425,11 @@ def _start_mcp_server():
     import screenalert_core.mcp.tools.event_log as el_mod
     import screenalert_core.mcp.tools.images as img_mod
 
-    # ── Temp directory ────────────────────────────────────────────────────────
     tmpdir = tempfile.mkdtemp(prefix="sa_mcp_test_")
     _S.tmpdir = tmpdir
-
     cfg_file = os.path.join(tmpdir, "test_config.json")
 
-    # ── Real ConfigManager ────────────────────────────────────────────────────
     config = ConfigManager(config_path=cfg_file)
-
-    # Override MCP port and API key for test isolation
     api_key = secrets.token_hex(16)
     config.set_mcp_enabled(True)
     config.set_mcp_port(TEST_PORT)
@@ -306,11 +439,8 @@ def _start_mcp_server():
     config.set_mcp_ssl_cert_path(cert_path)
     config.set_mcp_ssl_key_path(key_path)
     config.save()
-
     _S.api_key = api_key
-
-    # ── Seed a test window + region ───────────────────────────────────────────
-    from screenalert_core.utils.helpers import generate_uuid
+    _S.live_port = TEST_PORT
 
     thumbnail = {
         "id": TEST_WINDOW_ID,
@@ -343,19 +473,17 @@ def _start_mcp_server():
     config.save()
 
     region_cfg = thumbnail["monitored_regions"][0]
-
-    # ── Mock engine ───────────────────────────────────────────────────────────
     engine = MockEngine(config, region_cfg)
     _S.engine = engine
     _S.config = config
+    _S.test_window_id = TEST_WINDOW_ID
+    _S.test_region_id = TEST_REGION_ID
 
-    # ── Event logger ──────────────────────────────────────────────────────────
     log_path = os.path.join(tmpdir, "events.jsonl")
     event_logger = EventLogger(log_path=log_path, max_rows=500, enabled=True)
     event_logger.start()
     _S.event_logger = event_logger
 
-    # ── FastMCP instance for direct-call tests ────────────────────────────────
     mcp = FastMCP("ScreenAlert-test")
     win_mod.register(mcp, engine, config, event_logger)
     reg_mod.register(mcp, engine, config, event_logger)
@@ -364,30 +492,112 @@ def _start_mcp_server():
     el_mod.register(mcp, engine, config, event_logger)
     img_mod.register(mcp, engine, config, event_logger)
 
-    # Register ping (utility tool — normally registered by MCPServer directly)
     @mcp.tool(description="Verify connectivity.")
     def ping() -> dict:
         return {"version": "test", "uptime_seconds": 0, "monitoring_state": "running"}
 
     _S.mcp = mcp
 
-    # ── Real MCPServer (HTTPS on TEST_PORT) ───────────────────────────────────
     mcp_server = MCPServer(engine=engine, config=config, event_logger=event_logger)
     mcp_server.start()
     _S.mcp_server = mcp_server
 
-    # Wait for server to be ready
     assert _wait_for_server(TEST_PORT, timeout=20), \
         f"MCP server did not start on port {TEST_PORT} within 20 seconds"
 
-    yield  # ── run all tests ──────────────────────────────────────────────────
+    yield
 
-    # ── Teardown ──────────────────────────────────────────────────────────────
     mcp_server.stop()
     event_logger.stop()
-
     import shutil
     shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def _setup_live(request):
+    """Fixture body for live mode (--live flag)."""
+    key_override = request.config.getoption("--live-key", default="")
+    port_override = request.config.getoption("--live-port", default=0)
+
+    api_key, port = _read_live_config(key_override)
+    if port_override:
+        port = port_override
+
+    if not api_key:
+        pytest.fail(
+            "Live mode: no API key found. "
+            "Start ScreenAlert first (MCP must be enabled), "
+            "or pass --live-key <key>."
+        )
+
+    assert _wait_for_server(port, timeout=5), (
+        f"Live MCP server not reachable at https://127.0.0.1:{port}/v1/health — "
+        "is ScreenAlert running with MCP enabled?"
+    )
+
+    _S.live_mode = True
+    _S.live_port = port
+    _S.api_key = api_key
+    _S.mcp = None    # not used in live mode
+    _S.engine = None  # not available in live mode
+    _S.config = None
+    _S.event_logger = None
+
+    # Discover a window that has at least one region; update module globals so
+    # tests that reference TEST_WINDOW_ID / TEST_WINDOW_TITLE etc. get real values.
+    global TEST_WINDOW_ID, TEST_WINDOW_TITLE, TEST_REGION_ID, TEST_REGION_NAME
+    try:
+        windows = asyncio.run(_call_tool_async(port, api_key, "list_windows", {}))
+        if not isinstance(windows, list):
+            windows = [windows] if isinstance(windows, dict) and windows else []
+
+        found_win = None
+        found_regions = []
+        for win in windows:
+            wid = win.get("id", "")
+            regions = asyncio.run(_call_tool_async(
+                port, api_key, "list_regions", {"window_id": wid}
+            ))
+            if not isinstance(regions, list):
+                regions = [regions] if isinstance(regions, dict) and regions else []
+            if regions:
+                found_win = win
+                found_regions = regions
+                break
+
+        if found_win:
+            _S.test_window_id = found_win["id"]
+            TEST_WINDOW_ID = found_win["id"]
+            TEST_WINDOW_TITLE = found_win.get("name", TEST_WINDOW_TITLE)
+            first_reg = found_regions[0]
+            _S.test_region_id = first_reg["id"]
+            TEST_REGION_ID = first_reg["id"]
+            TEST_REGION_NAME = first_reg.get("name", TEST_REGION_NAME)
+            print(
+                f"\n[live] window={TEST_WINDOW_TITLE!r} ({TEST_WINDOW_ID})"
+                f"  region={TEST_REGION_NAME!r} ({TEST_REGION_ID})"
+            )
+        elif windows:
+            # Use first window even if it has no regions
+            first_win = windows[0]
+            _S.test_window_id = first_win["id"]
+            TEST_WINDOW_ID = first_win["id"]
+            TEST_WINDOW_TITLE = first_win.get("name", TEST_WINDOW_TITLE)
+            print(f"\n[live] Warning: no windows with regions found — region tests will fail")
+            _S.test_region_id = "no-region"
+            TEST_REGION_ID = "no-region"
+        else:
+            print("\n[live] Warning: no windows in ScreenAlert — many tests will skip/fail")
+            _S.test_window_id = "no-window"
+            _S.test_region_id = "no-region"
+            TEST_WINDOW_ID = "no-window"
+            TEST_REGION_ID = "no-region"
+    except Exception as exc:
+        pytest.fail(f"Live mode: failed to discover window/region IDs: {exc}")
+
+    yield  # ── run tests ──────────────────────────────────────────────────────
+
+    # Nothing to tear down — live server keeps running
+    _S.live_mode = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -398,7 +608,7 @@ class TestHTTPEndpoints:
 
     def test_health_no_auth(self):
         """Health check is public and returns {status: ok}."""
-        r = requests.get(f"{_BASE_HTTPS}/health", verify=False, timeout=5)
+        r = requests.get(f"{_base_url()}/health", verify=False, timeout=5)
         assert r.status_code == 200
         assert r.json() == {"status": "ok"}
 
@@ -409,7 +619,7 @@ class TestHTTPEndpoints:
 
     def test_status_requires_auth(self):
         """Status endpoint returns 401 without auth."""
-        r = requests.get(f"{_BASE_HTTPS}/status", verify=False, timeout=5)
+        r = requests.get(f"{_base_url()}/status", verify=False, timeout=5)
         assert r.status_code == 401
 
     def test_status_with_auth(self):
@@ -449,7 +659,7 @@ class TestHTTPEndpoints:
     def test_auth_wrong_key(self):
         """Wrong API key returns 401."""
         r = requests.get(
-            f"{_BASE_HTTPS}/status",
+            f"{_base_url()}/status",
             headers={"Authorization": "Bearer wrongkey123"},
             verify=False,
             timeout=5,
@@ -474,7 +684,7 @@ class TestUtilityTools:
         assert "version" in result
         assert "uptime_seconds" in result
         assert "monitoring_state" in result
-        assert result["monitoring_state"] == "running"
+        assert result["monitoring_state"] in ("running", "paused", "stopped")
 
 
 class TestWindowTools:
@@ -486,10 +696,13 @@ class TestWindowTools:
         win = next((w for w in result if w["id"] == TEST_WINDOW_ID), None)
         assert win is not None
         assert win["name"] == TEST_WINDOW_TITLE
-        assert win["status"] == "connected"
+        if not _S.live_mode:
+            assert win["status"] == "connected"
 
     def test_list_windows_filter_match(self):
-        result = _call(_S.mcp, "list_windows", {"filter": "Test Window"})
+        # In live mode use the first word of the real title as the filter
+        filter_str = TEST_WINDOW_TITLE.split()[0] if _S.live_mode else "Test Window"
+        result = _call(_S.mcp, "list_windows", {"filter": filter_str})
         assert any(w["id"] == TEST_WINDOW_ID for w in result)
 
     def test_list_windows_filter_no_match(self):
@@ -500,14 +713,21 @@ class TestWindowTools:
         result = _call(_S.mcp, "find_desktop_windows")
         assert isinstance(result, list)
         assert len(result) >= 1
-        assert result[0]["hwnd"] == TEST_WINDOW_HWND
+        # Check structure; specific HWND value only known in mock mode
+        assert "hwnd" in result[0] and "title" in result[0]
+        if not _S.live_mode:
+            assert result[0]["hwnd"] == TEST_WINDOW_HWND
 
     def test_find_desktop_windows_filter(self):
-        result = _call(_S.mcp, "find_desktop_windows", {"filter": "Test Window"})
+        # Use a generic filter that will match something in both mock and live
+        filter_str = TEST_WINDOW_TITLE.split()[0] if _S.live_mode else "Test Window"
+        result = _call(_S.mcp, "find_desktop_windows", {"filter": filter_str})
+        assert isinstance(result, list)
         assert len(result) >= 1
 
     def test_find_desktop_windows_limit(self):
         result = _call(_S.mcp, "find_desktop_windows", {"limit": 1})
+        assert isinstance(result, list)
         assert len(result) <= 1
 
     def test_add_window_duplicate(self):
@@ -518,6 +738,7 @@ class TestWindowTools:
 
     def test_add_window_new(self):
         """Adding a new window returns id and name."""
+        _skip_in_live("would add a dummy window to the live ScreenAlert UI")
         result = _call(_S.mcp, "add_window",
                        {"title": "Brand New Window", "hwnd": 99999})
         assert "id" in result
@@ -537,6 +758,7 @@ class TestWindowTools:
 
     def test_remove_window_confirm(self):
         """remove_window with confirm=true executes deletion."""
+        _skip_in_live("would delete a real window from the live ScreenAlert config")
         result = _call(_S.mcp, "remove_window",
                        {"window_id": TEST_WINDOW_ID, "confirm": True})
         assert result.get("ok") is True
@@ -550,7 +772,8 @@ class TestWindowTools:
     def test_reconnect_window_by_id(self):
         result = _call(_S.mcp, "reconnect_window",
                        {"window_id": TEST_WINDOW_ID})
-        assert result["result"] == "already_valid"
+        assert "result" in result
+        assert result["result"] in ("already_valid", "reconnected", "failed", "missing")
 
     def test_reconnect_window_not_found(self):
         result = _call(_S.mcp, "reconnect_window",
@@ -573,8 +796,12 @@ class TestWindowTools:
         assert result["name"]["value"] == TEST_WINDOW_TITLE
 
     def test_get_window_settings_by_name(self):
-        result = _call(_S.mcp, "get_window_settings",
-                       {"window_name": "Test Window"})
+        if _S.live_mode:
+            # Use ID to avoid ambiguity when multiple windows share a title prefix
+            result = _call(_S.mcp, "get_window_settings", {"window_id": TEST_WINDOW_ID})
+        else:
+            result = _call(_S.mcp, "get_window_settings", {"window_name": "Test Window"})
+        assert "name" in result
         assert result["name"]["value"] == TEST_WINDOW_TITLE
 
     def test_set_window_setting_opacity(self):
@@ -661,6 +888,7 @@ class TestRegionTools:
         assert result.get("code") == 404
 
     def test_copy_region(self):
+        _skip_in_live("would add a persistent copy-region to the live config")
         result = _call(_S.mcp, "copy_region", {
             "region_id": TEST_REGION_ID,
             "target_window_id": TEST_WINDOW_ID,
@@ -673,11 +901,15 @@ class TestRegionTools:
         """By default no monitors are in alert state."""
         result = _call(_S.mcp, "list_alerts")
         assert isinstance(result, list)
-        # Default state is ok, so no alerts
-        assert not any(r["region_id"] == TEST_REGION_ID for r in result)
+        # Each item must be a dict (not an error string)
+        for item in result:
+            assert isinstance(item, dict), f"list_alerts returned unexpected item: {item!r}"
+        # Default state is ok, so no alerts for our test region
+        assert not any(r.get("region_id") == TEST_REGION_ID for r in result)
 
     def test_list_alerts_with_active(self):
         """Manually set a monitor to alert state, verify it appears."""
+        _skip_in_live("requires direct mock engine access to inject alert state")
         monitor = _S.engine.monitoring_engine.get_monitor(TEST_REGION_ID)
         monitor._state = "alert"
         result = _call(_S.mcp, "list_alerts")
@@ -685,6 +917,7 @@ class TestRegionTools:
         monitor._state = "ok"  # reset
 
     def test_acknowledge_alert(self):
+        _skip_in_live("requires direct mock engine access to inject alert state")
         monitor = _S.engine.monitoring_engine.get_monitor(TEST_REGION_ID)
         monitor._state = "alert"
         result = _call(_S.mcp, "acknowledge_alert", {"region_id": TEST_REGION_ID})
@@ -768,11 +1001,13 @@ class TestMonitoringTools:
         assert "active_windows" in result
 
     def test_pause_monitoring(self):
+        _skip_in_live("verifies engine.paused internal state")
         result = _call(_S.mcp, "pause_monitoring")
         assert result.get("ok") is True
         assert _S.engine.paused is True
 
     def test_resume_monitoring(self):
+        _skip_in_live("sets engine.paused directly")
         _S.engine.paused = True
         result = _call(_S.mcp, "resume_monitoring")
         assert result.get("ok") is True
@@ -793,6 +1028,7 @@ class TestMonitoringTools:
 
     def test_mute_extends_existing(self):
         """Muting twice should extend (not reset) the mute."""
+        _skip_in_live("requires direct config.set_mute_until_ts() access")
         _S.config.set_mute_until_ts(0)  # start fresh
         r1 = _call(_S.mcp, "mute_alerts", {"seconds": 60})
         r2 = _call(_S.mcp, "mute_alerts", {"seconds": 60})
@@ -817,20 +1053,28 @@ class TestGlobalSettingsTools:
         result = _call(_S.mcp, "set_global_setting",
                        {"key": "opacity", "value": 0.6})
         assert result.get("ok") is True
-        assert _S.config.get_opacity() == pytest.approx(0.6, abs=0.01)
+        if not _S.live_mode:
+            assert _S.config.get_opacity() == pytest.approx(0.6, abs=0.01)
 
     def test_set_global_setting_bool(self):
-        original = _S.config.get_enable_sound()
+        if not _S.live_mode:
+            original = _S.config.get_enable_sound()
+        else:
+            # Read current value via MCP to flip it
+            settings = _call(_S.mcp, "get_global_settings")
+            original = settings.get("enable_sound", {}).get("value", False)
         result = _call(_S.mcp, "set_global_setting",
                        {"key": "enable_sound", "value": not original})
         assert result.get("ok") is True
-        assert _S.config.get_enable_sound() is (not original)
+        if not _S.live_mode:
+            assert _S.config.get_enable_sound() is (not original)
 
     def test_set_global_setting_log_level(self):
         result = _call(_S.mcp, "set_global_setting",
                        {"key": "log_level", "value": "WARNING"})
         assert result.get("ok") is True
-        assert _S.config.get_log_level() == "WARNING"
+        if not _S.live_mode:
+            assert _S.config.get_log_level() == "WARNING"
 
     def test_set_global_setting_invalid_log_level(self):
         result = _call(_S.mcp, "set_global_setting",
@@ -873,6 +1117,7 @@ class TestEventLogTools:
         assert isinstance(result["events"], list)
 
     def test_get_event_log_after_logging(self):
+        _skip_in_live("requires direct event_logger access to seed test events")
         _S.event_logger.log("test", "unit_test_event", "test_suite",
                             detail="hello")
         result = _call(_S.mcp, "get_event_log", {"category": "test"})
@@ -881,12 +1126,14 @@ class TestEventLogTools:
                    for e in result["events"])
 
     def test_get_event_log_limit(self):
+        _skip_in_live("requires direct event_logger access to seed test events")
         for i in range(5):
             _S.event_logger.log("test", f"bulk_event_{i}", "test_suite")
         result = _call(_S.mcp, "get_event_log", {"limit": 2})
         assert len(result["events"]) <= 2
 
     def test_get_event_log_filter_category(self):
+        _skip_in_live("requires direct event_logger access to seed test events")
         _S.event_logger.log("system", "sys_event", "test_suite")
         result = _call(_S.mcp, "get_event_log", {"category": "system"})
         assert all(e["category"] == "system" for e in result["events"])
@@ -903,6 +1150,7 @@ class TestEventLogTools:
         assert result["total"] == 0  # Future date — no events
 
     def test_clear_event_log_category(self):
+        _skip_in_live("requires direct event_logger access to seed test events")
         _S.event_logger.log("alerts", "fake_alert", "test_suite")
         result = _call(_S.mcp, "clear_event_log", {"category": "alerts"})
         assert "entries_deleted" in result
@@ -913,6 +1161,7 @@ class TestEventLogTools:
 
     def test_get_event_log_after_id_cursor(self):
         """after_id cursor should skip events up to and including that id."""
+        _skip_in_live("requires direct event_logger access to seed test events")
         _S.event_logger.log("test", "cursor_a", "test_suite")
         _S.event_logger.log("test", "cursor_b", "test_suite")
         first = _call(_S.mcp, "get_event_log",
@@ -971,10 +1220,35 @@ class TestImageTools:
 # Tool count / registration smoke test
 # ═══════════════════════════════════════════════════════════════════════════════
 
+async def _list_tools_async(port: int, api_key: str):
+    """List MCP tools from a live server via SSE transport."""
+    from mcp import ClientSession
+    from mcp.client.sse import sse_client
+
+    url = f"https://127.0.0.1:{port}/v1/sse"
+    async with sse_client(
+        url,
+        headers={"Authorization": f"Bearer {api_key}"},
+        timeout=10,
+        httpx_client_factory=_no_verify_factory,
+    ) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            result = await session.list_tools()
+            return result.tools
+
+
+def _list_tools():
+    """List MCP tools — works in both mock and live mode."""
+    if _S.live_mode:
+        return asyncio.run(_list_tools_async(_S.live_port, _S.api_key))
+    return asyncio.run(_S.mcp.list_tools())
+
+
 class TestToolRegistration:
 
     def test_all_28_tools_registered(self):
-        tools = asyncio.run(_S.mcp.list_tools())
+        tools = _list_tools()
         names = {t.name for t in tools}
         expected = {
             # Utility
@@ -998,12 +1272,11 @@ class TestToolRegistration:
             "get_alert_image", "get_alert_diagnostic_images",
         }
         missing = expected - names
-        extra = names - expected
         assert not missing, f"Missing tools: {missing}"
         # Extra tools are fine (utility tools like ping already counted)
 
     def test_tool_descriptions_non_empty(self):
-        tools = asyncio.run(_S.mcp.list_tools())
+        tools = _list_tools()
         for t in tools:
             assert t.description, f"Tool '{t.name}' has no description"
 

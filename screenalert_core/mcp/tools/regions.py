@@ -271,7 +271,7 @@ def register(mcp, engine, config, event_logger) -> None:
             for r in tc.get("monitored_regions", []):
                 rid = r.get("id", "")
                 monitor = engine.monitoring_engine.get_monitor(rid)
-                if monitor and monitor.is_alert():
+                if monitor and monitor.is_alert:
                     result.append({
                         "window_id": tid,
                         "window_name": wname,
@@ -302,7 +302,7 @@ def register(mcp, engine, config, event_logger) -> None:
             return {"error": "Region monitor not found (is monitoring running?)", "code": 404}
 
         from screenalert_core.monitoring.region_monitor import STATE_OK
-        was_alert = monitor.is_alert()
+        was_alert = monitor.is_alert
         monitor._state = STATE_OK
         monitor._alert_start_time = None
 
