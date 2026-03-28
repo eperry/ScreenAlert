@@ -21,6 +21,7 @@ else:
 
 CONFIG_FILE = os.path.join(CONFIG_DIR, "screenalert_config.json")
 WINDOW_REGION_CONFIG_FILE = os.path.join(CONFIG_DIR, "screenalert_windows_regions.json")
+MCP_CONFIG_FILE = os.path.join(CONFIG_DIR, "mcp_config.json")
 EVENT_LOG_FILE = os.path.join(CONFIG_DIR, "event_log.jsonl")
 MCP_CERT_FILE = os.path.join(CONFIG_DIR, "mcp_cert.pem")
 MCP_KEY_FILE = os.path.join(CONFIG_DIR, "mcp_key.pem")

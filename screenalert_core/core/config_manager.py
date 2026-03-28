@@ -6,7 +6,8 @@ import os
 from typing import Dict, Any, Optional, List
 
 from screenalert_core.utils.constants import (
-    CONFIG_FILE, WINDOW_REGION_CONFIG_FILE, CONFIG_DIR, DEFAULT_REFRESH_RATE_MS, DEFAULT_OPACITY,
+    CONFIG_FILE, WINDOW_REGION_CONFIG_FILE, MCP_CONFIG_FILE, CONFIG_DIR,
+    DEFAULT_REFRESH_RATE_MS, DEFAULT_OPACITY,
     DEFAULT_ALERT_THRESHOLD, THUMBNAIL_DEFAULT_WIDTH, THUMBNAIL_DEFAULT_HEIGHT, LOG_LEVELS,
 )
 from screenalert_core.utils.helpers import generate_uuid
@@ -25,6 +26,7 @@ class ConfigManager:
         """
         self.config_path = config_path or CONFIG_FILE
         self.window_region_config_path = self._derive_window_region_config_path(self.config_path)
+        self.mcp_config_path = self._derive_mcp_config_path(self.config_path)
         self._config = self._load_or_create_config()
 
     def _derive_window_region_config_path(self, app_config_path: str) -> str:
@@ -35,6 +37,15 @@ class ConfigManager:
         base_dir = os.path.dirname(app_config_path) or CONFIG_DIR
         base_name = os.path.splitext(os.path.basename(app_config_path))[0]
         return os.path.join(base_dir, f"{base_name}_windows_regions.json")
+
+    def _derive_mcp_config_path(self, app_config_path: str) -> str:
+        """Derive MCP config path from app config path."""
+        if os.path.abspath(app_config_path) == os.path.abspath(CONFIG_FILE):
+            return MCP_CONFIG_FILE
+
+        base_dir = os.path.dirname(app_config_path) or CONFIG_DIR
+        base_name = os.path.splitext(os.path.basename(app_config_path))[0]
+        return os.path.join(base_dir, f"{base_name}_mcp.json")
     
     def _get_default_config(self) -> Dict[str, Any]:
         """Get default configuration structure"""
@@ -89,14 +100,15 @@ class ConfigManager:
                 # Event logging
                 "event_log_enabled": True,
                 "event_log_max_rows": 5000,
-                # MCP server
+                # MCP server — these are also persisted to mcp_config.json
                 "mcp_enabled": True,
-                "mcp_port": 8765,
+                "mcp_listen_host": "127.0.0.1",
+                "mcp_port": 8443,
                 "mcp_api_key": "",
                 "mcp_ssl_cert_path": "",
                 "mcp_ssl_key_path": "",
                 "mcp_http_redirect": False,
-                "mcp_http_port": 8766,
+                "mcp_http_port": 8080,
                 "mcp_max_connections": 5,
             },
             "thumbnails": [],
@@ -175,6 +187,16 @@ class ConfigManager:
         else:
             logger.info(f"Window/region config not found, using defaults at {self.window_region_config_path}")
 
+        # Load MCP settings from dedicated file; fall back to app section for migration
+        mcp_loaded = self._load_json_file(self.mcp_config_path)
+        if mcp_loaded and isinstance(mcp_loaded.get("mcp"), dict):
+            result["app"].update(mcp_loaded["mcp"])
+            logger.info(f"Loaded MCP config from {self.mcp_config_path}")
+        else:
+            # Migration: mcp_* already merged from app section above — nothing extra needed.
+            # The next save() will write them to mcp_config.json.
+            logger.info(f"MCP config not found at {self.mcp_config_path}; using app/defaults")
+
         return result
     
     def _merge_configs(self, defaults: Dict, loaded: Dict) -> Dict:
@@ -197,15 +219,28 @@ class ConfigManager:
         
         return result
     
+    # Keys stored in mcp_config.json instead of screenalert_config.json
+    _MCP_KEYS = frozenset({
+        "mcp_enabled", "mcp_listen_host", "mcp_port", "mcp_api_key",
+        "mcp_ssl_cert_path", "mcp_ssl_key_path",
+        "mcp_http_redirect", "mcp_http_port", "mcp_max_connections",
+    })
+
     def save(self) -> bool:
-        """Save split config files (app/UI and windows/regions)."""
+        """Save split config files (app/UI, windows/regions, and MCP)."""
         try:
             os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
             os.makedirs(os.path.dirname(self.window_region_config_path), exist_ok=True)
+            os.makedirs(os.path.dirname(self.mcp_config_path), exist_ok=True)
+
+            full_app = self._config.get("app", {})
+            # Split app dict: MCP keys → mcp_config.json; rest → screenalert_config.json
+            app_section = {k: v for k, v in full_app.items() if k not in self._MCP_KEYS}
+            mcp_section = {k: v for k, v in full_app.items() if k in self._MCP_KEYS}
 
             app_payload = {
                 "version": self._config.get("version", "2.0.2"),
-                "app": self._config.get("app", {}),
+                "app": app_section,
                 "ui": self._config.get("ui", {}),
                 "plugins": self._config.get("plugins", {}),
                 "history": self._config.get("history", {}),
@@ -214,14 +249,21 @@ class ConfigManager:
                 "version": self._config.get("version", "2.0.2"),
                 "thumbnails": self._config.get("thumbnails", []),
             }
+            mcp_payload = {
+                "version": self._config.get("version", "2.0.2"),
+                "mcp": mcp_section,
+            }
 
             with open(self.config_path, 'w') as f:
                 json.dump(app_payload, f, indent=2)
             with open(self.window_region_config_path, 'w') as f:
                 json.dump(data_payload, f, indent=2)
+            with open(self.mcp_config_path, 'w') as f:
+                json.dump(mcp_payload, f, indent=2)
 
             logger.info(
-                f"Config saved to app/ui={self.config_path} and windows/regions={self.window_region_config_path}"
+                f"Config saved: app={self.config_path}, "
+                f"windows={self.window_region_config_path}, mcp={self.mcp_config_path}"
             )
             return True
         except Exception as e:
@@ -578,8 +620,14 @@ class ConfigManager:
     def set_mcp_enabled(self, enabled: bool) -> None:
         self._config["app"]["mcp_enabled"] = bool(enabled)
 
+    def get_mcp_listen_host(self) -> str:
+        return str(self._config.get("app", {}).get("mcp_listen_host", "127.0.0.1"))
+
+    def set_mcp_listen_host(self, host: str) -> None:
+        self._config["app"]["mcp_listen_host"] = str(host).strip() or "127.0.0.1"
+
     def get_mcp_port(self) -> int:
-        return int(self._config.get("app", {}).get("mcp_port", 8765))
+        return int(self._config.get("app", {}).get("mcp_port", 8443))
 
     def set_mcp_port(self, port: int) -> None:
         self._config["app"]["mcp_port"] = int(port)

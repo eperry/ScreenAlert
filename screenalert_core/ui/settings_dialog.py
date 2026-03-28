@@ -303,8 +303,13 @@ _CATEGORIES: List[Tuple[str, str, Optional[str], List[dict]]] = [
                     "and other MCP-compatible clients can connect. Requires app restart to take effect.",
         },
         {
+            "key": "mcp_listen_host", "name": "Listen Address", "type": "str",
+            "desc": "IP address the MCP server binds to. Use 127.0.0.1 (default) to accept "
+                    "connections from this machine only, or 0.0.0.0 to accept from any network interface.",
+        },
+        {
             "key": "mcp_port", "name": "HTTPS Port", "type": "int",
-            "desc": "Port number the MCP server listens on. Default 8765. "
+            "desc": "Port number the MCP server listens on. Default 8443. "
                     "Update your MCP client config if you change this.",
             "min": 1024, "max": 65535, "increment": 1,
         },
@@ -322,7 +327,7 @@ _CATEGORIES: List[Tuple[str, str, Optional[str], List[dict]]] = [
         {
             "key": "mcp_http_port", "name": "HTTP Redirect Port", "type": "int",
             "desc": "Port for the plain-HTTP redirect listener (only used when HTTP Redirect is on). "
-                    "Default 8766.",
+                    "Default 8080.",
             "min": 1024, "max": 65535, "increment": 1,
         },
     ]),
@@ -373,6 +378,7 @@ _CONFIG_MAP = {
     "event_log_enabled": ("get_event_log_enabled", "set_event_log_enabled"),
     "event_log_max_rows": ("get_event_log_max_rows", "set_event_log_max_rows"),
     "mcp_enabled": ("get_mcp_enabled", "set_mcp_enabled"),
+    "mcp_listen_host": ("get_mcp_listen_host", "set_mcp_listen_host"),
     "mcp_port": ("get_mcp_port", "set_mcp_port"),
     "mcp_max_connections": ("get_mcp_max_connections", "set_mcp_max_connections"),
     "mcp_http_redirect": ("get_mcp_http_redirect", "set_mcp_http_redirect"),

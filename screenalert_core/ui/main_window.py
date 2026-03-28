@@ -8,6 +8,7 @@ import subprocess
 import faulthandler
 import traceback
 import sys
+import webbrowser
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk, messagebox as msgbox, filedialog
@@ -551,6 +552,8 @@ class ScreenAlertMainWindow(WindowSlotMixin, EngineEventMixin, SettingsMixin):
         menubar.add_cascade(label="Help", menu=help_menu)
         help_menu.add_command(label="Logs", command=self._open_logs_folder)
         help_menu.add_command(label="Dump Threads Now", command=self._dump_threads_now)
+        help_menu.add_separator()
+        help_menu.add_command(label="MCP Server...", command=self._show_mcp_info)
         help_menu.add_separator()
         help_menu.add_command(label="Keyboard Shortcuts", command=self._show_shortcuts)
         help_menu.add_command(label="About", command=self._show_about)
@@ -1495,10 +1498,97 @@ class ScreenAlertMainWindow(WindowSlotMixin, EngineEventMixin, SettingsMixin):
             logger.error(f"Error removing window '{title}': {str(e)}", exc_info=True)
             msgbox.showerror("Error", f"Failed to remove window: {str(e)}")
     
+    def _show_mcp_info(self) -> None:
+        """Show MCP server connection info dialog."""
+        try:
+            host = self.config.get_mcp_listen_host()
+            port = self.config.get_mcp_port()
+            api_key = self.config.get_mcp_api_key()
+            enabled = self.config.get_mcp_enabled()
+
+            # Determine display host for the URL — 0.0.0.0 means all interfaces, show localhost
+            display_host = "127.0.0.1" if host in ("0.0.0.0", "") else host
+            url = f"https://{display_host}:{port}/v1"
+            sse_url = f"https://{display_host}:{port}/v1/sse"
+
+            dlg = tk.Toplevel(self.root)
+            dlg.title("MCP Server")
+            dlg.resizable(False, False)
+            dlg.grab_set()
+
+            pad = {"padx": 12, "pady": 6}
+
+            # Status row
+            status_text = "Running" if (enabled and self._mcp_server and self._mcp_server.is_running()) else "Stopped"
+            status_color = "#44ff44" if status_text == "Running" else "#ff4444"
+            status_frame = ttk.Frame(dlg)
+            status_frame.pack(fill=tk.X, **pad)
+            ttk.Label(status_frame, text="Status:").pack(side=tk.LEFT)
+            tk.Label(status_frame, text=status_text, fg=status_color,
+                     font=("TkDefaultFont", 9, "bold")).pack(side=tk.LEFT, padx=6)
+
+            ttk.Separator(dlg, orient="horizontal").pack(fill=tk.X, padx=12, pady=4)
+
+            # Host / port row
+            info_frame = ttk.Frame(dlg)
+            info_frame.pack(fill=tk.X, **pad)
+            ttk.Label(info_frame, text="Listen address:").grid(row=0, column=0, sticky="w", padx=(0, 8))
+            ttk.Label(info_frame, text=f"{host}:{port}").grid(row=0, column=1, sticky="w")
+
+            # URL row — clickable link
+            ttk.Label(info_frame, text="Browse URL:").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=4)
+            link = tk.Label(info_frame, text=url, fg="#00aaff", cursor="hand2",
+                            font=("TkDefaultFont", 9, "underline"))
+            link.grid(row=1, column=1, sticky="w")
+            link.bind("<Button-1>", lambda _e: webbrowser.open(url))
+
+            # SSE URL row
+            ttk.Label(info_frame, text="SSE endpoint:").grid(row=2, column=0, sticky="w", padx=(0, 8))
+            sse_link = tk.Label(info_frame, text=sse_url, fg="#00aaff", cursor="hand2",
+                                font=("TkDefaultFont", 9, "underline"))
+            sse_link.grid(row=2, column=1, sticky="w")
+            sse_link.bind("<Button-1>", lambda _e: webbrowser.open(sse_url))
+
+            ttk.Separator(dlg, orient="horizontal").pack(fill=tk.X, padx=12, pady=4)
+
+            # Bearer token row
+            token_frame = ttk.Frame(dlg)
+            token_frame.pack(fill=tk.X, **pad)
+            ttk.Label(token_frame, text="Bearer token:").pack(side=tk.LEFT)
+
+            token_var = tk.StringVar(value=api_key if api_key else "(not set)")
+            token_entry = ttk.Entry(token_frame, textvariable=token_var,
+                                    width=44, state="readonly")
+            token_entry.pack(side=tk.LEFT, padx=6)
+
+            def _copy_token():
+                dlg.clipboard_clear()
+                dlg.clipboard_append(api_key)
+                copy_btn.config(text="Copied!")
+                dlg.after(1500, lambda: copy_btn.config(text="Copy"))
+
+            copy_btn = ttk.Button(token_frame, text="Copy", width=6, command=_copy_token)
+            copy_btn.pack(side=tk.LEFT)
+
+            ttk.Separator(dlg, orient="horizontal").pack(fill=tk.X, padx=12, pady=4)
+
+            # Close button
+            ttk.Button(dlg, text="Close", command=dlg.destroy).pack(pady=(0, 10))
+
+            # Centre dialog over main window
+            dlg.update_idletasks()
+            rx = self.root.winfo_rootx() + (self.root.winfo_width() - dlg.winfo_width()) // 2
+            ry = self.root.winfo_rooty() + (self.root.winfo_height() - dlg.winfo_height()) // 2
+            dlg.geometry(f"+{rx}+{ry}")
+
+        except Exception as exc:
+            logger.error("Error showing MCP info dialog: %s", exc, exc_info=True)
+            msgbox.showerror("MCP Server", f"Could not show MCP info:\n{exc}")
+
     def _show_about(self) -> None:
         """Show about dialog"""
         try:
-            msgbox.showinfo("About ScreenAlert", 
+            msgbox.showinfo("About ScreenAlert",
                            "ScreenAlert v2.0.2\n\n"
                            "Advanced multi-window change detection\n"
                            "with Pygame-based overlays")

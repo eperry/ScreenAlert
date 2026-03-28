@@ -68,6 +68,7 @@ class MCPServer:
 
         app = self._build_app()
 
+        host = self._config.get_mcp_listen_host()
         port = self._config.get_mcp_port()
         cert = self._config.get_mcp_ssl_cert_path()
         key = self._config.get_mcp_ssl_key_path()
@@ -76,7 +77,7 @@ class MCPServer:
             import uvicorn
             uconfig = uvicorn.Config(
                 app=app,
-                host="127.0.0.1",
+                host=host,
                 port=port,
                 ssl_certfile=cert,
                 ssl_keyfile=key,
@@ -92,7 +93,7 @@ class MCPServer:
                 name="MCPServer",
             )
             self._thread.start()
-            logger.info("MCP server started on https://127.0.0.1:%s/v1", port)
+            logger.info("MCP server started on https://%s:%s/v1", host, port)
 
             if self._config.get_mcp_http_redirect():
                 self._start_http_redirect()
