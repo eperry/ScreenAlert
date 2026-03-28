@@ -283,6 +283,49 @@ _CATEGORIES: List[Tuple[str, str, Optional[str], List[dict]]] = [
                     "Reconnect All or automatic startup reconnection.",
         },
     ]),
+    ("event_log", "Event Log", None, [
+        {
+            "key": "event_log_enabled", "name": "Enable Event Log", "type": "bool",
+            "desc": "Record all alerts, window events, and setting changes to a JSONL file. "
+                    "Required for the MCP event log tools and alert image history.",
+        },
+        {
+            "key": "event_log_max_rows", "name": "Max Log Entries", "type": "int",
+            "desc": "Maximum number of events kept before oldest entries are pruned. "
+                    "5000 is a good default; increase if you need longer history.",
+            "min": 100, "max": 100000, "increment": 1000,
+        },
+    ]),
+    ("mcp", "MCP Server", None, [
+        {
+            "key": "mcp_enabled", "name": "Enable MCP Server", "type": "bool",
+            "desc": "Start the embedded HTTPS MCP server so Claude Desktop, Claude Code, "
+                    "and other MCP-compatible clients can connect. Requires app restart to take effect.",
+        },
+        {
+            "key": "mcp_port", "name": "HTTPS Port", "type": "int",
+            "desc": "Port number the MCP server listens on. Default 8765. "
+                    "Update your MCP client config if you change this.",
+            "min": 1024, "max": 65535, "increment": 1,
+        },
+        {
+            "key": "mcp_max_connections", "name": "Max Connections", "type": "int",
+            "desc": "Maximum number of simultaneous MCP client connections. "
+                    "Excess connections receive a 429 response.",
+            "min": 1, "max": 20, "increment": 1,
+        },
+        {
+            "key": "mcp_http_redirect", "name": "HTTP Redirect", "type": "bool",
+            "desc": "Listen on the HTTP port and redirect all traffic to HTTPS. "
+                    "Useful if a client doesn't support HTTPS natively.",
+        },
+        {
+            "key": "mcp_http_port", "name": "HTTP Redirect Port", "type": "int",
+            "desc": "Port for the plain-HTTP redirect listener (only used when HTTP Redirect is on). "
+                    "Default 8766.",
+            "min": 1024, "max": 65535, "increment": 1,
+        },
+    ]),
 ]
 
 # Config getter/setter mapping: key -> (getter_name, setter_name)
@@ -327,6 +370,13 @@ _CONFIG_MAP = {
     "auto_discovery_interval_sec": ("get_auto_discovery_interval_sec", "set_auto_discovery_interval_sec"),
     "overlay_scaling_mode": ("get_overlay_scaling_mode", "set_overlay_scaling_mode"),
     "show_overlay_on_connect": ("get_show_overlay_on_connect", "set_show_overlay_on_connect"),
+    "event_log_enabled": ("get_event_log_enabled", "set_event_log_enabled"),
+    "event_log_max_rows": ("get_event_log_max_rows", "set_event_log_max_rows"),
+    "mcp_enabled": ("get_mcp_enabled", "set_mcp_enabled"),
+    "mcp_port": ("get_mcp_port", "set_mcp_port"),
+    "mcp_max_connections": ("get_mcp_max_connections", "set_mcp_max_connections"),
+    "mcp_http_redirect": ("get_mcp_http_redirect", "set_mcp_http_redirect"),
+    "mcp_http_port": ("get_mcp_http_port", "set_mcp_http_port"),
 }
 
 

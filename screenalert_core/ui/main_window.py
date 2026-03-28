@@ -40,6 +40,7 @@ class ScreenAlertMainWindow(WindowSlotMixin, EngineEventMixin, SettingsMixin):
         self.engine = engine
         self.config = engine.config
         self.window_manager = engine.window_manager
+        self._mcp_server = None  # set later via set_mcp_server()
         self.thumbnail_map = {}  # hwnd -> thumbnail_id mapping
         self.selected_thumbnail_id: Optional[str] = None  # Currently selected window
         self.selected_region_id: Optional[str] = None
@@ -724,6 +725,16 @@ class ScreenAlertMainWindow(WindowSlotMixin, EngineEventMixin, SettingsMixin):
             bd=1,
         )
         self.aggregate_status_badge.pack(side=tk.RIGHT, padx=(4, 4), pady=2)
+
+        # MCP toggle button (shown only when MCP server is wired in)
+        self._mcp_btn = ttk.Button(
+            self.status_bar_frame,
+            text="MCP: Off",
+            command=self._toggle_mcp,
+            width=10,
+        )
+        self._mcp_btn.pack(side=tk.RIGHT, padx=(4, 0), pady=2)
+        self._mcp_btn.pack_forget()  # hidden until set_mcp_server() is called
 
         # DPI awareness (Windows only)
         try:
@@ -3475,6 +3486,39 @@ class ScreenAlertMainWindow(WindowSlotMixin, EngineEventMixin, SettingsMixin):
         except Exception as e:
             logger.debug(f"Error during filter refresh: {e}")
     
+    # ── MCP integration ───────────────────────────────────────────────────────
+
+    def set_mcp_server(self, mcp_server) -> None:
+        """Wire in the MCPServer instance and show the MCP toggle button."""
+        self._mcp_server = mcp_server
+        self._mcp_btn.pack(side=tk.RIGHT, padx=(4, 0), pady=2)
+        self._update_mcp_button()
+
+    def _toggle_mcp(self) -> None:
+        """Toggle the MCP server on/off."""
+        if not self._mcp_server:
+            return
+        if self._mcp_server.is_running():
+            self._mcp_server.stop()
+            self.config.set_mcp_enabled(False)
+            self.config.save()
+        else:
+            self.config.set_mcp_enabled(True)
+            self.config.save()
+            self._mcp_server.start()
+        self._update_mcp_button()
+
+    def _update_mcp_button(self) -> None:
+        """Refresh MCP button text to reflect current server state."""
+        if not self._mcp_server:
+            return
+        if self._mcp_server.is_running():
+            self._mcp_btn.config(text="MCP: On")
+        else:
+            self._mcp_btn.config(text="MCP: Off")
+
+    # ── Tk mainloop ───────────────────────────────────────────────────────────
+
     def run(self) -> None:
         """Run main window"""
         logger.info("Entering Tk mainloop")

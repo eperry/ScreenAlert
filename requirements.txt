@@ -1,0 +1,28 @@
+# ScreenAlert runtime dependencies
+#
+# Install with:   pip install -r requirements.txt
+# Platform note:  pywin32 is Windows-only.
+
+# Core GUI / image
+pillow>=12.0.0
+numpy>=1.26.0
+opencv-python>=4.8.0
+
+# Change detection
+scikit-image>=0.22.0
+scipy>=1.11.0
+
+# Windows integration
+pywin32>=306
+
+# Audio / TTS
+pyttsx3>=2.90
+imageio>=2.33.0
+
+# MCP server (embedded HTTPS + FastMCP)
+mcp[cli]>=1.26.0
+uvicorn>=0.29.0
+starlette>=0.37.0
+
+# TLS certificate generation
+cryptography>=42.0.0

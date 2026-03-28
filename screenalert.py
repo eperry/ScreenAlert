@@ -22,7 +22,7 @@ workspace_root = Path(__file__).parent.parent
 sys.path.insert(0, str(workspace_root))
 
 from screenalert_core.utils.constants import (
-    APP_NAME, APP_VERSION, LOGS_DIR,
+    APP_NAME, APP_VERSION, LOGS_DIR, EVENT_LOG_FILE,
 )
 from screenalert_core.utils.log_setup import setup_logging, set_runtime_log_level  # noqa: F401
 from screenalert_core.screening_engine import ScreenAlertEngine
@@ -183,15 +183,36 @@ def main():
                 engine.stop()
             return
         
+        # Start event logger
+        from screenalert_core.mcp.event_logger import EventLogger
+        event_logger = EventLogger(
+            log_path=EVENT_LOG_FILE,
+            max_rows=engine.config.get_event_log_max_rows(),
+            enabled=engine.config.get_event_log_enabled(),
+        )
+        event_logger.start()
+        event_logger.log("system", "app_started", "screenalert",
+                         version=APP_VERSION)
+
+        # Start MCP server
+        from screenalert_core.mcp.server import MCPServer
+        mcp_server = MCPServer(engine=engine, config=engine.config,
+                               event_logger=event_logger)
+        mcp_server.start()
+
         # Create and run UI
         logger.info("Creating main window...")
         app = ScreenAlertMainWindow(engine)
-        
+        app.set_mcp_server(mcp_server)
+
         logger.info("Running main window...")
         app.run()
-        
+
         # Cleanup
         logger.info("Shutting down...")
+        mcp_server.stop()
+        event_logger.log("system", "app_stopped", "screenalert")
+        event_logger.stop()
         engine.stop()
         
         logger.info(f"{APP_NAME} v{APP_VERSION} Exited successfully")
