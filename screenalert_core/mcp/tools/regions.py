@@ -3,7 +3,7 @@ MCP region tools — list, add, remove, copy regions and manage alerts.
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +92,7 @@ def register(mcp, engine, config, event_logger) -> None:
             "Each entry includes current state (ok, alert, warning, paused, disabled, unavailable)."
         )
     )
-    def list_regions(window_id: str = "", window_name: str = "") -> list:
+    def list_regions(window_id: str = "", window_name: str = "") -> List[dict]:
         thumbnails = config.get_all_thumbnails()
         # If a window filter is supplied, limit to that window
         if window_id or window_name:
@@ -138,8 +138,8 @@ def register(mcp, engine, config, event_logger) -> None:
         window_id: str = "",
         window_name: str = "",
         name: str = "",
-        rect: Optional[Dict] = None,
-    ) -> Dict:
+        rect: Optional[dict] = None,
+    ) -> dict:
         tc, err = _resolve_window(config, engine, window_id or None, window_name or None)
         if err:
             return err
@@ -172,7 +172,7 @@ def register(mcp, engine, config, event_logger) -> None:
     # ── remove_region ─────────────────────────────────────────────────────────
 
     @mcp.tool(description="Remove a monitoring region permanently.")
-    def remove_region(region_id: str) -> Dict:
+    def remove_region(region_id: str) -> dict:
         if not region_id:
             return {"error": "region_id is required", "code": 400, "field": "region_id"}
 
@@ -211,7 +211,7 @@ def register(mcp, engine, config, event_logger) -> None:
         target_window_id: str = "",
         target_window_name: str = "",
         name: str = "",
-    ) -> Dict:
+    ) -> dict:
         if not region_id:
             return {"error": "region_id is required", "code": 400, "field": "region_id"}
 
@@ -262,7 +262,7 @@ def register(mcp, engine, config, event_logger) -> None:
             "Returns region id, window id, names, and when the alert started."
         )
     )
-    def list_alerts() -> list:
+    def list_alerts() -> List[dict]:
         from screenalert_core.monitoring.region_monitor import STATE_ALERT
         result = []
         for tc in config.get_all_thumbnails():
@@ -289,7 +289,7 @@ def register(mcp, engine, config, event_logger) -> None:
             "Clears the alert state and logs an alert_acknowledged event."
         )
     )
-    def acknowledge_alert(region_id: str) -> Dict:
+    def acknowledge_alert(region_id: str) -> dict:
         if not region_id:
             return {"error": "region_id is required", "code": 400, "field": "region_id"}
 
@@ -322,7 +322,7 @@ def register(mcp, engine, config, event_logger) -> None:
             "Returns each key with current value, type, and description."
         )
     )
-    def get_region_settings(region_id: str) -> Dict:
+    def get_region_settings(region_id: str) -> dict:
         if not region_id:
             return {"error": "region_id is required", "code": 400, "field": "region_id"}
 
@@ -363,7 +363,7 @@ def register(mcp, engine, config, event_logger) -> None:
         region_id: str,
         key: str,
         value: Any,
-    ) -> Dict:
+    ) -> dict:
         if not region_id:
             return {"error": "region_id is required", "code": 400, "field": "region_id"}
         if not key:
@@ -381,7 +381,7 @@ def register(mcp, engine, config, event_logger) -> None:
                 "valid_keys": list(_REGION_SETTING_META.keys()),
             }
 
-        updates: Dict[str, Any] = {}
+        updates: dict[str, Any] = {}
 
         if key == "name":
             if not value or not str(value).strip():

@@ -3,7 +3,7 @@ MCP global settings tools — get_global_settings, set_global_setting.
 """
 
 import logging
-from typing import Any, Dict
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +133,7 @@ def _read_value(config, key: str) -> Any:
     return fn() if fn else None
 
 
-def _write_value(config, engine, event_logger, key: str, value: Any) -> Dict:
+def _write_value(config, engine, event_logger, key: str, value: Any) -> dict:
     """Validate and apply a single global setting. Returns {ok, error?}."""
     meta = _GLOBAL_SETTING_META[key]
 
@@ -165,6 +165,25 @@ def _write_value(config, engine, event_logger, key: str, value: Any) -> Dict:
                     "code": 422, "field": "value", "valid_values": meta["valid_values"]}
 
     # ── Apply ──────────────────────────────────────────────────────────────────
+    def _apply_log_level(v):
+        config.set_log_level(v)
+        # Apply immediately via log_setup if available
+        try:
+            from screenalert_core.utils.log_setup import set_runtime_log_level
+            set_runtime_log_level(v)
+        except Exception:
+            pass
+
+    def _apply_event_log_enabled(v):
+        config.set_event_log_enabled(v)
+        if event_logger:
+            event_logger.set_enabled(v)
+
+    def _apply_event_log_max_rows(v):
+        config.set_event_log_max_rows(v)
+        if event_logger:
+            event_logger.set_max_rows(v)
+
     setters = {
         "opacity": lambda v: config.set_opacity(v),
         "always_on_top": lambda v: config.set_always_on_top(v),
@@ -189,25 +208,6 @@ def _write_value(config, engine, event_logger, key: str, value: Any) -> Dict:
         "mcp_max_connections": lambda v: config.set_mcp_max_connections(v),
     }
 
-    def _apply_log_level(v):
-        config.set_log_level(v)
-        # Apply immediately via log_setup if available
-        try:
-            from screenalert_core.utils.log_setup import set_runtime_log_level
-            set_runtime_log_level(v)
-        except Exception:
-            pass
-
-    def _apply_event_log_enabled(v):
-        config.set_event_log_enabled(v)
-        if event_logger:
-            event_logger.set_enabled(v)
-
-    def _apply_event_log_max_rows(v):
-        config.set_event_log_max_rows(v)
-        if event_logger:
-            event_logger.set_max_rows(v)
-
     fn = setters.get(key)
     if fn:
         try:
@@ -230,7 +230,7 @@ def register(mcp, engine, config, event_logger) -> None:
             "and valid value ranges. Use set_global_setting to change any of them."
         )
     )
-    def get_global_settings() -> Dict:
+    def get_global_settings() -> dict:
         result = {}
         for key, meta in _GLOBAL_SETTING_META.items():
             entry = dict(meta)
@@ -247,7 +247,7 @@ def register(mcp, engine, config, event_logger) -> None:
             "Call get_global_settings first to see valid keys and their types."
         )
     )
-    def set_global_setting(key: str, value: Any) -> Dict:
+    def set_global_setting(key: str, value: Any) -> dict:
         if not key:
             return {"error": "key is required", "code": 400, "field": "key"}
         if key not in _GLOBAL_SETTING_META:

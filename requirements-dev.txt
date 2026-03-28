@@ -1,0 +1,11 @@
+# ScreenAlert development / test dependencies
+#
+# Install with:   pip install -r requirements-dev.txt
+# (Also install requirements.txt first for the runtime deps)
+
+# Testing
+pytest>=9.0.0
+pytest-asyncio>=1.0.0
+
+# HTTP client for MCP integration tests
+requests>=2.31.0

@@ -6,7 +6,7 @@ import base64
 import io
 import logging
 import os
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +82,7 @@ def register(mcp, engine, config, event_logger) -> None:
         window_id: str = "",
         region_id: str = "",
         max_width: int = _DEFAULT_MAX_WIDTH,
-    ) -> Dict:
+    ) -> dict:
         if not event_logger:
             return {"error": "Event logging is not enabled", "code": 503}
 
@@ -127,7 +127,7 @@ def register(mcp, engine, config, event_logger) -> None:
             "save_alert_diagnostics is enabled. Returns a list of {filename, image} objects."
         )
     )
-    def get_alert_diagnostic_images(event_id: str) -> List[Dict]:
+    def get_alert_diagnostic_images(event_id: str) -> List[dict]:
         if not event_id:
             return [{"error": "event_id is required", "code": 400}]
 

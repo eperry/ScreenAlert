@@ -5,7 +5,6 @@ MCP monitoring control tools — pause, resume, mute, status.
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Dict
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +15,7 @@ def register(mcp, engine, config, event_logger) -> None:
     # ── pause_monitoring ──────────────────────────────────────────────────────
 
     @mcp.tool(description="Pause region analysis. Overlays stay visible. Alerts will not fire.")
-    def pause_monitoring() -> Dict:
+    def pause_monitoring() -> dict:
         engine.set_paused(True)
         if event_logger:
             event_logger.log("monitoring", "monitoring_paused", "mcp")
@@ -25,7 +24,7 @@ def register(mcp, engine, config, event_logger) -> None:
     # ── resume_monitoring ─────────────────────────────────────────────────────
 
     @mcp.tool(description="Resume region analysis after a pause.")
-    def resume_monitoring() -> Dict:
+    def resume_monitoring() -> dict:
         engine.set_paused(False)
         if event_logger:
             event_logger.log("monitoring", "monitoring_resumed", "mcp")
@@ -40,7 +39,7 @@ def register(mcp, engine, config, event_logger) -> None:
             "Returns the ISO timestamp when mute expires."
         )
     )
-    def mute_alerts(seconds: int) -> Dict:
+    def mute_alerts(seconds: int) -> dict:
         try:
             seconds = int(seconds)
         except (TypeError, ValueError):
@@ -72,7 +71,7 @@ def register(mcp, engine, config, event_logger) -> None:
             "Includes active window/region counts and mute status."
         )
     )
-    def get_monitoring_status() -> Dict:
+    def get_monitoring_status() -> dict:
         # Determine state
         if not engine.is_running():
             state = "stopped"

@@ -3,7 +3,7 @@ MCP event log tools — query, summarise, clear the JSONL event log.
 """
 
 import logging
-from typing import Dict, Optional
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ def register(mcp, engine, config, event_logger) -> None:
         category: str = "",
         window_id: str = "",
         region_id: str = "",
-    ) -> Dict:
+    ) -> dict:
         if not event_logger:
             return {"events": [], "total": 0, "has_more": False,
                     "note": "Event logging is not enabled"}
@@ -57,7 +57,7 @@ def register(mcp, engine, config, event_logger) -> None:
             "Includes alerts_with_captures count."
         )
     )
-    def get_event_summary(since: str = "") -> Dict:
+    def get_event_summary(since: str = "") -> dict:
         if not event_logger:
             return {"total": 0, "note": "Event logging is not enabled"}
 
@@ -72,7 +72,7 @@ def register(mcp, engine, config, event_logger) -> None:
             "Returns the number of entries deleted."
         )
     )
-    def clear_event_log(category: str = "") -> Dict:
+    def clear_event_log(category: str = "") -> dict:
         if not event_logger:
             return {"entries_deleted": 0, "note": "Event logging is not enabled"}
 

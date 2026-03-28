@@ -3,7 +3,7 @@ MCP window tools — list, add, remove, reconnect, inspect, and configure monito
 """
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,7 @@ def _resolve_window(config, engine, window_id: Optional[str], window_name: Optio
     return matches[0], None
 
 
-def _find_region_owner(config, region_id: str) -> Optional[Dict]:
+def _find_region_owner(config, region_id: str) -> Optional[dict]:
     """Return the thumbnail that owns region_id, or None."""
     for tc in config.get_all_thumbnails():
         for r in tc.get("monitored_regions", []):
@@ -93,7 +93,7 @@ def register(mcp, engine, config, event_logger) -> None:
             "Optional filter matches against window name (case-insensitive substring)."
         )
     )
-    def list_windows(filter: str = "") -> list:
+    def list_windows(filter: str = "") -> List[dict]:
         thumbnails = config.get_all_thumbnails()
         result = []
         for tc in thumbnails:
@@ -123,7 +123,7 @@ def register(mcp, engine, config, event_logger) -> None:
             "limit caps results (1–200, default 50)."
         )
     )
-    def find_desktop_windows(filter: str = "", limit: int = 50) -> list:
+    def find_desktop_windows(filter: str = "", limit: int = 50) -> List[dict]:
         limit = max(1, min(200, int(limit)))
         windows = engine.window_manager.get_window_list(use_cache=False)
         already_monitored = {tc.get("window_hwnd") for tc in config.get_all_thumbnails()}
@@ -156,7 +156,7 @@ def register(mcp, engine, config, event_logger) -> None:
             "Returns the new window id."
         )
     )
-    def add_window(title: str, hwnd: Optional[int] = None) -> Dict:
+    def add_window(title: str, hwnd: Optional[int] = None) -> dict:
         if not title or not title.strip():
             return {"error": "title is required", "code": 400, "field": "title"}
 
@@ -201,7 +201,7 @@ def register(mcp, engine, config, event_logger) -> None:
         window_id: str = "",
         window_name: str = "",
         confirm: bool = False,
-    ) -> Dict:
+    ) -> dict:
         tc, err = _resolve_window(config, engine, window_id or None, window_name or None)
         if err:
             return err
@@ -240,7 +240,7 @@ def register(mcp, engine, config, event_logger) -> None:
             "result values: 'already_valid', 'reconnected', 'failed', 'missing'."
         )
     )
-    def reconnect_window(window_id: str = "", window_name: str = "") -> Dict:
+    def reconnect_window(window_id: str = "", window_name: str = "") -> dict:
         tc, err = _resolve_window(config, engine, window_id or None, window_name or None)
         if err:
             return err
@@ -256,7 +256,7 @@ def register(mcp, engine, config, event_logger) -> None:
             "Returns summary counts: total, reconnected, failed, already_valid."
         )
     )
-    def reconnect_all_windows() -> Dict:
+    def reconnect_all_windows() -> dict:
         summary = engine.reconnect_all_windows()
         return summary
 
@@ -268,7 +268,7 @@ def register(mcp, engine, config, event_logger) -> None:
             "Returns each setting key with its current value, type, and description."
         )
     )
-    def get_window_settings(window_id: str = "", window_name: str = "") -> Dict:
+    def get_window_settings(window_id: str = "", window_name: str = "") -> dict:
         tc, err = _resolve_window(config, engine, window_id or None, window_name or None)
         if err:
             return err
@@ -307,7 +307,7 @@ def register(mcp, engine, config, event_logger) -> None:
         window_name: str = "",
         key: str = "",
         value: Any = None,
-    ) -> Dict:
+    ) -> dict:
         tc, err = _resolve_window(config, engine, window_id or None, window_name or None)
         if err:
             return err
@@ -322,7 +322,7 @@ def register(mcp, engine, config, event_logger) -> None:
 
         wid = tc["id"]
         wname = tc.get("window_title", "")
-        updates: Dict[str, Any] = {}
+        updates: dict[str, Any] = {}
 
         if key == "name":
             if not value or not str(value).strip():
