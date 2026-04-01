@@ -182,6 +182,12 @@ class ConfigManager:
                 seen.add(title)
                 deduped.append(thumb)
 
+            # Sanitize overlay_visible: convert None / missing → True so every
+            # thumbnail always carries a proper boolean.
+            for thumb in deduped:
+                raw = thumb.get("overlay_visible", thumb.get("overview_visible"))
+                thumb["overlay_visible"] = bool(raw) if raw is not None else True
+
             result["thumbnails"] = deduped
             logger.info(f"Loaded window/region config from {self.window_region_config_path}")
         else:
@@ -737,6 +743,7 @@ class ConfigManager:
             "opacity": self.get_opacity(),
             "always_on_top": self.get_always_on_top(),
             "show_border": self.get_show_borders(),
+            "overlay_visible": True,
             "enabled": True,
             "monitored_regions": []
         }
@@ -755,6 +762,20 @@ class ConfigManager:
     def get_all_thumbnails(self) -> List[Dict]:
         """Get all thumbnails"""
         return self._config.get("thumbnails", [])
+
+    @staticmethod
+    def thumbnail_overlay_visible(thumbnail: Dict) -> bool:
+        """Return the effective overlay visibility for a thumbnail config dict.
+
+        Treats an explicit ``None`` value the same as a missing key (i.e. the
+        default is True).  This handles configs where the key was stored as
+        JSON ``null`` rather than being absent.
+        """
+        for key in ("overlay_visible", "overview_visible"):
+            val = thumbnail.get(key)
+            if val is not None:
+                return bool(val)
+        return True
     
     def update_thumbnail(self, thumbnail_id: str, updates: Dict) -> bool:
         """Update thumbnail configuration"""

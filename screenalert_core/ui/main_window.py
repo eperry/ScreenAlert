@@ -25,7 +25,7 @@ from screenalert_core.ui.tooltip import ToolTip
 from screenalert_core.ui.auto_hide_scrollbar import AutoHideScrollbar
 from screenalert_core.core.image_processor import ImageProcessor
 from screenalert_core.utils.update_checker import check_for_updates
-from screenalert_core.utils.constants import LOGS_DIR
+from screenalert_core.utils.constants import LOGS_DIR, APP_NAME, APP_VERSION
 from screenalert_core.ui.window_slot_mixin import WindowSlotMixin
 from screenalert_core.ui.engine_event_mixin import EngineEventMixin
 from screenalert_core.ui.settings_mixin import SettingsMixin
@@ -104,7 +104,7 @@ class ScreenAlertMainWindow(WindowSlotMixin, EngineEventMixin, SettingsMixin):
         self._tree_text_font: Optional[tkfont.Font] = None
         logger.debug("Creating Tk root window")
         self.root = tk.Tk()
-        self.root.title("ScreenAlert v2.0.2 - Multibox Monitor")
+        self.root.title(f"{APP_NAME} v{APP_VERSION} - Multibox Monitor")
         logger.debug("Tk root window created and titled")
         self.root.geometry("1200x800")
         # Pass tkinter root to engine for overlay windows
@@ -1109,7 +1109,7 @@ class ScreenAlertMainWindow(WindowSlotMixin, EngineEventMixin, SettingsMixin):
         source = thumbnail if thumbnail is not None else self.config.get_thumbnail(thumbnail_id)
         if not source:
             return True
-        return bool(source.get("overlay_visible", source.get("overview_visible", True)))
+        return source.get("overlay_visible", True)
 
     # Window slot methods are in WindowSlotMixin (window_slot_mixin.py)
 
@@ -1875,8 +1875,7 @@ class ScreenAlertMainWindow(WindowSlotMixin, EngineEventMixin, SettingsMixin):
             return False
 
         target_enabled = bool(enabled)
-        current_visible = bool(thumbnail.get("overlay_visible",
-                                             thumbnail.get("overview_visible", True)))
+        current_visible = thumbnail.get("overlay_visible", True)
         if current_visible != target_enabled:
             self.config.update_thumbnail(thumbnail_id, {"overlay_visible": target_enabled})
             self.config.save()

@@ -184,9 +184,10 @@ class ScreenAlertEngine:
 
     def _initialize_from_config(self) -> None:
         """Load thumbnails and regions from config"""
-        for thumbnail_config in self.config.get_all_thumbnails():
+        thumbnails = self.config.get_all_thumbnails()
+        logger.info("Loading %d thumbnail(s) from config", len(thumbnails))
+        for thumbnail_config in thumbnails:
             self._add_thumbnail_from_config(thumbnail_config)
-            logger.debug(f"Initialized thumbnail from config: {thumbnail_config.get('id')}")
     
     def _add_thumbnail_from_config(self, config: Dict) -> bool:
         """Add thumbnail from config dict - mirrors add_thumbnail() flow"""
@@ -206,7 +207,7 @@ class ScreenAlertEngine:
                 # Apply persisted overlay visibility before availability updates.
                 self.renderer.set_thumbnail_user_visibility(
                     thumbnail_id,
-                    bool(config.get("overlay_visible", config.get("overview_visible", True))),
+                    config.get("overlay_visible", True),
                 )
                 
                 # Immediately capture and display (same as add_thumbnail)
@@ -325,7 +326,7 @@ class ScreenAlertEngine:
             # New windows start with overlay visible unless config says otherwise.
             self.renderer.set_thumbnail_user_visibility(
                 thumbnail_id,
-                bool(config.get("overlay_visible", config.get("overview_visible", True))),
+                config.get("overlay_visible", True),
             )
             
             # Link DWM thumbnail to source window immediately
@@ -914,7 +915,7 @@ class ScreenAlertEngine:
                         continue
 
                     thumbnail_id = thumbnail_config["id"]
-                    window_hwnd = thumbnail_config["window_hwnd"]
+                    window_hwnd = thumbnail_config.get("window_hwnd")
                     window_title, expected_class, expected_size, expected_monitor = \
                         self._extract_window_identity(thumbnail_config)
 

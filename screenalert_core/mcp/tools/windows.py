@@ -106,7 +106,7 @@ def register(mcp, engine, config, event_logger) -> None:
                 "id": tid,
                 "name": name,
                 "status": "connected" if connected else "disconnected",
-                "overlay_visible": tc.get("overlay_visible", tc.get("overview_visible", True)),
+                "overlay_visible": tc.get("overlay_visible", True),
                 "hwnd": tc.get("window_hwnd"),
                 "slot": tc.get("window_slot"),
                 "enabled": tc.get("enabled", True),
@@ -279,7 +279,7 @@ def register(mcp, engine, config, event_logger) -> None:
             if key == "name":
                 entry["value"] = tc.get("window_title", "")
             elif key == "overlay_visible":
-                entry["value"] = tc.get("overlay_visible", tc.get("overview_visible", True))
+                entry["value"] = tc.get("overlay_visible", True)
             elif key == "opacity":
                 entry["value"] = tc.get("opacity", config.get_opacity())
             elif key == "always_on_top":
@@ -368,7 +368,14 @@ def register(mcp, engine, config, event_logger) -> None:
                     return {"error": "window_slot must be an integer or null", "code": 422, "field": "value"}
 
         elif key == "enabled":
-            updates["enabled"] = bool(value)
+            new_enabled = bool(value)
+            updates["enabled"] = new_enabled
+            # When re-enabling a window, restore overlay visibility if it was set
+            if new_enabled and bool(tc.get("overlay_visible", True)):
+                try:
+                    engine.renderer.set_thumbnail_user_visibility(wid, True)
+                except Exception:
+                    pass
 
         ok = config.update_thumbnail(wid, updates)
         if not ok:

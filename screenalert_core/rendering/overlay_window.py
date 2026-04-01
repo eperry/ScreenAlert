@@ -28,7 +28,7 @@ from screenalert_core.rendering.win32_types import (
     TIMER_ID_UPDATE, TITLE_BAR_HEIGHT, BORDER_WIDTH, DRAG_THRESHOLD_PX,
     COLOR_BORDER_ACTIVE, COLOR_TITLE_BG, COLOR_UNAVAILABLE_BG, COLOR_BLACK,
     TRACKMOUSEEVENT, PAINTSTRUCT, WNDPROC, WNDCLASSEXW,
-    _window_map, ensure_wndclass,
+    _window_map, ensure_wndclass, _wndclass_name,
 )
 from screenalert_core.utils.constants import (
     THUMBNAIL_MIN_WIDTH, THUMBNAIL_MAX_WIDTH,
@@ -79,7 +79,15 @@ class OverlayWindow:
         # State
         self._is_available = True
         self._show_when_unavailable = False
-        self._is_user_hidden = False
+        # Restore persisted user-visibility from config so the overlay starts
+        # in the correct hidden/visible state even before the engine calls
+        # set_thumbnail_user_visibility (which may arrive after window creation).
+        _raw_overlay_visible = config.get("overlay_visible", True)
+        _is_enabled = bool(config.get("enabled", True))
+        # A disabled window must never show its overlay, even if overlay_visible=True.
+        self._is_user_hidden = not _raw_overlay_visible or not _is_enabled
+        logger.debug("[%s] OVERLAY_INIT: overlay_visible=%r, enabled=%r -> _is_user_hidden=%s",
+                    thumbnail_id, _raw_overlay_visible, _is_enabled, self._is_user_hidden)
         self._source_hwnd: Optional[int] = None
         self._dwm_handle: Optional[Any] = None
         self._source_size: Tuple[int, int] = (0, 0)
@@ -134,6 +142,11 @@ class OverlayWindow:
             # Show window without activating
             if not self._is_user_hidden:
                 user32.ShowWindow(self.hwnd, SW_SHOWNOACTIVATE)
+                logger.debug("[%s] OVERLAY_CREATE: window SHOWN (hwnd=%s, _is_user_hidden=%s, _is_available=%s)",
+                            self.thumbnail_id, self.hwnd, self._is_user_hidden, self._is_available)
+            else:
+                logger.debug("[%s] OVERLAY_CREATE: window NOT shown — user hidden (hwnd=%s, _is_user_hidden=%s)",
+                            self.thumbnail_id, self.hwnd, self._is_user_hidden)
 
             logger.debug("[%s] Overlay window created: hwnd=%s", self.thumbnail_id, self.hwnd)
 
@@ -905,13 +918,16 @@ class OverlayWindow:
 
         # Skip if nothing changed
         if was_available == bool(available) and was_show_unavail == bool(show_when_unavailable):
+            logger.debug("[%s] OVERLAY_AVAIL: no change (available=%s, show_when_unavail=%s)",
+                         self.thumbnail_id, available, show_when_unavailable)
             return
 
         self._is_available = bool(available)
         self._show_when_unavailable = bool(show_when_unavailable)
 
-        logger.debug("[%s] Availability changed: %s -> %s (show_when_unavail=%s)",
-                     self.thumbnail_id, was_available, available, show_when_unavailable)
+        logger.debug("[%s] OVERLAY_AVAIL: %s -> %s (show_when_unavail=%s, _is_user_hidden=%s, hwnd=%s)",
+                    self.thumbnail_id, was_available, available, show_when_unavailable,
+                    self._is_user_hidden, self.hwnd)
 
         if not available and was_available:
             self._unregister_dwm()
@@ -923,9 +939,12 @@ class OverlayWindow:
 
     def set_user_visibility(self, visible: bool) -> None:
         """Show/hide window per user action."""
+        prev_hidden = self._is_user_hidden
         self._is_user_hidden = not bool(visible)
-        logger.debug("[%s] User visibility: %s", self.thumbnail_id, visible)
+        logger.debug("[%s] OVERLAY_USER_VIS: visible=%s -> _is_user_hidden=%s (was %s), hwnd=%s, _is_available=%s",
+                    self.thumbnail_id, visible, self._is_user_hidden, prev_hidden, self.hwnd, self._is_available)
         if not self.hwnd:
+            logger.debug("[%s] OVERLAY_USER_VIS: hwnd is None — window not yet created!", self.thumbnail_id)
             return
         if self._is_user_hidden:
             user32.ShowWindow(self.hwnd, SW_HIDE)
@@ -935,15 +954,19 @@ class OverlayWindow:
     def _apply_visibility(self) -> None:
         """Apply current visibility state."""
         if self._is_user_hidden:
+            logger.debug("[%s] OVERLAY_APPLY_VIS: HIDING (user_hidden=True)", self.thumbnail_id)
             user32.ShowWindow(self.hwnd, SW_HIDE)
             return
         if self._is_available:
+            logger.debug("[%s] OVERLAY_APPLY_VIS: SHOWING (available=True, user_hidden=False)", self.thumbnail_id)
             user32.ShowWindow(self.hwnd, SW_SHOWNOACTIVATE)
             self._invalidate()
         elif self._show_when_unavailable:
+            logger.debug("[%s] OVERLAY_APPLY_VIS: SHOWING unavailable placeholder (show_when_unavail=True)", self.thumbnail_id)
             user32.ShowWindow(self.hwnd, SW_SHOWNOACTIVATE)
             self._invalidate()
         else:
+            logger.debug("[%s] OVERLAY_APPLY_VIS: HIDING (available=False, show_when_unavail=False)", self.thumbnail_id)
             user32.ShowWindow(self.hwnd, SW_HIDE)
 
     def is_visible(self) -> bool:

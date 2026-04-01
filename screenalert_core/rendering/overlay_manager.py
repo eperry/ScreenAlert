@@ -168,15 +168,26 @@ class OverlayManager:
                     owner_manager=self,
                 )
                 overlay.set_scaling_mode(self._scaling_mode)
+                # Attempt to establish the DWM link immediately from config so
+                # the overlay shows content without waiting for the engine's
+                # first set_source_hwnd call (which may arrive after creation).
+                source_hwnd = config.get("window_hwnd") if config else None
+                if source_hwnd:
+                    try:
+                        overlay.set_source_hwnd(source_hwnd)
+                    except Exception:
+                        logger.debug("Initial set_source_hwnd failed for %s", thumbnail_id)
                 interval_ms = max(16, int(1000 / max(1, self._update_rate_hz)))
                 overlay.start_update_timer(interval_ms)
                 with self.lock:
                     self._overlays[thumbnail_id] = overlay
-                logger.info("Added overlay: %s", thumbnail_id)
+                logger.info("Added overlay: %s (total=%d)", thumbnail_id, len(self._overlays))
             except Exception:
+                logger.error("OVERLAY CREATE FAILED for %s — overlay will not appear. Check log for traceback.", thumbnail_id)
                 logger.exception("Error adding overlay %s", thumbnail_id)
 
         self._post_command(_create)
+        logger.debug("add_thumbnail: _create queued for %s", thumbnail_id)
         return True
 
     def remove_thumbnail(self, thumbnail_id: str) -> bool:
@@ -224,6 +235,8 @@ class OverlayManager:
                 logger.debug("set_thumbnail_availability: overlay %s not found", thumbnail_id)
                 return False
 
+        logger.debug("set_thumbnail_availability: available=%s for %s", available, thumbnail_id)
+
         def _set():
             overlay.set_availability(available, show_when_unavailable)
 
@@ -236,6 +249,8 @@ class OverlayManager:
             if not overlay:
                 logger.debug("set_thumbnail_user_visibility: overlay %s not found", thumbnail_id)
                 return False
+
+        logger.debug("set_thumbnail_user_visibility: visible=%s for %s", visible, thumbnail_id)
 
         def _set():
             overlay.set_user_visibility(visible)
