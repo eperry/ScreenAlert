@@ -123,6 +123,31 @@ pytest tests/test_mcp_tools.py -v --live    # live ScreenAlert on port 8443
 
 ---
 
+### Overlay Visibility Fix
+
+Overlays were not appearing on startup, and enabling them had no effect. Multiple related bugs were found and fixed together:
+
+**Root cause:** `overlay_visible` was never written when a new thumbnail was created by `add_thumbnail()`. On load, `.get("overlay_visible", True)` returns `True` only when the key is *absent* — but when the key exists with value `null` (JSON null / Python `None`), `.get()` returns `None`, and `bool(None)` is `False`. Every overlay therefore started hidden.
+
+**Fixes:**
+
+- **`config_manager`**: `add_thumbnail()` now always writes `"overlay_visible": True` into the new thumbnail dict. Config load sanitizes every existing thumbnail — `None` or absent values are normalised to `True`, and the legacy `overview_visible` key is migrated in the same pass.
+- **`overlay_window`**: `OverlayWindow.__init__` now reads `overlay_visible` and `enabled` from config at creation time and sets `_is_user_hidden` accordingly. The Win32 window is shown or hidden immediately without waiting for the engine's async `set_thumbnail_user_visibility` call (which was arriving after window creation due to the async command queue).
+- **Disabled windows no longer show an overlay.** A window with `enabled: false` (e.g. a character that is offline) no longer creates a visible but empty overlay shell. `enabled: false` now forces `_is_user_hidden = True` at init regardless of `overlay_visible`.
+- **`overlay_manager`**: The DWM thumbnail link is attempted immediately from the config `window_hwnd` during overlay creation, so content appears without waiting for the engine's first `set_source_hwnd` cycle.
+- **MCP `set_window_setting`**: Setting `enabled = true` via MCP now also restores live overlay visibility (calls `set_thumbnail_user_visibility`) if `overlay_visible` is `true`.
+- **All `overview_visible` fallback chains removed.** Every inline `.get("overlay_visible", .get("overview_visible", True))` pattern replaced with `.get("overlay_visible", True)` — safe now that config load performs the migration.
+
+---
+
+### Repository Restructure
+
+- **Docs consolidated into `docs/`**: `RELEASE_NOTES.md`, `SPEC-DWM-THUMBNAILS.md`, `ARCHITECTURE.md`, and `V2_DEVELOPMENT_SUMMARY.md` moved from the repo root and `screenalert_core/` into `docs/` (history preserved via `git mv`).
+- **README updated**: Project structure tree, AI Integration (MCP) section with link to `docs/MCP_SETUP.md`, CLI options table (`--log-level`, `--verbose`, `--diagnostics`), and dependency list brought up to date.
+- **Dev artifacts removed**: `SECURITY.md`, `docs/CODE_REVIEW_FIXES.md`, `docs/SCREENALERT_README.md`, `tools/` (three standalone scripts), and stale log/session files deleted from the repo.
+
+---
+
 ## 2.0.6
 
 ### DWM Overlay System (New)
