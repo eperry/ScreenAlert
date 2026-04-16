@@ -69,13 +69,13 @@ Scenario: Mining operation with AFK fleet in anomaly
 
 ### llama.cpp Server Startup
 
-**Command to start the server:**
+**Command to start the server (using standard Ollama port 11434):**
 
 ```bash
 cd llama-cpp-binary
 llama-server.exe --model <path-to-model> \
   --ctx-size 2048 \
-  --port 8000 \
+  --port 11434 \
   --host 127.0.0.1 \
   --threads 4 \
   --gpu-layers 33 \
@@ -85,7 +85,7 @@ llama-server.exe --model <path-to-model> \
 **Key Parameters:**
 
 - `--model`: Path to .gguf model file (e.g., `phi-3-mini.Q5_K_M.gguf`)
-- `--port 8000`: API server port (change if needed)
+- `--port 11434`: API server port (**11434 is the standard Ollama port** — change if needed)
 - `--gpu-layers 33`: How many layers to offload to GPU (adjust based on VRAM)
 - `--ctx-size 2048`: Context window (2K is sufficient for chat analysis)
 - `--threads 4`: CPU threads (adjust to your CPU cores)
@@ -133,13 +133,13 @@ POST http://127.0.0.1:8000/v1/chat/completions
 
 ### Configuration in screenalert_config.json
 
-Add these settings for llama.cpp integration:
+Add these settings for llama.cpp integration (using standard Ollama port **11434**):
 
 ```json
 {
   "llm_enabled": true,
   "llm_model_name": "phi-3-mini",
-  "llm_api_url": "http://127.0.0.1:8000/v1",
+  "llm_api_url": "http://127.0.0.1:11434/v1",
   "llm_api_timeout_sec": 5,
   "llm_temperature": 0.3,
   "llm_max_tokens": 200,
@@ -158,7 +158,7 @@ Add these settings for llama.cpp integration:
 Once the server is running, test it with:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/v1/chat/completions \
+curl -X POST http://127.0.0.1:11434/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "phi-3-mini",
@@ -358,7 +358,7 @@ For chat-based threat analysis, you'll use:
 ### Example: Chat Threat Analysis Request
 
 ```bash
-curl -X POST http://127.0.0.1:8000/v1/chat/completions \
+curl -X POST http://127.0.0.1:11434/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "phi-3-mini",
