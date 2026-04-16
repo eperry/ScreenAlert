@@ -44,6 +44,148 @@ Scenario: Mining operation with AFK fleet in anomaly
 
 ---
 
+## llama.cpp Setup & Configuration
+
+### Binary Location
+
+- **Path**: `llama-cpp-binary/` (9GB directory with all executables and DLLs)
+- **Key Executable**: `llama-server.exe` — OpenAI-compatible API server
+- **Available Tools**: llama-cli, llama-bench, llama-quantize, and more
+
+### Recommended Model: Phi-3 Mini (3.8B)
+
+**Why Phi-3 Mini?**
+
+- Optimized for 8GB VRAM systems (even with Mistral as backup)
+- Fast inference (100-200ms per response) → critical for keystroke timing
+- Excellent at classification tasks (detecting threats in chat)
+- Smaller model = less latency = faster automation triggers
+
+**VRAM Requirements:**
+
+- Q5_K_M quantization: ~4GB VRAM (recommended for quality + speed)
+- Q4_K_M quantization: ~3.5GB VRAM (if VRAM-constrained)
+- Q6_K quantization: ~5GB VRAM (best quality, slower)
+
+### llama.cpp Server Startup
+
+**Command to start the server:**
+
+```bash
+cd llama-cpp-binary
+llama-server.exe --model <path-to-model> \
+  --ctx-size 2048 \
+  --port 8000 \
+  --host 127.0.0.1 \
+  --threads 4 \
+  --gpu-layers 33 \
+  --verbose
+```
+
+**Key Parameters:**
+
+- `--model`: Path to .gguf model file (e.g., `phi-3-mini.Q5_K_M.gguf`)
+- `--port 8000`: API server port (change if needed)
+- `--gpu-layers 33`: How many layers to offload to GPU (adjust based on VRAM)
+- `--ctx-size 2048`: Context window (2K is sufficient for chat analysis)
+- `--threads 4`: CPU threads (adjust to your CPU cores)
+
+### API Endpoint
+
+Once running, the server exposes an **OpenAI-compatible API**:
+
+```
+POST http://127.0.0.1:8000/v1/chat/completions
+```
+
+**Example Request:**
+
+```json
+{
+  "model": "phi-3-mini",
+  "messages": [
+    {
+      "role": "system",
+      "content": "Analyze if this player is a threat. Respond with JSON: {\"threat_level\": \"low|medium|high\", \"confidence\": 0.0-1.0}"
+    },
+    {
+      "role": "user",
+      "content": "Unknown player 'Grimdark' just entered local chat and said 'looking for targets'"
+    }
+  ],
+  "temperature": 0.3
+}
+```
+
+**Expected Response:**
+
+```json
+{
+  "choices": [
+    {
+      "message": {
+        "content": "{\"threat_level\": \"high\", \"confidence\": 0.92}"
+      }
+    }
+  ]
+}
+```
+
+### Configuration in screenalert_config.json
+
+Add these settings for llama.cpp integration:
+
+```json
+{
+  "llm_enabled": true,
+  "llm_model_name": "phi-3-mini",
+  "llm_api_url": "http://127.0.0.1:8000/v1",
+  "llm_api_timeout_sec": 5,
+  "llm_temperature": 0.3,
+  "llm_max_tokens": 200,
+  "chat_analysis_enabled": true,
+  "chat_threat_threshold": 0.7,
+  "known_players": [
+    "YourName",
+    "AllyPlayer1",
+    "AllyPlayer2"
+  ]
+}
+```
+
+### Testing llama.cpp Connection
+
+Once the server is running, test it with:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "phi-3-mini",
+    "messages": [{"role": "user", "content": "Hello, are you working?"}],
+    "max_tokens": 50
+  }'
+```
+
+Should return a response within 1-2 seconds.
+
+### Performance Tuning
+
+**If inference is too slow:**
+
+1. Lower `--gpu-layers` (offload fewer layers to GPU, use CPU more)
+2. Reduce `--ctx-size` (smaller context = faster)
+3. Use lower quantization (Q4_K_M instead of Q5_K_M)
+4. Check CPU/GPU utilization with Task Manager
+
+**If VRAM is running out:**
+
+1. Lower `--gpu-layers` to free VRAM
+2. Use Q4_K_M quantization instead of Q5_K_M
+3. Reduce `--ctx-size` to 1024
+
+---
+
 ## Project Structure
 
 ### Core Directories
