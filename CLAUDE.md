@@ -326,6 +326,109 @@ xcopy /E /I build\bin\*.dll d:\onedrive\Documents\Development\ScreenAlert\llama-
 
 ---
 
+## llama-cpp Server API & Ollama Compatibility
+
+### API Surface
+
+The llama-cpp server exposes **40+ HTTP endpoints** across three API surfaces:
+
+1. **Ollama Native API** (`/api/*`)
+2. **OpenAI Compatible API** (`/v1/*`)
+3. **Utility endpoints** (tokenize, embeddings, etc.)
+
+### Ollama Alignment
+
+For RC-2.0.8, we're using llama-cpp **as-is** because:
+
+- ✅ **Ollama-compatible** for core endpoints we need
+- ✅ **OpenAI-compatible** for standardized `/v1/*` paths
+- ✅ **No extra overhead** if unused endpoints aren't called
+- ✅ **Future-proof** for expanding functionality
+
+### Endpoints Used in RC-2.0.8
+
+For chat-based threat analysis, you'll use:
+
+| Endpoint | Purpose | Method |
+| --- | --- | --- |
+| `/v1/models` | List available models | `GET` |
+| `/v1/chat/completions` | Send chat message for analysis | `POST` |
+| `/health` or `/v1/health` | Health check | `GET` |
+
+### Example: Chat Threat Analysis Request
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "phi-3-mini",
+    "messages": [
+      {
+        "role": "system",
+        "content": "Analyze if this player is a threat in Eve Online. Respond with JSON only: {\"threat_level\": \"low|medium|high\", \"confidence\": 0.0-1.0}"
+      },
+      {
+        "role": "user",
+        "content": "Unknown player just entered local chat and said: '\''looking for targets'\''"
+      }
+    ],
+    "temperature": 0.3,
+    "max_tokens": 200
+  }'
+```
+
+**Response:**
+
+```json
+{
+  "choices": [
+    {
+      "message": {
+        "role": "assistant",
+        "content": "{\"threat_level\": \"high\", \"confidence\": 0.92}"
+      }
+    }
+  ],
+  "model": "phi-3-mini",
+  "usage": {
+    "prompt_tokens": 45,
+    "completion_tokens": 15,
+    "total_tokens": 60
+  }
+}
+```
+
+### Available Endpoints (Reference)
+
+**Chat & Completion:**
+
+- `POST /v1/chat/completions` — OpenAI-compatible chat
+- `POST /api/chat` — Ollama-compatible chat
+- `POST /v1/completions` — Text completion
+
+**Models:**
+
+- `GET /v1/models` — List models (OpenAI format)
+- `GET /api/tags` — List models (Ollama format)
+- `POST /api/show` — Get model details
+
+**Utilities (not needed for RC-2.0.8):**
+
+- `POST /v1/embeddings` — Generate embeddings
+- `POST /tokenize` — Tokenize text
+- `POST /detokenize` — Detokenize tokens
+- `POST /infill` — Code infill
+- `POST /rerank` — Reranking
+- And 20+ more endpoints
+
+**Health:**
+
+- `GET /health` — Basic health check
+- `GET /v1/health` — OpenAI-compatible health check
+- `GET /metrics` — Prometheus metrics
+
+---
+
 ## Project Structure
 
 ### Core Directories
