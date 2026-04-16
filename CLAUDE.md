@@ -186,6 +186,123 @@ Should return a response within 1-2 seconds.
 
 ---
 
+## Building llama.cpp from Source
+
+The source code is in `llama-cpp-src/` (cloned from [github.com/ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp)).
+
+### Prerequisites for Windows
+
+#### Required
+
+- **Visual Studio 2022 Community** (free) — [Download](https://visualstudio.microsoft.com/vs/community/)
+  - During installation, select:
+    - Workload: "Desktop development with C++"
+    - Components: CMake Tools for Windows, Git for Windows, Clang Compiler for Windows
+  - After installation, always use **Developer Command Prompt for VS2022** for building
+
+- **CMake** (usually included with Visual Studio; if not, [download](https://cmake.org/download/))
+
+#### Optional but recommended
+
+- **OpenSSL Development Libraries** — for HTTPS/TLS support in llama-server
+  - Can be skipped; server will build without SSL but without HTTPS support
+  - Windows: Use pre-built binaries or package manager
+
+#### Optional for GPU acceleration
+
+- **NVIDIA CUDA Toolkit** — only if you want CUDA GPU support (we already have Vulkan in the binary)
+  - [Download CUDA](https://developer.nvidia.com/cuda-downloads)
+
+### Build Steps
+
+#### 1. Open Developer Command Prompt for VS2022
+
+Find it in Start Menu → Visual Studio 2022 → "Developer Command Prompt for VS2022"
+
+#### 2. Navigate to llama-cpp-src
+
+```bash
+cd d:\onedrive\Documents\Development\ScreenAlert\llama-cpp-src
+```
+
+#### 3. Create a build directory and configure
+
+```bash
+cmake -B build
+```
+
+**Optional flags:**
+
+- For faster builds: `-j 8` (uses 8 parallel jobs)
+- For Vulkan GPU support: `-DGGML_VULKAN=ON`
+- For CUDA GPU support: `-DGGML_CUDA=ON` (requires CUDA Toolkit)
+- For static build: `-DBUILD_SHARED_LIBS=OFF`
+- For debug: `-DCMAKE_BUILD_TYPE=Debug` (instead of Release)
+
+**Example with Vulkan (recommended for your case):**
+
+```bash
+cmake -B build -DGGML_VULKAN=ON
+```
+
+#### 4. Build
+
+```bash
+cmake --build build --config Release -j 8
+```
+
+The `-j 8` flag runs 8 parallel jobs (adjust based on your CPU cores). This takes 5-15 minutes depending on your hardware.
+
+#### 5. Verify successful build
+
+If successful, you'll have:
+
+- `build/bin/llama-server.exe` — The OpenAI-compatible server
+- `build/bin/llama-cli.exe` — Command-line interface
+- Other tools in `build/bin/`
+
+#### 6. Copy binaries to llama-cpp-binary (optional)
+
+Once built, you can copy the new binaries:
+
+```bash
+xcopy /E /I build\bin\*.exe d:\onedrive\Documents\Development\ScreenAlert\llama-cpp-binary\
+xcopy /E /I build\bin\*.dll d:\onedrive\Documents\Development\ScreenAlert\llama-cpp-binary\
+```
+
+### Troubleshooting Build Issues
+
+#### "CMake not found"
+
+- Install CMake via Visual Studio installer, or download from cmake.org
+- Ensure you're using Developer Command Prompt (not regular PowerShell)
+
+#### "MSVC compiler not found"
+
+- Verify Visual Studio 2022 installed correctly
+- Reinstall if needed; ensure "Desktop development with C++" workload is selected
+
+#### "Vulkan headers not found" (if using -DGGML_VULKAN=ON)
+
+- llama.cpp will auto-download Vulkan headers; if this fails:
+  - Install [Vulkan SDK](https://vulkan.lunarg.com/sdk/home) separately
+  - Rerun `cmake -B build -DGGML_VULKAN=ON`
+
+#### "CUDA not found" (if using -DGGML_CUDA=ON)
+
+- Download and install [NVIDIA CUDA Toolkit](https://developer.nvidia.com/cuda-downloads)
+- Ensure CUDA bin path is in your system PATH
+- Rerun cmake
+
+### Performance Notes
+
+- **Release vs Debug**: Release builds are 5-10x faster for inference. Always use Release unless debugging.
+- **Parallel jobs**: Adjust `-j N` based on your CPU; `-j 8` is reasonable for modern CPUs.
+- **Build time**: Expect 5-15 minutes for full build on modern hardware.
+- **Output binary size**: Release builds are ~50-100MB depending on enabled backends.
+
+---
+
 ## Project Structure
 
 ### Core Directories
