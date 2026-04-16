@@ -227,22 +227,45 @@ cd d:\onedrive\Documents\Development\ScreenAlert\llama-cpp-src
 
 #### 3. Create a build directory and configure
 
-```bash
-cmake -B build
+**Using PowerShell (Recommended):**
+
+```powershell
+cmake -B build -G 'Visual Studio 17 2022' -A x64 `
+  -DCMAKE_ASM_COMPILER='C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/ml64.exe' `
+  -DGGML_NATIVE=OFF
 ```
 
-**Optional flags:**
+**Using cmd.exe:**
 
-- For faster builds: `-j 8` (uses 8 parallel jobs)
+```cmd
+cmake -B build -G "Visual Studio 17 2022" -A x64 ^
+  -DCMAKE_ASM_COMPILER="C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/ml64.exe" ^
+  -DGGML_NATIVE=OFF
+```
+
+**Important:**
+
+- Replace `14.44.35207` with your actual MSVC version:
+
+  ```
+  C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\<VERSION>\bin\Hostx64\x64\ml64.exe
+  ```
+
+- The `CMAKE_ASM_COMPILER` path is required for MSVC builds
+
+**Optional flags (add to the command above):**
+
 - For Vulkan GPU support: `-DGGML_VULKAN=ON`
 - For CUDA GPU support: `-DGGML_CUDA=ON` (requires CUDA Toolkit)
 - For static build: `-DBUILD_SHARED_LIBS=OFF`
-- For debug: `-DCMAKE_BUILD_TYPE=Debug` (instead of Release)
+- For debug: change `Release` in step 4 to `Debug`
 
-**Example with Vulkan (recommended for your case):**
+**Example with Vulkan:**
 
-```bash
-cmake -B build -DGGML_VULKAN=ON
+```powershell
+cmake -B build -G 'Visual Studio 17 2022' -A x64 `
+  -DCMAKE_ASM_COMPILER='C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/ml64.exe' `
+  -DGGML_NATIVE=OFF -DGGML_VULKAN=ON
 ```
 
 #### 4. Build
