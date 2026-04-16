@@ -210,11 +210,13 @@ class OverlayWindow:
           letterbox – preserve aspect ratio inside, black bars for the gap.
         """
         border = BORDER_WIDTH if (self._is_active_window and self.show_border) else 0
+        # Reserve space for the hover title bar so DWM content does not paint over it.
+        top_inset = TITLE_BAR_HEIGHT if self._mouse_inside else 0
         avail_w = self.width - 2 * border
-        avail_h = self.height - 2 * border
+        avail_h = self.height - 2 * border - top_inset
 
         if avail_w <= 0 or avail_h <= 0:
-            return (border, border, self.width - border, self.height - border)
+            return (border, border + top_inset, self.width - border, self.height - border)
 
         src_w, src_h = self._source_size
 
@@ -224,13 +226,13 @@ class OverlayWindow:
             thumb_w = int(src_w * scale)
             thumb_h = int(src_h * scale)
             offset_x = border + (avail_w - thumb_w) // 2
-            offset_y = border + (avail_h - thumb_h) // 2
+            offset_y = border + top_inset + (avail_h - thumb_h) // 2
             return (offset_x, offset_y, offset_x + thumb_w, offset_y + thumb_h)
 
         # fit and stretch both fill the entire available area.
         # fit relies on the overlay window itself being aspect-locked via resize.
         # stretch just fills regardless of proportions.
-        return (border, border, border + avail_w, border + avail_h)
+        return (border, border + top_inset, border + avail_w, border + top_inset + avail_h)
 
     def _update_dwm_properties(self) -> None:
         """Sync DWM thumbnail properties (dest rect, opacity, visibility)."""
@@ -521,6 +523,7 @@ class OverlayWindow:
         if not self._mouse_inside:
             self._mouse_inside = True
             self._track_mouse_leave()
+            self._update_dwm_properties()
             self._invalidate()  # show title bar
 
         # Handle drag/resize
@@ -537,6 +540,7 @@ class OverlayWindow:
 
     def _on_mouse_leave(self) -> None:
         self._mouse_inside = False
+        self._update_dwm_properties()
         self._invalidate()  # hide title bar
 
     def _on_left_press(self, lparam, wparam) -> None:
