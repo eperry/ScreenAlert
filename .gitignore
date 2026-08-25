@@ -81,3 +81,7 @@ ScreenEvents/
 
 # Build reports and logs
 build_comparison_report.json
+
+# Admin command runner scratch files
+tools/admin/admin-command.txt
+tools/admin/admin-status.txt
